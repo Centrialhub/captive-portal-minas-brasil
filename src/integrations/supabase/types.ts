@@ -214,6 +214,7 @@ export type Database = {
           id: string
           is_active: boolean
           name: string
+          post_auth_redirect_url: string | null
           slug: string
           unifi_api_key_or_token: string | null
           unifi_controller_url: string | null
@@ -226,6 +227,7 @@ export type Database = {
           id?: string
           is_active?: boolean
           name: string
+          post_auth_redirect_url?: string | null
           slug: string
           unifi_api_key_or_token?: string | null
           unifi_controller_url?: string | null
@@ -238,6 +240,7 @@ export type Database = {
           id?: string
           is_active?: boolean
           name?: string
+          post_auth_redirect_url?: string | null
           slug?: string
           unifi_api_key_or_token?: string | null
           unifi_controller_url?: string | null
