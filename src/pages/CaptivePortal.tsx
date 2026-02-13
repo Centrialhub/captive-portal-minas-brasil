@@ -15,6 +15,8 @@ export default function CaptivePortal() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [redirectUrl, setRedirectUrl] = useState<string | null>(null);
+  const [authorized, setAuthorized] = useState(false);
 
   // Form fields
   const [name, setName] = useState("");
@@ -90,6 +92,16 @@ export default function CaptivePortal() {
         setError(result.error);
       } else {
         setSuccess(result.message || "Cadastro realizado com sucesso!");
+        setAuthorized(!!result.authorized);
+        const rUrl = result.redirect_url || null;
+        setRedirectUrl(rUrl);
+
+        // Auto-redirect if authorized
+        if (result.authorized && rUrl) {
+          setTimeout(() => {
+            window.location.replace(rUrl);
+          }, 800);
+        }
       }
     } catch {
       setError("Erro ao enviar cadastro.");
@@ -109,8 +121,26 @@ export default function CaptivePortal() {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background p-4">
         <div className="w-full max-w-md rounded-lg border bg-card p-6 text-center">
-          <h1 className="mb-2 text-xl font-bold text-foreground">✅ Conectado!</h1>
+          <h1 className="mb-2 text-xl font-bold text-foreground">
+            {authorized ? "✅ Conectado!" : "✅ Cadastro realizado!"}
+          </h1>
           <p className="text-muted-foreground">{success}</p>
+          {authorized && redirectUrl && (
+            <p className="mt-3 text-sm text-muted-foreground">
+              Redirecionando...{" "}
+              <a href={redirectUrl} className="text-primary underline">
+                Clique aqui se não redirecionar
+              </a>
+            </p>
+          )}
+          {!authorized && redirectUrl && (
+            <a
+              href={redirectUrl}
+              className="mt-4 inline-block rounded bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
+            >
+              Ir para o site
+            </a>
+          )}
         </div>
       </div>
     );

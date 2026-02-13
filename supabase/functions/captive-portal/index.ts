@@ -11,6 +11,7 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") || Deno.env.get("SUPABASE_PUBLISHABLE_KEY")!;
 
+const DEFAULT_REDIRECT_URL = Deno.env.get("POST_AUTH_REDIRECT_URL") || "https://www.drogariaminasbrasil.com.br/";
 const UNIFI_TIMEOUT_MS = 10_000;
 const UNIFI_RETRY_COUNT = 1;
 const MAC_REGEX = /^[0-9A-F]{12}$/;
@@ -425,7 +426,7 @@ async function handleSubmit(req: Request): Promise<Response> {
   // Validate store
   const { data: store } = await db
     .from("stores")
-    .select("id, is_active")
+    .select("id, is_active, post_auth_redirect_url")
     .eq("slug", storeSlug)
     .maybeSingle();
 
@@ -535,10 +536,23 @@ async function handleSubmit(req: Request): Promise<Response> {
     }
   }
 
+  // Resolve redirect URL: store override > env > default
+  const resolvedRedirectUrl = (store as any).post_auth_redirect_url || DEFAULT_REDIRECT_URL;
+
+  // Audit redirect
+  await db.from("audit_logs").insert({
+    store_id: store.id,
+    entity: "session",
+    entity_id: sessionId || null,
+    action: "redirect",
+    meta: { store_slug: storeSlug, redirect_url: resolvedRedirectUrl, authorized },
+  });
+
   // Never expose technical errors to the user
   return jsonResponse({
     ok: true,
     authorized,
+    redirect_url: resolvedRedirectUrl,
     message: authorized
       ? "Acesso liberado! Você já pode navegar."
       : "Cadastro realizado. Caso a internet não libere automaticamente, desconecte e reconecte ao WiFi.",
@@ -583,7 +597,7 @@ async function handleAdminStores(req: Request): Promise<Response> {
   if (req.method === "GET") {
     const { data, error } = await db
       .from("stores")
-      .select("id, slug, name, city, is_active, unifi_site_id, unifi_controller_url, created_at, updated_at")
+      .select("id, slug, name, city, is_active, post_auth_redirect_url, unifi_site_id, unifi_controller_url, created_at, updated_at")
       .order("created_at", { ascending: false });
     if (error) return errorResponse(error.message, 500);
     // Never return api tokens even to admin GET list
@@ -606,6 +620,7 @@ async function handleAdminStores(req: Request): Promise<Response> {
         name,
         city: sanitizeString(body.city, 100) || null,
         is_active: body.is_active === false ? false : true,
+        post_auth_redirect_url: sanitizeString(body.post_auth_redirect_url, 500) || null,
         unifi_site_id: sanitizeString(body.unifi_site_id, 100) || null,
         unifi_controller_url: sanitizeString(body.unifi_controller_url, 500) || null,
         unifi_api_key_or_token: typeof body.unifi_api_key_or_token === "string"
@@ -633,6 +648,7 @@ async function handleAdminStores(req: Request): Promise<Response> {
     }
     if (body.city !== undefined) updateData.city = sanitizeString(body.city, 100);
     if (body.is_active !== undefined) updateData.is_active = !!body.is_active;
+    if (body.post_auth_redirect_url !== undefined) updateData.post_auth_redirect_url = sanitizeString(body.post_auth_redirect_url, 500);
     if (body.unifi_site_id !== undefined) updateData.unifi_site_id = sanitizeString(body.unifi_site_id, 100);
     if (body.unifi_controller_url !== undefined) updateData.unifi_controller_url = sanitizeString(body.unifi_controller_url, 500);
     if (body.unifi_api_key_or_token !== undefined) {
@@ -839,6 +855,92 @@ async function handleTestAuthorize(req: Request): Promise<Response> {
   });
 }
 
+// ========== XML Export (Admin) ==========
+
+function escapeXml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+async function handleAdminLeadsXml(req: Request, url: URL): Promise<Response> {
+  const auth = await requireAdmin(req);
+  if (auth instanceof Response) return auth;
+  const { db } = auth;
+
+  const storeSlug = url.searchParams.get("store_slug");
+  const scope = storeSlug ? "store" : (url.searchParams.get("scope") || "all");
+  const from = url.searchParams.get("from");
+  const to = url.searchParams.get("to");
+
+  let query = db
+    .from("leads")
+    .select("id, name, email, phone, client_mac, created_at, consented_at, consent_version, stores(slug, name)")
+    .order("created_at", { ascending: false })
+    .limit(10000);
+
+  if (storeSlug) {
+    // Resolve store_id from slug
+    const { data: storeData } = await db.from("stores").select("id").eq("slug", storeSlug).maybeSingle();
+    if (storeData) query = query.eq("store_id", storeData.id);
+  }
+  if (from) query = query.gte("created_at", from);
+  if (to) query = query.lte("created_at", to + "T23:59:59.999Z");
+
+  const { data: leads, error } = await query;
+  if (error) return errorResponse(error.message, 500);
+
+  const rows = leads || [];
+  const now = new Date().toISOString();
+  const dateStamp = now.slice(0, 10).replace(/-/g, "");
+
+  let xml = `<?xml version="1.0" encoding="UTF-8"?>\n<leads_export>\n`;
+  xml += `  <generated_at>${escapeXml(now)}</generated_at>\n`;
+  xml += `  <scope>${escapeXml(scope)}</scope>\n`;
+  if (storeSlug) xml += `  <store_slug>${escapeXml(storeSlug)}</store_slug>\n`;
+  xml += `  <count>${rows.length}</count>\n`;
+
+  for (const lead of rows) {
+    const storeInfo = lead.stores as unknown as { slug: string; name: string } | null;
+    xml += `  <lead>\n`;
+    xml += `    <id>${escapeXml(lead.id)}</id>\n`;
+    xml += `    <store_slug>${escapeXml(storeInfo?.slug || "")}</store_slug>\n`;
+    xml += `    <store_name>${escapeXml(storeInfo?.name || "")}</store_name>\n`;
+    xml += `    <name>${escapeXml(lead.name || "")}</name>\n`;
+    if (lead.email) xml += `    <email>${escapeXml(lead.email)}</email>\n`;
+    if (lead.phone) xml += `    <phone>${escapeXml(lead.phone)}</phone>\n`;
+    if (lead.client_mac) xml += `    <client_mac>${escapeXml(lead.client_mac)}</client_mac>\n`;
+    xml += `    <created_at>${escapeXml(lead.created_at)}</created_at>\n`;
+    xml += `    <consented_at>${escapeXml(lead.consented_at)}</consented_at>\n`;
+    xml += `    <consent_version>${escapeXml(lead.consent_version)}</consent_version>\n`;
+    xml += `  </lead>\n`;
+  }
+
+  xml += `</leads_export>`;
+
+  const filename = storeSlug ? `leads_${storeSlug}_${dateStamp}.xml` : `leads_all_${dateStamp}.xml`;
+
+  // Audit export
+  await db.from("audit_logs").insert({
+    store_id: null,
+    entity: "lead",
+    entity_id: null,
+    action: "export_xml",
+    meta: { scope, store_slug: storeSlug, from, to, count: rows.length },
+  });
+
+  return new Response(xml, {
+    headers: {
+      ...corsHeaders,
+      "Content-Type": "application/xml; charset=utf-8",
+      "Content-Disposition": `attachment; filename="${filename}"`,
+    },
+  });
+}
+
 // ========== Main Router ==========
 
 Deno.serve(async (req: Request) => {
@@ -863,6 +965,7 @@ Deno.serve(async (req: Request) => {
 
     // Admin endpoints
     if (path === "/admin/stores") return await handleAdminStores(req);
+    if (path === "/admin/leads-xml" && req.method === "GET") return await handleAdminLeadsXml(req, url);
     if (path === "/admin/leads") return await handleAdminLeads(req, url);
     if (path === "/admin/consent") return await handleAdminConsent(req);
     if (path === "/admin/sessions") return await handleAdminSessions(req, url);
