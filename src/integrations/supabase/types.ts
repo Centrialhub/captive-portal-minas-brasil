@@ -58,6 +58,7 @@ export type Database = {
           status: Database["public"]["Enums"]["session_status"]
           store_id: string
           submitted_at: string | null
+          updated_at: string
           user_agent: string | null
         }
         Insert: {
@@ -73,6 +74,7 @@ export type Database = {
           status?: Database["public"]["Enums"]["session_status"]
           store_id: string
           submitted_at?: string | null
+          updated_at?: string
           user_agent?: string | null
         }
         Update: {
@@ -88,6 +90,7 @@ export type Database = {
           status?: Database["public"]["Enums"]["session_status"]
           store_id?: string
           submitted_at?: string | null
+          updated_at?: string
           user_agent?: string | null
         }
         Relationships: [
@@ -113,6 +116,7 @@ export type Database = {
           id: string
           is_active: boolean
           text: string
+          updated_at: string
           version: string
         }
         Insert: {
@@ -120,6 +124,7 @@ export type Database = {
           id?: string
           is_active?: boolean
           text: string
+          updated_at?: string
           version: string
         }
         Update: {
@@ -127,6 +132,7 @@ export type Database = {
           id?: string
           is_active?: boolean
           text?: string
+          updated_at?: string
           version?: string
         }
         Relationships: []
@@ -145,6 +151,7 @@ export type Database = {
           session_id: string | null
           source: string
           store_id: string
+          updated_at: string
         }
         Insert: {
           client_mac?: string | null
@@ -159,6 +166,7 @@ export type Database = {
           session_id?: string | null
           source?: string
           store_id: string
+          updated_at?: string
         }
         Update: {
           client_mac?: string | null
@@ -173,6 +181,7 @@ export type Database = {
           session_id?: string | null
           source?: string
           store_id?: string
+          updated_at?: string
         }
         Relationships: [
           {
