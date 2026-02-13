@@ -1,4 +1,4 @@
-const SUPABASE_URL = "https://fqamejlyytrhovawgtwg.supabase.co";
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const FUNCTION_BASE = `${SUPABASE_URL}/functions/v1/captive-portal`;
 
 export const api = {
