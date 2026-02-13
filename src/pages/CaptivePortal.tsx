@@ -1,5 +1,7 @@
 import { useState, useEffect } from "react";
 import { api } from "@/lib/api";
+import logoMinasBrasil from "@/assets/logo-minas-brasil.png";
+import brazilMap from "@/assets/brazil-map.png";
 
 interface BootstrapData {
   store: { slug: string; name: string; city?: string };
@@ -18,13 +20,11 @@ export default function CaptivePortal() {
   const [redirectUrl, setRedirectUrl] = useState<string | null>(null);
   const [authorized, setAuthorized] = useState(false);
 
-  // Form fields
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
   const [consented, setConsented] = useState(false);
 
-  // Extract store slug and UniFi params from URL
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const pathParts = window.location.pathname.split("/");
@@ -96,7 +96,6 @@ export default function CaptivePortal() {
         const rUrl = result.redirect_url || null;
         setRedirectUrl(rUrl);
 
-        // Auto-redirect if authorized
         if (result.authorized && rUrl) {
           setTimeout(() => {
             window.location.replace(rUrl);
@@ -111,24 +110,31 @@ export default function CaptivePortal() {
 
   if (loading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-background">
-        <p className="text-muted-foreground">Carregando...</p>
+      <div className="flex min-h-screen items-center justify-center bg-primary">
+        <div className="text-center">
+          <img src={logoMinasBrasil} alt="Drogaria Minas Brasil" className="mx-auto mb-4 h-16 object-contain" />
+          <p className="text-primary-foreground font-medium">Carregando...</p>
+        </div>
       </div>
     );
   }
 
   if (success) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-background p-4">
-        <div className="w-full max-w-md rounded-lg border bg-card p-6 text-center">
+      <div className="flex min-h-screen items-center justify-center bg-primary p-4 relative overflow-hidden">
+        <img src={brazilMap} alt="" className="absolute right-0 bottom-0 h-64 opacity-10 pointer-events-none" />
+        <div className="relative z-10 w-full max-w-md rounded-xl bg-card p-8 text-center shadow-2xl">
+          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-brand-success-bg">
+            <svg className="h-8 w-8 text-brand-success" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>
+          </div>
           <h1 className="mb-2 text-xl font-bold text-foreground">
-            {authorized ? "✅ Conectado!" : "✅ Cadastro realizado!"}
+            {authorized ? "Conectado!" : "Cadastro realizado!"}
           </h1>
           <p className="text-muted-foreground">{success}</p>
           {authorized && redirectUrl && (
-            <p className="mt-3 text-sm text-muted-foreground">
-              Redirecionando...{" "}
-              <a href={redirectUrl} className="text-primary underline">
+            <p className="mt-4 text-sm text-muted-foreground">
+              Você está sendo redirecionado para nosso site.{" "}
+              <a href={redirectUrl} className="text-primary font-medium underline">
                 Clique aqui se não redirecionar
               </a>
             </p>
@@ -136,7 +142,7 @@ export default function CaptivePortal() {
           {!authorized && redirectUrl && (
             <a
               href={redirectUrl}
-              className="mt-4 inline-block rounded bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
+              className="mt-6 inline-block rounded-lg bg-secondary px-6 py-3 text-sm font-bold text-secondary-foreground hover:bg-brand-yellow-hover transition-colors"
             >
               Ir para o site
             </a>
@@ -148,72 +154,88 @@ export default function CaptivePortal() {
 
   if (error && !bootstrapData) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-background p-4">
-        <div className="w-full max-w-md rounded-lg border bg-destructive/10 p-6 text-center">
-          <p className="text-destructive">{error}</p>
+      <div className="flex min-h-screen items-center justify-center bg-primary p-4">
+        <div className="w-full max-w-md rounded-xl bg-card p-8 text-center shadow-2xl">
+          <img src={logoMinasBrasil} alt="Drogaria Minas Brasil" className="mx-auto mb-4 h-14 object-contain" />
+          <p className="text-destructive font-medium">{error}</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background p-4">
-      <div className="w-full max-w-md rounded-lg border bg-card p-6">
-        <h1 className="mb-1 text-xl font-bold text-foreground">
-          {bootstrapData?.store.name || "Wi-Fi"}
+    <div className="flex min-h-screen items-center justify-center bg-primary p-4 relative overflow-hidden">
+      {/* Decorative brazil map */}
+      <img src={brazilMap} alt="" className="absolute left-0 bottom-0 h-80 opacity-10 pointer-events-none select-none" />
+
+      <div className="relative z-10 w-full max-w-md rounded-xl bg-card p-6 shadow-2xl">
+        {/* Header with logo */}
+        <div className="text-center mb-5">
+          <img src={logoMinasBrasil} alt="Drogaria Minas Brasil" className="mx-auto mb-2 h-16 object-contain" />
+          <p className="text-xs font-semibold text-muted-foreground tracking-wide uppercase">vender barato é tradição</p>
+        </div>
+
+        <h1 className="mb-1 text-lg font-extrabold text-foreground text-center">
+          WiFi Gratuito Drogaria Minas Brasil
         </h1>
-        <p className="mb-4 text-sm text-muted-foreground">
-          Cadastre-se para acessar o Wi-Fi gratuito
+        <p className="mb-5 text-sm text-muted-foreground text-center">
+          {bootstrapData?.store.city
+            ? `Loja ${bootstrapData.store.name} — ${bootstrapData.store.city}`
+            : `Loja ${bootstrapData?.store.name || ""}`}
         </p>
 
-        {error && <p className="mb-3 text-sm text-destructive">{error}</p>}
+        {error && (
+          <div className="mb-3 rounded-lg bg-destructive/10 p-3">
+            <p className="text-sm text-destructive font-medium">{error}</p>
+          </div>
+        )}
 
         <form onSubmit={handleSubmit} className="space-y-3">
           <div>
-            <label className="mb-1 block text-sm font-medium text-foreground">Nome *</label>
+            <label className="mb-1 block text-sm font-semibold text-foreground">Nome *</label>
             <input
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
               required
-              className="w-full rounded border bg-background px-3 py-2 text-foreground"
+              className="w-full rounded-lg border-2 border-border bg-background px-3 py-2.5 text-foreground focus:border-secondary focus:ring-2 focus:ring-secondary/30 outline-none transition-all"
               placeholder="Seu nome completo"
             />
           </div>
           <div>
-            <label className="mb-1 block text-sm font-medium text-foreground">E-mail</label>
+            <label className="mb-1 block text-sm font-semibold text-foreground">E-mail</label>
             <input
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="w-full rounded border bg-background px-3 py-2 text-foreground"
+              className="w-full rounded-lg border-2 border-border bg-background px-3 py-2.5 text-foreground focus:border-secondary focus:ring-2 focus:ring-secondary/30 outline-none transition-all"
               placeholder="email@exemplo.com"
             />
           </div>
           <div>
-            <label className="mb-1 block text-sm font-medium text-foreground">Telefone</label>
+            <label className="mb-1 block text-sm font-semibold text-foreground">Telefone</label>
             <input
               type="tel"
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
-              className="w-full rounded border bg-background px-3 py-2 text-foreground"
+              className="w-full rounded-lg border-2 border-border bg-background px-3 py-2.5 text-foreground focus:border-secondary focus:ring-2 focus:ring-secondary/30 outline-none transition-all"
               placeholder="(11) 99999-9999"
             />
           </div>
 
           {bootstrapData?.consent && (
-            <div className="rounded border bg-muted p-3">
-              <p className="mb-2 text-xs text-muted-foreground whitespace-pre-line">
+            <div className="rounded-lg border-2 border-border bg-muted p-3">
+              <p className="mb-2 text-xs text-muted-foreground whitespace-pre-line leading-relaxed">
                 {bootstrapData.consent.text}
               </p>
-              <label className="flex items-start gap-2 text-sm">
+              <label className="flex items-start gap-2 text-sm cursor-pointer">
                 <input
                   type="checkbox"
                   checked={consented}
                   onChange={(e) => setConsented(e.target.checked)}
-                  className="mt-0.5"
+                  className="mt-0.5 accent-primary"
                 />
-                <span className="text-foreground">Li e aceito os termos acima</span>
+                <span className="text-foreground font-medium">Li e aceito os termos acima</span>
               </label>
             </div>
           )}
@@ -221,7 +243,7 @@ export default function CaptivePortal() {
           <button
             type="submit"
             disabled={submitting || !consented || (!email && !phone)}
-            className="w-full rounded bg-primary px-4 py-2 font-medium text-primary-foreground disabled:opacity-50"
+            className="w-full rounded-lg bg-secondary px-4 py-3 font-bold text-secondary-foreground hover:bg-brand-yellow-hover disabled:opacity-50 transition-colors text-base"
           >
             {submitting ? "Enviando..." : "Conectar ao Wi-Fi"}
           </button>
@@ -232,6 +254,10 @@ export default function CaptivePortal() {
             </p>
           )}
         </form>
+
+        <p className="mt-4 text-center text-[10px] text-muted-foreground">
+          Drogaria Minas Brasil © {new Date().getFullYear()}
+        </p>
       </div>
     </div>
   );
