@@ -56,9 +56,11 @@ export default function AdminPanel() {
     <div className="flex min-h-screen">
       {/* Sidebar */}
       <aside className="w-56 bg-primary text-primary-foreground flex flex-col shrink-0">
-        <div className="p-4 border-b border-primary-foreground/20">
-          <img src={logoMinasBrasil} alt="Drogaria Minas Brasil" className="h-10 object-contain brightness-0 invert" />
-          <p className="text-[10px] mt-1 opacity-70 font-medium tracking-wide">PAINEL ADMIN</p>
+        <div className="p-5 border-b border-primary-foreground/20">
+          <div className="bg-white rounded-lg p-3 flex items-center justify-center">
+            <img src={logoMinasBrasil} alt="Drogaria Minas Brasil" className="h-12 object-contain" />
+          </div>
+          <p className="text-[10px] mt-2 opacity-80 font-bold text-center tracking-wide">PAINEL ADMIN</p>
         </div>
         <nav className="flex-1 p-2 space-y-1">
           {tabs.map((tab) => (
