@@ -156,10 +156,35 @@ function LeadsTab({ token }: { token: string }) {
     })();
   }, [token]);
 
+  const downloadBlob = async (url: string, defaultFilename: string) => {
+    try {
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+        alert(`Erro ao exportar: ${err.error || res.statusText}`);
+        return;
+      }
+      const disposition = res.headers.get("Content-Disposition");
+      const match = disposition?.match(/filename="?([^";\s]+)"?/);
+      const filename = match?.[1] || defaultFilename;
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(blobUrl);
+    } catch (e) {
+      alert("Erro de rede ao exportar.");
+    }
+  };
+
   const exportCsv = () => {
     const params = new URLSearchParams({ format: "csv" });
     if (storeFilter) params.set("store_id", storeFilter);
-    window.open(`https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal/admin/leads?${params}`, "_blank");
+    downloadBlob(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/captive-portal/admin/leads?${params}`, `leads_${new Date().toISOString().slice(0,10)}.csv`);
   };
 
   const exportXml = (scope: "store" | "all", slug?: string) => {
@@ -168,7 +193,7 @@ function LeadsTab({ token }: { token: string }) {
     else params.set("scope", "all");
     if (xmlFrom) params.set("from", xmlFrom);
     if (xmlTo) params.set("to", xmlTo);
-    window.open(`https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal/admin/leads-xml?${params}`, "_blank");
+    downloadBlob(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/captive-portal/admin/leads-xml?${params}`, slug ? `leads_${slug}.xml` : `leads_all.xml`);
   };
 
   return (

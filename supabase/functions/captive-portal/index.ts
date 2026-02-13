@@ -691,8 +691,8 @@ async function handleAdminLeads(req: Request, url: URL): Promise<Response> {
     .order("created_at", { ascending: false });
 
   if (storeId && isValidUUID(storeId)) query = query.eq("store_id", storeId);
-  if (from) query = query.gte("created_at", from);
-  if (to) query = query.lte("created_at", to);
+  if (from) query = query.gte("created_at", from.length === 10 ? `${from}T00:00:00.000Z` : from);
+  if (to) query = query.lte("created_at", to.length === 10 ? `${to}T23:59:59.999Z` : to);
 
   if (format === "csv") {
     query = query.limit(10000);
@@ -882,13 +882,15 @@ async function handleAdminLeadsXml(req: Request, url: URL): Promise<Response> {
     .order("created_at", { ascending: false })
     .limit(10000);
 
+  let resolvedStoreId: string | null = null;
   if (storeSlug) {
-    // Resolve store_id from slug
     const { data: storeData } = await db.from("stores").select("id").eq("slug", storeSlug).maybeSingle();
-    if (storeData) query = query.eq("store_id", storeData.id);
+    if (!storeData) return errorResponse("Store not found", 404);
+    resolvedStoreId = storeData.id;
+    query = query.eq("store_id", storeData.id);
   }
-  if (from) query = query.gte("created_at", from);
-  if (to) query = query.lte("created_at", to + "T23:59:59.999Z");
+  if (from) query = query.gte("created_at", from.length === 10 ? `${from}T00:00:00.000Z` : from);
+  if (to) query = query.lte("created_at", to.length === 10 ? `${to}T23:59:59.999Z` : to);
 
   const { data: leads, error } = await query;
   if (error) return errorResponse(error.message, 500);
@@ -925,7 +927,7 @@ async function handleAdminLeadsXml(req: Request, url: URL): Promise<Response> {
 
   // Audit export
   await db.from("audit_logs").insert({
-    store_id: null,
+    store_id: resolvedStoreId,
     entity: "lead",
     entity_id: null,
     action: "export_xml",
