@@ -569,12 +569,15 @@ async function requireAdmin(req: Request): Promise<{ db: ReturnType<typeof supab
 
   const authClient = supabaseAuth(authHeader);
   const token = authHeader.replace("Bearer ", "");
-  const { data, error } = await authClient.auth.getClaims(token);
-  if (error || !data?.claims) {
+
+  // Usar getUser em vez de getClaims para melhor compatibilidade
+  const { data: userData, error: userErr } = await authClient.auth.getUser(token);
+  if (userErr || !userData?.user) {
+    if (userErr) console.warn("Auth error:", userErr.message);
     return errorResponse("Unauthorized", 401);
   }
 
-  const userId = data.claims.sub as string;
+  const userId = userData.user.id;
   const db = supabaseAdmin();
 
   const { data: roleData } = await db
