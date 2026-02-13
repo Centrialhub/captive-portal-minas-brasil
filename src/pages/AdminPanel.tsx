@@ -69,7 +69,7 @@ export default function AdminPanel() {
 function StoresTab({ token }: { token: string }) {
   const [stores, setStores] = useState<any[]>([]);
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ slug: "", name: "", city: "", unifi_controller_url: "", unifi_site_id: "", unifi_api_key_or_token: "" });
+  const [form, setForm] = useState({ slug: "", name: "", city: "", post_auth_redirect_url: "", unifi_controller_url: "", unifi_site_id: "", unifi_api_key_or_token: "" });
   const [editingId, setEditingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -87,13 +87,13 @@ function StoresTab({ token }: { token: string }) {
     }
     setShowForm(false);
     setEditingId(null);
-    setForm({ slug: "", name: "", city: "", unifi_controller_url: "", unifi_site_id: "", unifi_api_key_or_token: "" });
+    setForm({ slug: "", name: "", city: "", post_auth_redirect_url: "", unifi_controller_url: "", unifi_site_id: "", unifi_api_key_or_token: "" });
     load();
   };
 
   return (
     <div>
-      <button onClick={() => { setShowForm(!showForm); setEditingId(null); setForm({ slug: "", name: "", city: "", unifi_controller_url: "", unifi_site_id: "", unifi_api_key_or_token: "" }); }} className="mb-3 rounded bg-primary px-3 py-1 text-sm text-primary-foreground">
+      <button onClick={() => { setShowForm(!showForm); setEditingId(null); setForm({ slug: "", name: "", city: "", post_auth_redirect_url: "", unifi_controller_url: "", unifi_site_id: "", unifi_api_key_or_token: "" }); }} className="mb-3 rounded bg-primary px-3 py-1 text-sm text-primary-foreground">
         {showForm ? "Cancelar" : "Nova Loja"}
       </button>
 
@@ -102,6 +102,7 @@ function StoresTab({ token }: { token: string }) {
           <input placeholder="Slug (ex: loja01)" value={form.slug} onChange={(e) => setForm({ ...form, slug: e.target.value })} className="w-full rounded border bg-background px-3 py-2 text-foreground text-sm" />
           <input placeholder="Nome" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="w-full rounded border bg-background px-3 py-2 text-foreground text-sm" />
           <input placeholder="Cidade" value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} className="w-full rounded border bg-background px-3 py-2 text-foreground text-sm" />
+          <input placeholder="URL de redirecionamento pós-auth (opcional)" value={form.post_auth_redirect_url} onChange={(e) => setForm({ ...form, post_auth_redirect_url: e.target.value })} className="w-full rounded border bg-background px-3 py-2 text-foreground text-sm" />
           <input placeholder="UniFi Controller URL" value={form.unifi_controller_url} onChange={(e) => setForm({ ...form, unifi_controller_url: e.target.value })} className="w-full rounded border bg-background px-3 py-2 text-foreground text-sm" />
           <input placeholder="UniFi Site ID" value={form.unifi_site_id} onChange={(e) => setForm({ ...form, unifi_site_id: e.target.value })} className="w-full rounded border bg-background px-3 py-2 text-foreground text-sm" />
           <input placeholder="UniFi API Key / Token" type="password" value={form.unifi_api_key_or_token} onChange={(e) => setForm({ ...form, unifi_api_key_or_token: e.target.value })} className="w-full rounded border bg-background px-3 py-2 text-foreground text-sm" />
@@ -120,7 +121,7 @@ function StoresTab({ token }: { token: string }) {
               <td className="p-2">{s.is_active ? "✅" : "❌"}</td>
               <td className="p-2">{s.unifi_controller_url ? "✅" : "—"}</td>
               <td className="p-2">
-                <button onClick={() => { setEditingId(s.id); setForm({ slug: s.slug, name: s.name, city: s.city || "", unifi_controller_url: s.unifi_controller_url || "", unifi_site_id: s.unifi_site_id || "", unifi_api_key_or_token: "" }); setShowForm(true); }} className="text-xs text-primary underline">Editar</button>
+                <button onClick={() => { setEditingId(s.id); setForm({ slug: s.slug, name: s.name, city: s.city || "", post_auth_redirect_url: s.post_auth_redirect_url || "", unifi_controller_url: s.unifi_controller_url || "", unifi_site_id: s.unifi_site_id || "", unifi_api_key_or_token: "" }); setShowForm(true); }} className="text-xs text-primary underline">Editar</button>
               </td>
             </tr>
           ))}
@@ -134,6 +135,9 @@ function LeadsTab({ token }: { token: string }) {
   const [leads, setLeads] = useState<any>({ data: [], total: 0 });
   const [storeFilter, setStoreFilter] = useState("");
   const [page, setPage] = useState(1);
+  const [xmlFrom, setXmlFrom] = useState("");
+  const [xmlTo, setXmlTo] = useState("");
+  const [stores, setStores] = useState<any[]>([]);
 
   const load = useCallback(async () => {
     const params = new URLSearchParams({ page: String(page), limit: "50" });
@@ -144,17 +148,49 @@ function LeadsTab({ token }: { token: string }) {
 
   useEffect(() => { load(); }, [load]);
 
+  // Load stores for XML export dropdown
+  useEffect(() => {
+    (async () => {
+      const data = await api.adminRequest("stores", token);
+      if (Array.isArray(data)) setStores(data);
+    })();
+  }, [token]);
+
   const exportCsv = () => {
     const params = new URLSearchParams({ format: "csv" });
     if (storeFilter) params.set("store_id", storeFilter);
     window.open(`https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal/admin/leads?${params}`, "_blank");
   };
 
+  const exportXml = (scope: "store" | "all", slug?: string) => {
+    const params = new URLSearchParams();
+    if (scope === "store" && slug) params.set("store_slug", slug);
+    else params.set("scope", "all");
+    if (xmlFrom) params.set("from", xmlFrom);
+    if (xmlTo) params.set("to", xmlTo);
+    window.open(`https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal/admin/leads-xml?${params}`, "_blank");
+  };
+
   return (
     <div>
-      <div className="mb-3 flex gap-2 items-center">
+      <div className="mb-3 flex gap-2 items-center flex-wrap">
         <input placeholder="Filtrar por store_id" value={storeFilter} onChange={(e) => setStoreFilter(e.target.value)} className="rounded border bg-background px-3 py-1 text-foreground text-sm" />
         <button onClick={exportCsv} className="rounded border px-3 py-1 text-sm text-muted-foreground">Exportar CSV</button>
+        <button onClick={() => exportXml("all")} className="rounded border px-3 py-1 text-sm text-muted-foreground">Exportar XML (todas)</button>
+      </div>
+      <div className="mb-3 flex gap-2 items-center flex-wrap">
+        <label className="text-xs text-muted-foreground">Filtro data XML:</label>
+        <input type="date" value={xmlFrom} onChange={(e) => setXmlFrom(e.target.value)} className="rounded border bg-background px-2 py-1 text-foreground text-xs" />
+        <span className="text-xs text-muted-foreground">até</span>
+        <input type="date" value={xmlTo} onChange={(e) => setXmlTo(e.target.value)} className="rounded border bg-background px-2 py-1 text-foreground text-xs" />
+        {stores.length > 0 && (
+          <select onChange={(e) => { if (e.target.value) exportXml("store", e.target.value); }} defaultValue="" className="rounded border bg-background px-2 py-1 text-foreground text-xs">
+            <option value="" disabled>XML por loja...</option>
+            {stores.map((s: any) => (
+              <option key={s.id} value={s.slug}>{s.name} ({s.slug})</option>
+            ))}
+          </select>
+        )}
       </div>
       <p className="mb-2 text-xs text-muted-foreground">Total: {leads.total || 0}</p>
       <table className="w-full text-sm">
