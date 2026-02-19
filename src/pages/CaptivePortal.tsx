@@ -82,8 +82,8 @@ export default function CaptivePortal() {
         session_id: sessionId || undefined,
         store_slug: storeSlug,
         name,
-        email: email || undefined,
-        phone: phone || undefined,
+        email,
+        phone,
         client_mac: clientMac,
         consent_version: bootstrapData.consent.version,
       });
@@ -203,31 +203,40 @@ export default function CaptivePortal() {
             />
           </div>
           <div>
-            <label className="mb-1 block text-sm font-semibold text-foreground">E-mail</label>
+            <label className="mb-1 block text-sm font-semibold text-foreground">E-mail *</label>
             <input
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
+              required
               className="w-full rounded-lg border-2 border-border bg-background px-3 py-2.5 text-foreground focus:border-secondary focus:ring-2 focus:ring-secondary/30 outline-none transition-all"
               placeholder="email@exemplo.com"
             />
           </div>
           <div>
-            <label className="mb-1 block text-sm font-semibold text-foreground">Telefone</label>
+            <label className="mb-1 block text-sm font-semibold text-foreground">Telefone *</label>
             <input
               type="tel"
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
+              required
               className="w-full rounded-lg border-2 border-border bg-background px-3 py-2.5 text-foreground focus:border-secondary focus:ring-2 focus:ring-secondary/30 outline-none transition-all"
               placeholder="(11) 99999-9999"
             />
           </div>
 
           {bootstrapData?.consent && (
-            <div className="rounded-lg border-2 border-border bg-muted p-3">
-              <p className="mb-2 text-xs text-muted-foreground whitespace-pre-line leading-relaxed">
-                {bootstrapData.consent.text}
-              </p>
+            <>
+              <details className="rounded-lg border-2 border-border bg-muted">
+                <summary className="cursor-pointer px-3 py-2.5 text-xs font-semibold text-muted-foreground select-none">
+                  Termos de Uso e Política de Privacidade (LGPD)
+                </summary>
+                <div className="px-3 pb-3">
+                  <p className="text-xs text-muted-foreground whitespace-pre-line leading-relaxed">
+                    {bootstrapData.consent.text}
+                  </p>
+                </div>
+              </details>
               <label className="flex items-start gap-2 text-sm cursor-pointer">
                 <input
                   type="checkbox"
@@ -235,24 +244,19 @@ export default function CaptivePortal() {
                   onChange={(e) => setConsented(e.target.checked)}
                   className="mt-0.5 accent-primary"
                 />
-                <span className="text-foreground font-medium">Li e aceito os termos acima</span>
+                <span className="text-foreground font-medium">Li e aceito os termos</span>
               </label>
-            </div>
+            </>
           )}
 
           <button
             type="submit"
-            disabled={submitting || !consented || (!email && !phone)}
+            disabled={submitting || !consented}
             className="w-full rounded-lg bg-secondary px-4 py-3 font-bold text-secondary-foreground hover:bg-brand-yellow-hover disabled:opacity-50 transition-colors text-base"
           >
             {submitting ? "Enviando..." : "Conectar ao Wi-Fi"}
           </button>
 
-          {!email && !phone && (
-            <p className="text-xs text-muted-foreground text-center">
-              Informe ao menos e-mail ou telefone
-            </p>
-          )}
         </form>
 
         <p className="mt-4 text-center text-[10px] text-muted-foreground">
