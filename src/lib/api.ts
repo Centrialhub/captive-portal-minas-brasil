@@ -2,13 +2,14 @@ const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const FUNCTION_BASE = `${SUPABASE_URL}/functions/v1/captive-portal`;
 
 export const api = {
-  async bootstrap(storeSlug: string) {
-    const res = await fetch(`${FUNCTION_BASE}/bootstrap?store=${encodeURIComponent(storeSlug)}`);
+  async bootstrap(storeSlug?: string) {
+    const params = storeSlug ? `?store=${encodeURIComponent(storeSlug)}` : "";
+    const res = await fetch(`${FUNCTION_BASE}/bootstrap${params}`);
     return res.json();
   },
 
   async startSession(data: {
-    store_slug: string;
+    store_slug?: string;
     client_mac?: string;
     client_ip?: string;
     ap_mac?: string;
@@ -25,7 +26,7 @@ export const api = {
 
   async submitLead(data: {
     session_id?: string;
-    store_slug: string;
+    store_slug?: string;
     name: string;
     email?: string;
     phone?: string;

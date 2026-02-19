@@ -4,7 +4,7 @@ import logoMinasBrasil from "@/assets/logo-minas-brasil.png";
 import brazilMap from "@/assets/brazil-map.png";
 
 interface BootstrapData {
-  store: { slug: string; name: string; city?: string };
+  store: { slug: string | null; name: string; city?: string | null };
   consent: { version: string; text: string } | null;
   required_fields: Record<string, unknown>;
 }
@@ -36,11 +36,6 @@ export default function CaptivePortal() {
   const [consented, setConsented] = useState(false);
 
   useEffect(() => {
-    if (!storeSlug) {
-      setLoading(false);
-      return;
-    }
-
     const params = new URLSearchParams(window.location.search);
     const clientMac = params.get("id") || params.get("mac") || undefined;
     const apMac = params.get("ap") || undefined;
@@ -49,7 +44,8 @@ export default function CaptivePortal() {
 
     (async () => {
       try {
-        const data = await api.bootstrap(storeSlug);
+        // Bootstrap works with or without store slug
+        const data = await api.bootstrap(storeSlug || "");
         if (data.error) {
           setError(data.error);
           setLoading(false);
@@ -57,8 +53,9 @@ export default function CaptivePortal() {
         }
         setBootstrapData(data);
 
+        // Start session (store_slug optional)
         const session = await api.startSession({
-          store_slug: storeSlug,
+          store_slug: storeSlug || undefined,
           client_mac: clientMac,
           ap_mac: apMac,
           ssid,
@@ -84,7 +81,7 @@ export default function CaptivePortal() {
     try {
       const result = await api.submitLead({
         session_id: sessionId || undefined,
-        store_slug: storeSlug,
+        store_slug: storeSlug || undefined,
         name,
         email,
         phone,
@@ -111,22 +108,6 @@ export default function CaptivePortal() {
     }
     setSubmitting(false);
   };
-
-  // No store identified
-  if (!storeSlug) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-primary p-4 relative overflow-hidden">
-        <img src={brazilMap} alt="" className="absolute right-0 bottom-0 h-64 opacity-10 pointer-events-none" />
-        <div className="relative z-10 w-full max-w-md rounded-xl bg-card p-8 text-center shadow-2xl">
-          <img src={logoMinasBrasil} alt="Drogaria Minas Brasil" className="mx-auto mb-4 h-14 object-contain" />
-          <h1 className="text-lg font-bold text-foreground mb-2">Loja não identificada</h1>
-          <p className="text-sm text-muted-foreground">
-            Conecte-se ao Wi-Fi da loja para continuar.
-          </p>
-        </div>
-      </div>
-    );
-  }
 
   if (loading) {
     return (
@@ -185,11 +166,9 @@ export default function CaptivePortal() {
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-primary p-4 relative overflow-hidden">
-      {/* Decorative brazil map */}
       <img src={brazilMap} alt="" className="absolute left-0 bottom-0 h-80 opacity-10 pointer-events-none select-none" />
 
       <div className="relative z-10 w-full max-w-md rounded-xl bg-card p-6 shadow-2xl">
-        {/* Header with logo */}
         <div className="text-center mb-5">
           <img src={logoMinasBrasil} alt="Drogaria Minas Brasil" className="mx-auto mb-2 h-16 object-contain" />
           <p className="text-xs font-semibold text-muted-foreground tracking-wide uppercase">vender barato é tradição</p>
@@ -200,8 +179,8 @@ export default function CaptivePortal() {
         </h1>
         <p className="mb-5 text-sm text-muted-foreground text-center">
           {bootstrapData?.store.city
-            ? `Loja ${bootstrapData.store.name} — ${bootstrapData.store.city}`
-            : `Loja ${bootstrapData?.store.name || ""}`}
+            ? `${bootstrapData.store.name} — ${bootstrapData.store.city}`
+            : bootstrapData?.store.name || "Wi-Fi Gratuito"}
         </p>
 
         {error && (
@@ -276,7 +255,6 @@ export default function CaptivePortal() {
           >
             {submitting ? "Enviando..." : "Conectar ao Wi-Fi"}
           </button>
-
         </form>
 
         <p className="mt-4 text-center text-[10px] text-muted-foreground">

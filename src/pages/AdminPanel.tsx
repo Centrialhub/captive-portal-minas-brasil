@@ -8,7 +8,7 @@ export default function AdminPanel() {
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [loginError, setLoginError] = useState("");
-  const [activeTab, setActiveTab] = useState<"stores" | "leads" | "consent" | "sessions">("stores");
+  const [activeTab, setActiveTab] = useState<"stores" | "leads" | "consent" | "sessions" | "clusters">("stores");
 
   useEffect(() => {
     supabase.auth.onAuthStateChange((_event, s) => {
@@ -50,6 +50,7 @@ export default function AdminPanel() {
     { key: "leads" as const, label: "Leads" },
     { key: "consent" as const, label: "Consentimento" },
     { key: "sessions" as const, label: "Sessões" },
+    { key: "clusters" as const, label: "Origens (IP)" },
   ];
 
   return (
@@ -100,6 +101,7 @@ export default function AdminPanel() {
             {activeTab === "leads" && <LeadsTab token={token} />}
             {activeTab === "consent" && <ConsentTab token={token} />}
             {activeTab === "sessions" && <SessionsTab token={token} />}
+            {activeTab === "clusters" && <ClustersTab token={token} />}
           </div>
         </main>
       </div>
@@ -379,6 +381,87 @@ function SessionsTab({ token }: { token: string }) {
             <td className="p-3 text-xs">{s.ssid || "-"}</td>
             <td className="p-3">{(s.stores as any)?.slug || "-"}</td>
             <td className="p-3 text-xs">{new Date(s.started_at).toLocaleString("pt-BR")}</td>
+          </tr>
+        ))}
+      </BrandedTable>
+      <div className="mt-3 flex gap-2">
+        <button onClick={() => setPage(Math.max(1, page - 1))} disabled={page <= 1} className="rounded-lg border-2 border-border px-3 py-1 text-xs font-medium disabled:opacity-50 hover:bg-muted transition-colors">Anterior</button>
+        <span className="text-xs text-muted-foreground py-1 font-medium">Página {page}</span>
+        <button onClick={() => setPage(page + 1)} className="rounded-lg border-2 border-border px-3 py-1 text-xs font-medium hover:bg-muted transition-colors">Próxima</button>
+      </div>
+    </div>
+  );
+}
+
+function ClustersTab({ token }: { token: string }) {
+  const [clusters, setClusters] = useState<any>({ data: [], total: 0 });
+  const [page, setPage] = useState(1);
+  const [cityFilter, setCityFilter] = useState("");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
+
+  const load = useCallback(async () => {
+    const params = new URLSearchParams({ page: String(page), limit: "50" });
+    if (cityFilter) params.set("city", cityFilter);
+    if (fromDate) params.set("from", fromDate);
+    if (toDate) params.set("to", toDate);
+    const data = await api.adminRequest(`clusters?${params}`, token);
+    setClusters(data);
+  }, [token, page, cityFilter, fromDate, toDate]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const downloadBlob = async (url: string, filename: string) => {
+    try {
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) { alert(`Erro: HTTP ${res.status}`); return; }
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(blobUrl);
+    } catch { alert("Erro de rede ao exportar."); }
+  };
+
+  const exportCsv = () => {
+    const params = new URLSearchParams({ format: "csv" });
+    if (cityFilter) params.set("city", cityFilter);
+    if (fromDate) params.set("from", fromDate);
+    if (toDate) params.set("to", toDate);
+    downloadBlob(
+      `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/captive-portal/admin/clusters?${params}`,
+      `clusters_${new Date().toISOString().slice(0, 10)}.csv`
+    );
+  };
+
+  return (
+    <div>
+      <div className="mb-4 flex gap-2 items-center flex-wrap">
+        <input
+          placeholder="Filtrar por cidade"
+          value={cityFilter}
+          onChange={(e) => { setCityFilter(e.target.value); setPage(1); }}
+          className="rounded-lg border-2 border-border bg-background px-3 py-1.5 text-foreground text-sm focus:border-secondary outline-none"
+        />
+        <input type="date" value={fromDate} onChange={(e) => { setFromDate(e.target.value); setPage(1); }} className="rounded-lg border-2 border-border bg-background px-2 py-1 text-foreground text-xs focus:border-secondary outline-none" />
+        <span className="text-xs text-muted-foreground">até</span>
+        <input type="date" value={toDate} onChange={(e) => { setToDate(e.target.value); setPage(1); }} className="rounded-lg border-2 border-border bg-background px-2 py-1 text-foreground text-xs focus:border-secondary outline-none" />
+        <button onClick={load} className="rounded-lg border-2 border-border px-3 py-1 text-xs font-medium hover:bg-muted transition-colors">Filtrar</button>
+        <button onClick={exportCsv} className="rounded-lg bg-foreground px-3 py-1.5 text-sm font-medium text-background hover:opacity-80 transition-opacity">Exportar CSV</button>
+      </div>
+      <p className="mb-3 text-xs text-muted-foreground font-medium">Total de IPs únicos: {clusters.total || 0}</p>
+      <BrandedTable headers={["IP Público", "Cidade", "UF", "País", "ISP/ASN", "Leads", "Última vez"]}>
+        {(clusters.data || []).map((c: any, i: number) => (
+          <tr key={c.id} className={i % 2 === 0 ? "bg-card" : "bg-muted/40"}>
+            <td className="p-3 font-mono text-xs">{c.public_ip}</td>
+            <td className="p-3 text-xs">{c.city || "-"}</td>
+            <td className="p-3 text-xs">{c.region || "-"}</td>
+            <td className="p-3 text-xs">{c.country || "-"}</td>
+            <td className="p-3 text-xs">{c.isp || c.asn || "-"}</td>
+            <td className="p-3 text-center font-bold text-sm">{c.lead_count}</td>
+            <td className="p-3 text-xs">{new Date(c.last_seen_at).toLocaleString("pt-BR")}</td>
           </tr>
         ))}
       </BrandedTable>
