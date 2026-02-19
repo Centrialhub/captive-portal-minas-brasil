@@ -1,100 +1,44 @@
 
-## Objetivo
-Corrigir a função `requireAdmin()` na Edge Function `captive-portal/index.ts` para usar `getUser(token)` em vez de `getClaims(token)`, melhorando a compatibilidade com diferentes versões do runtime Supabase Edge.
 
-## Contexto Atual
-A função `requireAdmin()` (linhas 564-590) implementa autenticação e autorização para endpoints administrativos:
-1. Extrai o token do header `Authorization: Bearer <token>`
-2. Valida o token usando `authClient.auth.getClaims(token)` 
-3. Obtém o `user_id` de `data.claims.sub`
-4. Consulta a tabela `user_roles` para verificar se o usuário tem role `admin`
-5. Retorna `{ db, userId }` se autorizado, ou erro 401/403 caso contrário
+## Ajustes no Formulário do Portal Captive
 
-## Problema
-`getClaims(token)` pode falhar ou comportar-se inconsistentemente em diferentes versões do supabase-js ou runtime do Deno no Supabase Edge. O método `getUser(token)` é mais estável e é o padrão recomendado.
+### Mudancas planejadas no arquivo `src/pages/CaptivePortal.tsx`:
 
-## Implementação Planejada
+### 1. Todos os campos obrigatorios
+- **E-mail**: adicionar `required` e label com asterisco "E-mail *"
+- **Telefone**: adicionar `required` e label com asterisco "Telefone *"
+- **Nome**: ja esta obrigatorio, manter como esta
+- Remover a validacao `(!email && !phone)` do botao `disabled` -- agora todos sao required pelo HTML
+- Remover a mensagem "Informe ao menos e-mail ou telefone"
 
-### 1. Substituição em `requireAdmin()` (linhas 564-590)
-- **Remover**: `const { data, error } = await authClient.auth.getClaims(token);`
-- **Remover**: Extração de `userId` via `data.claims.sub`
-- **Adicionar**: `const { data: userData, error: userErr } = await authClient.auth.getUser(token);`
-- **Adicionar**: Validação `if (userErr || !userData?.user) return errorResponse("Unauthorized", 401);`
-- **Adicionar**: Extração de `userId = userData.user.id`
-- **Adicionar**: `console.warn()` para erros de autenticação (sem imprimir o token)
+### 2. Texto LGPD em dropdown colapsavel
+- Substituir o bloco que mostra o texto do consentimento (linhas 226-241) por um elemento colapsavel usando `<details>/<summary>` nativo do HTML (sem precisar instalar nada)
+- O summary mostrara algo como "Termos de Uso e Politica de Privacidade (LGPD)" com um icone de seta
+- O texto completo ficara escondido por padrao, e o usuario clica para expandir se quiser ler
+- O checkbox "Li e aceito os termos" ficara **fora** do collapsible, sempre visivel
+- O botao "Conectar ao Wi-Fi" continuara logo abaixo, visivel sem scroll
 
-**Fluxo após mudança:**
+### 3. Layout final (de cima para baixo, sem scroll necessario para o essencial)
 ```
-1. Extrair token do header Authorization
-2. Chamar authClient.auth.getUser(token)
-3. Se erro ou sem usuário → 401
-4. Extrair userId de userData.user.id
-5. Consultar user_roles com userId
-6. Se role 'admin' não existe → 403
-7. Se tudo OK → retornar { db, userId }
+[Logo]
+[Slogan]
+[Titulo WiFi]
+[Nome *]
+[E-mail *]
+[Telefone *]
+[> Termos de Uso e LGPD (clique para ler)]  <-- colapsado
+[x] Li e aceito os termos
+[Conectar ao Wi-Fi]
+[Copyright]
 ```
 
-### 2. Logging de Erros
-- Adicionar `console.warn("Auth error:", error.message)` quando `getUser()` falhar
-- **Nunca** imprimir o token ou dados sensíveis no log
+### Detalhes tecnicos
 
-### 3. Garantias de Compatibilidade
-- Todas as 6 rotas admin que chamam `requireAdmin()` continuarão funcionando identicamente:
-  - `handleAdminStores` (linhas 592+)
-  - `handleAdminLeads` (linhas 675+)
-  - `handleAdminLeadsXml` (linhas 869+)
-  - `handleAdminConsent` (linhas 736+)
-  - `handleAdminSessions` (linhas 775+)
-  - `handleTestAuthorize` (linhas 800+)
-- Código que chama `requireAdmin()` não precisa mudar (validação e retorno de erro/sucesso idênticos)
-- Mensagens HTTP (401, 403) mantêm-se as mesmas
+**Arquivo**: `src/pages/CaptivePortal.tsx`
 
-### 4. Mudanças de Código
-**Arquivo**: `supabase/functions/captive-portal/index.ts`
-
-**Linhas 564-590** (função `requireAdmin`):
-```typescript
-async function requireAdmin(req: Request): Promise<{ db: ReturnType<typeof supabaseAdmin>; userId: string } | Response> {
-  const authHeader = req.headers.get("Authorization");
-  if (!authHeader?.startsWith("Bearer ")) {
-    return errorResponse("Unauthorized", 401);
-  }
-
-  const authClient = supabaseAuth(authHeader);
-  const token = authHeader.replace("Bearer ", "");
-  
-  // Usar getUser em vez de getClaims para melhor compatibilidade
-  const { data: userData, error: userErr } = await authClient.auth.getUser(token);
-  if (userErr || !userData?.user) {
-    if (userErr) console.warn("Auth error:", userErr.message);
-    return errorResponse("Unauthorized", 401);
-  }
-
-  const userId = userData.user.id;
-  const db = supabaseAdmin();
-
-  const { data: roleData } = await db
-    .from("user_roles")
-    .select("role")
-    .eq("user_id", userId)
-    .eq("role", "admin")
-    .maybeSingle();
-
-  if (!roleData) return errorResponse("Forbidden: admin role required", 403);
-
-  return { db, userId };
-}
-```
-
-## Validação Esperada
-- ✓ Admin consegue fazer login em `/admin`
-- ✓ Endpoints `/admin/stores`, `/admin/leads`, `/admin/leads-xml`, `/admin/consent`, `/admin/sessions` funcionam com autenticação
-- ✓ Usuários sem role admin recebem 403 Forbidden
-- ✓ Requests sem Authorization header recebem 401 Unauthorized
-- ✓ Nenhum erro de runtime relacionado a `getClaims()`
-
-## Escopo
-- **Apenas** mudança interna em `requireAdmin()`
-- Sem alteração de UI, rotas, APIs ou respostas
-- Sem alteração de segurança (validações mantidas)
-- Sem mudança de mensagens de erro visíveis ao cliente
+- Linhas 205-224: Adicionar `required` nos inputs de email e telefone, atualizar labels para incluir "*"
+- Linhas 226-241: Substituir bloco de consentimento por `<details>` colapsavel + checkbox separado fora dele
+- Linha 245: Remover `(!email && !phone)` da condicao `disabled` do botao
+- Linhas 251-255: Remover bloco da mensagem "Informe ao menos e-mail ou telefone"
+- Linhas 84-86: No `handleSubmit`, enviar email e phone como valores diretos (nao mais condicionais com `|| undefined`) ja que agora sao obrigatorios
+- Estilizar o `<details>` com classes Tailwind para manter a identidade visual (borda, fundo muted, texto pequeno)
