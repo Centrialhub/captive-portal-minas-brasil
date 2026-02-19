@@ -56,7 +56,7 @@ export type Database = {
           ssid: string | null
           started_at: string
           status: Database["public"]["Enums"]["session_status"]
-          store_id: string
+          store_id: string | null
           submitted_at: string | null
           updated_at: string
           user_agent: string | null
@@ -72,7 +72,7 @@ export type Database = {
           ssid?: string | null
           started_at?: string
           status?: Database["public"]["Enums"]["session_status"]
-          store_id: string
+          store_id?: string | null
           submitted_at?: string | null
           updated_at?: string
           user_agent?: string | null
@@ -88,7 +88,7 @@ export type Database = {
           ssid?: string | null
           started_at?: string
           status?: Database["public"]["Enums"]["session_status"]
-          store_id?: string
+          store_id?: string | null
           submitted_at?: string | null
           updated_at?: string
           user_agent?: string | null
@@ -147,10 +147,17 @@ export type Database = {
           email: string | null
           id: string
           name: string
+          origin_asn: string | null
+          origin_city: string | null
+          origin_country: string | null
+          origin_ip: string | null
+          origin_isp: string | null
+          origin_region: string | null
+          origin_source: string
           phone: string | null
           session_id: string | null
           source: string
-          store_id: string
+          store_id: string | null
           updated_at: string
         }
         Insert: {
@@ -162,10 +169,17 @@ export type Database = {
           email?: string | null
           id?: string
           name: string
+          origin_asn?: string | null
+          origin_city?: string | null
+          origin_country?: string | null
+          origin_ip?: string | null
+          origin_isp?: string | null
+          origin_region?: string | null
+          origin_source?: string
           phone?: string | null
           session_id?: string | null
           source?: string
-          store_id: string
+          store_id?: string | null
           updated_at?: string
         }
         Update: {
@@ -177,10 +191,17 @@ export type Database = {
           email?: string | null
           id?: string
           name?: string
+          origin_asn?: string | null
+          origin_city?: string | null
+          origin_country?: string | null
+          origin_ip?: string | null
+          origin_isp?: string | null
+          origin_region?: string | null
+          origin_source?: string
           phone?: string | null
           session_id?: string | null
           source?: string
-          store_id?: string
+          store_id?: string | null
           updated_at?: string
         }
         Relationships: [
@@ -206,6 +227,57 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      origin_ip_clusters: {
+        Row: {
+          asn: string | null
+          city: string | null
+          country: string | null
+          first_seen_at: string
+          geoip_confidence: number | null
+          geoip_provider: string | null
+          id: string
+          isp: string | null
+          last_geoip_at: string | null
+          last_seen_at: string
+          lead_count: number
+          notes: string | null
+          public_ip: string
+          region: string | null
+        }
+        Insert: {
+          asn?: string | null
+          city?: string | null
+          country?: string | null
+          first_seen_at?: string
+          geoip_confidence?: number | null
+          geoip_provider?: string | null
+          id?: string
+          isp?: string | null
+          last_geoip_at?: string | null
+          last_seen_at?: string
+          lead_count?: number
+          notes?: string | null
+          public_ip: string
+          region?: string | null
+        }
+        Update: {
+          asn?: string | null
+          city?: string | null
+          country?: string | null
+          first_seen_at?: string
+          geoip_confidence?: number | null
+          geoip_provider?: string | null
+          id?: string
+          isp?: string | null
+          last_geoip_at?: string | null
+          last_seen_at?: string
+          lead_count?: number
+          notes?: string | null
+          public_ip?: string
+          region?: string | null
+        }
+        Relationships: []
       }
       stores: {
         Row: {
