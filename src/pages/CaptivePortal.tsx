@@ -9,8 +9,18 @@ interface BootstrapData {
   required_fields: Record<string, unknown>;
 }
 
+function getStoreSlug(): string {
+  const params = new URLSearchParams(window.location.search);
+  const fromQuery = params.get("store") ?? params.get("s") ?? "";
+  if (fromQuery) {
+    sessionStorage.setItem("store_slug", fromQuery);
+    return fromQuery;
+  }
+  return sessionStorage.getItem("store_slug") ?? "";
+}
+
 export default function CaptivePortal() {
-  const [storeSlug, setStoreSlug] = useState("");
+  const [storeSlug] = useState(() => getStoreSlug());
   const [bootstrapData, setBootstrapData] = useState<BootstrapData | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -26,26 +36,20 @@ export default function CaptivePortal() {
   const [consented, setConsented] = useState(false);
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const pathParts = window.location.pathname.split("/");
-    const sIdx = pathParts.indexOf("s");
-    const slug = sIdx >= 0 ? pathParts[sIdx + 1] : params.get("store") || "";
-    setStoreSlug(slug);
-
-    if (!slug) {
-      setError("Loja não identificada na URL.");
+    if (!storeSlug) {
       setLoading(false);
       return;
     }
 
+    const params = new URLSearchParams(window.location.search);
     const clientMac = params.get("id") || params.get("mac") || undefined;
     const apMac = params.get("ap") || undefined;
     const ssid = params.get("ssid") || undefined;
-    const redirectUrl = params.get("url") || undefined;
+    const redirectParam = params.get("url") || undefined;
 
     (async () => {
       try {
-        const data = await api.bootstrap(slug);
+        const data = await api.bootstrap(storeSlug);
         if (data.error) {
           setError(data.error);
           setLoading(false);
@@ -54,11 +58,11 @@ export default function CaptivePortal() {
         setBootstrapData(data);
 
         const session = await api.startSession({
-          store_slug: slug,
+          store_slug: storeSlug,
           client_mac: clientMac,
           ap_mac: apMac,
           ssid,
-          redirect_url: redirectUrl,
+          redirect_url: redirectParam,
         });
         if (session.session_id) setSessionId(session.session_id);
       } catch {
@@ -66,7 +70,7 @@ export default function CaptivePortal() {
       }
       setLoading(false);
     })();
-  }, []);
+  }, [storeSlug]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -107,6 +111,22 @@ export default function CaptivePortal() {
     }
     setSubmitting(false);
   };
+
+  // No store identified
+  if (!storeSlug) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-primary p-4 relative overflow-hidden">
+        <img src={brazilMap} alt="" className="absolute right-0 bottom-0 h-64 opacity-10 pointer-events-none" />
+        <div className="relative z-10 w-full max-w-md rounded-xl bg-card p-8 text-center shadow-2xl">
+          <img src={logoMinasBrasil} alt="Drogaria Minas Brasil" className="mx-auto mb-4 h-14 object-contain" />
+          <h1 className="text-lg font-bold text-foreground mb-2">Loja não identificada</h1>
+          <p className="text-sm text-muted-foreground">
+            Conecte-se ao Wi-Fi da loja para continuar.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   if (loading) {
     return (
