@@ -672,6 +672,27 @@ async function handleAdminStores(req: Request): Promise<Response> {
     return jsonResponse(data);
   }
 
+  if (req.method === "DELETE") {
+    const body = await safeParseJson(req);
+    if (!body || !isValidUUID(body.id)) return errorResponse("Missing or invalid store id");
+
+    const { error } = await db
+      .from("stores")
+      .delete()
+      .eq("id", body.id as string);
+    if (error) return errorResponse(error.message, 500);
+
+    await db.from("audit_logs").insert({
+      store_id: body.id as string,
+      entity: "store",
+      entity_id: body.id as string,
+      action: "delete",
+      meta: { deleted_by: auth.userId },
+    });
+
+    return jsonResponse({ ok: true });
+  }
+
   return errorResponse("Method not allowed", 405);
 }
 
