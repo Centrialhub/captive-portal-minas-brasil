@@ -152,6 +152,12 @@ function StoresTab({ token }: { token: string }) {
     load();
   };
 
+  const handleDelete = async (id: string, name: string) => {
+    if (!window.confirm(`Tem certeza que deseja excluir a loja "${name}"? Esta ação não pode ser desfeita.`)) return;
+    await api.adminRequest("stores", token, { method: "DELETE", body: JSON.stringify({ id }) });
+    load();
+  };
+
   return (
     <div>
       <button onClick={() => { setShowForm(!showForm); setEditingId(null); setForm({ slug: "", name: "", city: "", post_auth_redirect_url: "", unifi_controller_url: "", unifi_site_id: "", unifi_api_key_or_token: "" }); }} className="mb-4 rounded-lg bg-secondary px-4 py-2 text-sm font-bold text-secondary-foreground hover:bg-brand-yellow-hover transition-colors">
@@ -179,8 +185,9 @@ function StoresTab({ token }: { token: string }) {
             <td className="p-3">{s.city || "-"}</td>
             <td className="p-3">{s.is_active ? "✅" : "❌"}</td>
             <td className="p-3">{s.unifi_controller_url ? "✅" : "—"}</td>
-            <td className="p-3">
+            <td className="p-3 flex gap-2">
               <button onClick={() => { setEditingId(s.id); setForm({ slug: s.slug, name: s.name, city: s.city || "", post_auth_redirect_url: s.post_auth_redirect_url || "", unifi_controller_url: s.unifi_controller_url || "", unifi_site_id: s.unifi_site_id || "", unifi_api_key_or_token: "" }); setShowForm(true); }} className="text-xs font-medium text-primary hover:underline">Editar</button>
+              <button onClick={() => handleDelete(s.id, s.name)} className="text-xs font-medium text-destructive hover:underline">Excluir</button>
             </td>
           </tr>
         ))}
