@@ -1153,7 +1153,7 @@ async function handleAdminLeads(req: Request, url: URL): Promise<Response> {
 
   let query = db
     .from("leads")
-    .select("id, store_id, session_id, name, email, phone, client_mac, created_at, consented_at, consent_version, source, origin_ip, origin_city, origin_region, stores(slug, name)", { count: "exact" })
+    .select("id, store_id, session_id, name, email, phone, cpf, client_mac, created_at, consented_at, consent_version, source, origin_ip, origin_city, origin_region, stores(slug, name)", { count: "exact" })
     .order("created_at", { ascending: false });
 
   if (storeId && isValidUUID(storeId)) query = query.eq("store_id", storeId);
@@ -1165,14 +1165,14 @@ async function handleAdminLeads(req: Request, url: URL): Promise<Response> {
     const { data, error } = await query;
     if (error) return errorResponse(error.message, 500);
 
-    const headers = ["id", "store_slug", "name", "email", "phone", "client_mac", "origin_ip", "origin_city", "origin_region", "created_at", "consent_version"];
+    const headers = ["id", "store_slug", "name", "cpf", "email", "phone", "client_mac", "origin_ip", "origin_city", "origin_region", "created_at", "consent_version"];
     const csvRows = [headers.join(",")];
     for (const lead of data || []) {
       const storeInfo = lead.stores as unknown as { slug: string; name: string } | null;
       csvRows.push([
         lead.id, storeInfo?.slug || "",
         `"${(lead.name || "").replace(/"/g, '""')}"`,
-        lead.email || "", lead.phone || "", lead.client_mac || "",
+        (lead as any).cpf || "", lead.email || "", lead.phone || "", lead.client_mac || "",
         (lead as any).origin_ip || "", (lead as any).origin_city || "", (lead as any).origin_region || "",
         lead.created_at, lead.consent_version,
       ].join(","));
@@ -1390,7 +1390,7 @@ async function handleAdminLeadsXml(req: Request, url: URL): Promise<Response> {
   const to = url.searchParams.get("to");
 
   let query = db.from("leads")
-    .select("id, name, email, phone, client_mac, created_at, consented_at, consent_version, origin_ip, origin_city, origin_region, stores(slug, name)")
+    .select("id, name, cpf, email, phone, client_mac, created_at, consented_at, consent_version, origin_ip, origin_city, origin_region, stores(slug, name)")
     .order("created_at", { ascending: false }).limit(10000);
 
   let resolvedStoreId: string | null = null;
@@ -1423,6 +1423,7 @@ async function handleAdminLeadsXml(req: Request, url: URL): Promise<Response> {
     xml += `    <store_slug>${escapeXml(storeInfo?.slug || "")}</store_slug>\n`;
     xml += `    <store_name>${escapeXml(storeInfo?.name || "")}</store_name>\n`;
     xml += `    <name>${escapeXml(lead.name || "")}</name>\n`;
+    if ((lead as any).cpf) xml += `    <cpf>${escapeXml((lead as any).cpf)}</cpf>\n`;
     if (lead.email) xml += `    <email>${escapeXml(lead.email)}</email>\n`;
     if (lead.phone) xml += `    <phone>${escapeXml(lead.phone)}</phone>\n`;
     if (lead.client_mac) xml += `    <client_mac>${escapeXml(lead.client_mac)}</client_mac>\n`;
