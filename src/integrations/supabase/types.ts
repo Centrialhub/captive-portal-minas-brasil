@@ -110,6 +110,83 @@ export type Database = {
           },
         ]
       }
+      captive_verifications: {
+        Row: {
+          attempts: number
+          code_hash: string
+          created_at: string
+          expires_at: string
+          id: string
+          lead_id: string | null
+          phone: string
+          resends: number
+          session_id: string
+          status: string
+          store_id: string | null
+          updated_at: string
+          verified_at: string | null
+        }
+        Insert: {
+          attempts?: number
+          code_hash: string
+          created_at?: string
+          expires_at: string
+          id?: string
+          lead_id?: string | null
+          phone: string
+          resends?: number
+          session_id: string
+          status?: string
+          store_id?: string | null
+          updated_at?: string
+          verified_at?: string | null
+        }
+        Update: {
+          attempts?: number
+          code_hash?: string
+          created_at?: string
+          expires_at?: string
+          id?: string
+          lead_id?: string | null
+          phone?: string
+          resends?: number
+          session_id?: string
+          status?: string
+          store_id?: string | null
+          updated_at?: string
+          verified_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "captive_verifications_lead_id_fkey"
+            columns: ["lead_id"]
+            isOneToOne: false
+            referencedRelation: "leads"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "captive_verifications_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "captive_sessions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "captive_verifications_store_id_fkey"
+            columns: ["store_id"]
+            isOneToOne: false
+            referencedRelation: "stores"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "captive_verifications_store_id_fkey"
+            columns: ["store_id"]
+            isOneToOne: false
+            referencedRelation: "stores_public"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       consent_versions: {
         Row: {
           created_at: string
