@@ -214,6 +214,30 @@ export type Database = {
         }
         Relationships: []
       }
+      global_settings: {
+        Row: {
+          id: number
+          updated_at: string
+          whatsapp_webhook_enabled: boolean
+          whatsapp_webhook_secret: string | null
+          whatsapp_webhook_url: string | null
+        }
+        Insert: {
+          id?: number
+          updated_at?: string
+          whatsapp_webhook_enabled?: boolean
+          whatsapp_webhook_secret?: string | null
+          whatsapp_webhook_url?: string | null
+        }
+        Update: {
+          id?: number
+          updated_at?: string
+          whatsapp_webhook_enabled?: boolean
+          whatsapp_webhook_secret?: string | null
+          whatsapp_webhook_url?: string | null
+        }
+        Relationships: []
+      }
       leads: {
         Row: {
           client_mac: string | null

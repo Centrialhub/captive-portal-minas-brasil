@@ -10,18 +10,7 @@ interface BootstrapData {
   required_fields: Record<string, unknown>;
 }
 
-function getStoreSlug(): string {
-  const params = new URLSearchParams(window.location.search);
-  const fromQuery = params.get("store") ?? params.get("s") ?? "";
-  if (fromQuery) {
-    sessionStorage.setItem("store_slug", fromQuery);
-    return fromQuery;
-  }
-  return sessionStorage.getItem("store_slug") ?? "";
-}
-
 export default function CaptivePortal() {
-  const [storeSlug] = useState(() => getStoreSlug());
   const [bootstrapData, setBootstrapData] = useState<BootstrapData | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -53,12 +42,11 @@ export default function CaptivePortal() {
 
     (async () => {
       try {
-        const data = await api.bootstrap(storeSlug || "");
+        const data = await api.bootstrap();
         if (data.error) { setError(data.error); setLoading(false); return; }
         setBootstrapData(data);
 
         const session = await api.startSession({
-          store_slug: storeSlug || undefined,
           client_mac: clientMac,
           ap_mac: apMac,
           ssid,
@@ -70,7 +58,7 @@ export default function CaptivePortal() {
       }
       setLoading(false);
     })();
-  }, [storeSlug]);
+  }, []);
 
   // Cleanup cooldown interval
   useEffect(() => {
@@ -100,7 +88,6 @@ export default function CaptivePortal() {
     try {
       const result = await api.submitLead({
         session_id: sessionId || undefined,
-        store_slug: storeSlug || undefined,
         name,
         email,
         phone,
