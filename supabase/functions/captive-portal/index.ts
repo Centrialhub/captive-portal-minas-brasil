@@ -758,12 +758,14 @@ async function handleRequestCode(req: Request): Promise<Response> {
   const rlPhone = await checkRateLimitDb(db, `reqcode:phone:${phone}`, 60, 3, 120);
   if (!rlPhone.allowed) return errorResponse("Muitas tentativas para este número.", 429);
 
-  // Find existing pending verification
+  // Find existing pending or expired verification
   const { data: existing } = await db
     .from("captive_verifications")
-    .select("id, resends, created_at, lead_id, store_id")
+    .select("id, resends, created_at, lead_id, store_id, status")
     .eq("session_id", sessionId as string)
-    .eq("status", "pending")
+    .in("status", ["pending", "expired"])
+    .order("created_at", { ascending: false })
+    .limit(1)
     .maybeSingle();
 
   if (!existing) return errorResponse("Nenhuma verificação pendente para esta sessão.", 404);
@@ -785,6 +787,7 @@ async function handleRequestCode(req: Request): Promise<Response> {
     expires_at: expiresAt,
     resends: existing.resends + 1,
     attempts: 0,
+    status: "pending",
   }).eq("id", existing.id);
 
   // Detect store name for the message
