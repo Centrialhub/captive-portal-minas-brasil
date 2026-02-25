@@ -41,6 +41,24 @@ export const api = {
     return res.json();
   },
 
+  async requestCode(data: { session_id: string; phone: string }) {
+    const res = await fetch(`${FUNCTION_BASE}/request-code`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    return res.json();
+  },
+
+  async verifyCode(data: { session_id: string; code: string }) {
+    const res = await fetch(`${FUNCTION_BASE}/verify-code`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    return res.json();
+  },
+
   // Admin endpoints
   async adminRequest(path: string, token: string, options?: RequestInit) {
     const res = await fetch(`${FUNCTION_BASE}/admin/${path}`, {

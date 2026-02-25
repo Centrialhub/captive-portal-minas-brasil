@@ -356,6 +356,69 @@ export type Database = {
         }
         Relationships: []
       }
+      rate_limits: {
+        Row: {
+          blocked_until: string | null
+          count: number
+          key: string
+          updated_at: string
+          window_start: string
+        }
+        Insert: {
+          blocked_until?: string | null
+          count?: number
+          key: string
+          updated_at?: string
+          window_start: string
+        }
+        Update: {
+          blocked_until?: string | null
+          count?: number
+          key?: string
+          updated_at?: string
+          window_start?: string
+        }
+        Relationships: []
+      }
+      store_public_ips: {
+        Row: {
+          created_at: string
+          id: string
+          is_active: boolean
+          public_ip: unknown
+          store_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          public_ip: unknown
+          store_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          public_ip?: unknown
+          store_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "store_public_ips_store_id_fkey"
+            columns: ["store_id"]
+            isOneToOne: false
+            referencedRelation: "stores"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "store_public_ips_store_id_fkey"
+            columns: ["store_id"]
+            isOneToOne: false
+            referencedRelation: "stores_public"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       stores: {
         Row: {
           city: string | null
@@ -452,6 +515,15 @@ export type Database = {
         Returns: boolean
       }
       normalize_mac: { Args: { mac: string }; Returns: string }
+      rate_limit_hit: {
+        Args: {
+          p_block_seconds?: number
+          p_key: string
+          p_max_hits: number
+          p_window_seconds: number
+        }
+        Returns: Json
+      }
     }
     Enums: {
       app_role: "admin"

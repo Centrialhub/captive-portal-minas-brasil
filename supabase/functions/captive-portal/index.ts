@@ -27,6 +27,15 @@ const GEOIP_TIMEOUT_MS = parseInt(Deno.env.get("GEOIP_TIMEOUT_MS") || "1500");
 const GEOIP_CACHE_TTL_HOURS = parseInt(Deno.env.get("GEOIP_CACHE_TTL_HOURS") || "168");
 const GEOIP_PROVIDER = Deno.env.get("GEOIP_PROVIDER") || "ipapi";
 
+// OTP config
+const OTP_PEPPER = Deno.env.get("OTP_PEPPER") || "default-pepper-change-me";
+const OTP_EXPIRES_SECONDS = parseInt(Deno.env.get("OTP_EXPIRES_SECONDS") || "300");
+const WHATSAPP_CODE_WEBHOOK_URL = Deno.env.get("WHATSAPP_CODE_WEBHOOK_URL") || "";
+const WHATSAPP_CODE_WEBHOOK_SECRET = Deno.env.get("WHATSAPP_CODE_WEBHOOK_SECRET") || "";
+const OTP_MAX_ATTEMPTS = 5;
+const OTP_MAX_RESENDS = 3;
+const OTP_RESEND_COOLDOWN_SEC = 60;
+
 // ========== Helpers ==========
 function supabaseAdmin() {
   return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
@@ -101,54 +110,97 @@ function getPublicIp(req: Request): string | null {
 }
 
 function isValidIp(ip: string): boolean {
-  // IPv4
   if (/^(\d{1,3}\.){3}\d{1,3}$/.test(ip)) {
     return ip.split(".").every((part) => parseInt(part) <= 255);
   }
-  // IPv6 (basic check)
   if (/^[0-9a-fA-F:]+$/.test(ip) && ip.includes(":")) return true;
   return false;
-}
-
-// Legacy helper (kept for compat)
-function getClientIp(req: Request): string {
-  return getPublicIp(req) || "unknown";
 }
 
 function safeParseJson(req: Request): Promise<Record<string, unknown> | null> {
   return req.json().catch(() => null);
 }
 
-// ========== Rate Limiting (in-memory, per instance) ==========
-const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
-const RATE_LIMIT_WINDOW_MS = 60_000;
-const RATE_LIMIT_MAX_SUBMIT = 5;
-const RATE_LIMIT_MAX_START = 20;
+// ========== Detect Store from IP ==========
+async function detectStoreFromRequest(
+  db: ReturnType<typeof supabaseAdmin>,
+  req: Request
+): Promise<{ store_id: string | null; store_slug: string; redirect_url: string | null; store_name: string; store_city: string | null }> {
+  const ip = getPublicIp(req);
 
-function checkRateLimit(key: string, max: number): boolean {
-  const now = Date.now();
-  const entry = rateLimitMap.get(key);
-  if (!entry || now > entry.resetAt) {
-    rateLimitMap.set(key, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
-    return false;
+  if (ip) {
+    const { data: ipMapping } = await db
+      .from("store_public_ips")
+      .select("store_id")
+      .eq("public_ip", ip)
+      .eq("is_active", true)
+      .maybeSingle();
+
+    if (ipMapping?.store_id) {
+      const { data: store } = await db
+        .from("stores")
+        .select("id, slug, name, city, is_active, post_auth_redirect_url")
+        .eq("id", ipMapping.store_id)
+        .maybeSingle();
+
+      if (store?.is_active) {
+        return {
+          store_id: store.id,
+          store_slug: store.slug,
+          redirect_url: store.post_auth_redirect_url || null,
+          store_name: store.name,
+          store_city: store.city,
+        };
+      }
+    }
   }
-  entry.count++;
-  if (entry.count > max) return true;
-  return false;
+
+  return {
+    store_id: null,
+    store_slug: "geral",
+    redirect_url: null,
+    store_name: "Wi-Fi Drogaria Minas Brasil",
+    store_city: null,
+  };
 }
 
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, entry] of rateLimitMap) {
-    if (now > entry.resetAt) rateLimitMap.delete(key);
-  }
-}, 120_000);
+// ========== Distributed Rate Limiting (Postgres) ==========
+async function checkRateLimitDb(
+  db: ReturnType<typeof supabaseAdmin>,
+  key: string,
+  windowSeconds: number,
+  maxHits: number,
+  blockSeconds = 0
+): Promise<{ allowed: boolean; remaining: number; blocked_until: string | null }> {
+  try {
+    const { data, error } = await db.rpc("rate_limit_hit", {
+      p_key: key,
+      p_window_seconds: windowSeconds,
+      p_max_hits: maxHits,
+      p_block_seconds: blockSeconds,
+    });
 
-// ========== Dedup Map ==========
+    if (error) {
+      console.warn("Rate limit RPC error:", error.message);
+      return { allowed: true, remaining: maxHits, blocked_until: null }; // fail open
+    }
+
+    const result = typeof data === "string" ? JSON.parse(data) : data;
+    return {
+      allowed: !!result.allowed,
+      remaining: result.remaining ?? 0,
+      blocked_until: result.blocked_until || null,
+    };
+  } catch (e) {
+    console.warn("Rate limit check failed:", (e as Error).message);
+    return { allowed: true, remaining: maxHits, blocked_until: null };
+  }
+}
+
+// ========== Dedup Map (in-memory) ==========
 const dedupMap = new Map<string, number>();
 
-function isDuplicate(mac: string, storeId: string): boolean {
-  const key = `${storeId}:${mac}`;
+function isDuplicate(key: string): boolean {
   const now = Date.now();
   const last = dedupMap.get(key);
   if (last && now - last < DEDUP_WINDOW_SEC * 1000) return true;
@@ -181,7 +233,6 @@ async function fetchGeoIp(ip: string): Promise<GeoIpData | null> {
     clearTimeout(timeout);
     if (!res.ok) return null;
     const data = await res.json();
-    // ipapi.co response fields
     return {
       city: data.city || null,
       region: data.region || data.region_name || null,
@@ -199,7 +250,6 @@ async function enrichGeoIp(
   db: ReturnType<typeof supabaseAdmin>,
   ip: string
 ): Promise<GeoIpData & { source: string }> {
-  // Check cache
   const { data: cached } = await db
     .from("origin_ip_clusters")
     .select("city, region, country, isp, asn, last_geoip_at")
@@ -210,29 +260,19 @@ async function enrichGeoIp(
     const ageHours = (Date.now() - new Date(cached.last_geoip_at).getTime()) / 3_600_000;
     if (ageHours < GEOIP_CACHE_TTL_HOURS) {
       return {
-        city: cached.city,
-        region: cached.region,
-        country: cached.country,
-        isp: cached.isp,
-        asn: cached.asn,
-        source: "cache",
+        city: cached.city, region: cached.region, country: cached.country,
+        isp: cached.isp, asn: cached.asn, source: "cache",
       };
     }
   }
 
-  // Fetch from provider
   const geoData = await fetchGeoIp(ip);
 
   if (geoData) {
-    // Upsert cluster with GeoIP data
     await db.from("origin_ip_clusters").upsert(
       {
-        public_ip: ip,
-        city: geoData.city,
-        region: geoData.region,
-        country: geoData.country,
-        isp: geoData.isp,
-        asn: geoData.asn,
+        public_ip: ip, city: geoData.city, region: geoData.region,
+        country: geoData.country, isp: geoData.isp, asn: geoData.asn,
         last_seen_at: new Date().toISOString(),
         last_geoip_at: new Date().toISOString(),
         geoip_provider: GEOIP_PROVIDER,
@@ -242,22 +282,16 @@ async function enrichGeoIp(
     return { ...geoData, source: "geoip" };
   }
 
-  // GeoIP failed — still upsert cluster (no geo data) to track IP
   await db.from("origin_ip_clusters").upsert(
-    {
-      public_ip: ip,
-      last_seen_at: new Date().toISOString(),
-    },
+    { public_ip: ip, last_seen_at: new Date().toISOString() },
     { onConflict: "public_ip", ignoreDuplicates: false }
   );
 
   return { city: null, region: null, country: null, isp: null, asn: null, source: "none" };
 }
 
-/** Increment lead_count on cluster */
 async function incrementClusterLeadCount(db: ReturnType<typeof supabaseAdmin>, ip: string) {
   try {
-    // We use a raw RPC-free approach: fetch current and update
     const { data } = await db
       .from("origin_ip_clusters")
       .select("lead_count")
@@ -274,85 +308,83 @@ async function incrementClusterLeadCount(db: ReturnType<typeof supabaseAdmin>, i
   }
 }
 
+// ========== OTP Helpers ==========
+function generateOtpCode(): string {
+  const arr = new Uint32Array(1);
+  crypto.getRandomValues(arr);
+  return String(arr[0] % 1000000).padStart(6, "0");
+}
+
+async function hashOtp(code: string): Promise<string> {
+  const data = new TextEncoder().encode(code + OTP_PEPPER);
+  const hash = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(hash)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function sendWhatsAppCode(phone: string, code: string, storeName: string): Promise<boolean> {
+  if (!WHATSAPP_CODE_WEBHOOK_URL) {
+    console.warn("WHATSAPP_CODE_WEBHOOK_URL not configured");
+    return false;
+  }
+  try {
+    const res = await fetch(WHATSAPP_CODE_WEBHOOK_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(WHATSAPP_CODE_WEBHOOK_SECRET ? { "X-Webhook-Secret": WHATSAPP_CODE_WEBHOOK_SECRET } : {}),
+      },
+      body: JSON.stringify({ phone, code, store_name: storeName, type: "otp_verification" }),
+    });
+    return res.ok;
+  } catch (e) {
+    console.error("WhatsApp webhook error:", (e as Error).message);
+    return false;
+  }
+}
+
 // ========== UniFi Provider ==========
 async function unifiAuthorizeByMac(
-  controllerUrl: string,
-  apiKeyOrToken: string,
-  siteId: string,
-  clientMac: string
+  controllerUrl: string, apiKeyOrToken: string, siteId: string, clientMac: string
 ): Promise<{ ok: boolean; error?: string }> {
   const baseUrl = controllerUrl.replace(/\/+$/, "");
   const url = `${baseUrl}/proxy/network/api/s/${siteId}/cmd/stamgr`;
   const formattedMac = clientMac.replace(/(.{2})(?=.)/g, "$1:").toLowerCase();
-  const body = JSON.stringify({
-    cmd: "authorize-guest",
-    mac: formattedMac,
-    minutes: 1440,
-  });
-
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    "X-API-Key": apiKeyOrToken,
-  };
-
+  const body = JSON.stringify({ cmd: "authorize-guest", mac: formattedMac, minutes: 1440 });
+  const headers: Record<string, string> = { "Content-Type": "application/json", "X-API-Key": apiKeyOrToken };
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), UNIFI_TIMEOUT_MS);
-
   try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers,
-      body,
-      signal: controller.signal,
-    });
-
+    const res = await fetch(url, { method: "POST", headers, body, signal: controller.signal });
     clearTimeout(timeout);
     const resText = await res.text();
-
-    if (!res.ok) {
-      return { ok: false, error: `HTTP ${res.status}: ${resText.slice(0, 200)}` };
-    }
-
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}: ${resText.slice(0, 200)}` };
     return { ok: true };
   } catch (err) {
     clearTimeout(timeout);
-    const msg = (err as Error).name === "AbortError"
-      ? `Timeout after ${UNIFI_TIMEOUT_MS}ms`
-      : (err as Error).message;
+    const msg = (err as Error).name === "AbortError" ? `Timeout after ${UNIFI_TIMEOUT_MS}ms` : (err as Error).message;
     return { ok: false, error: msg };
   }
 }
 
 async function unifiAuthorizeWithRetry(
-  controllerUrl: string,
-  token: string,
-  siteId: string,
-  mac: string
+  controllerUrl: string, token: string, siteId: string, mac: string
 ): Promise<{ ok: boolean; error?: string; attempts: number }> {
   let lastError = "";
   for (let attempt = 0; attempt <= UNIFI_RETRY_COUNT; attempt++) {
     const result = await unifiAuthorizeByMac(controllerUrl, token, siteId, mac);
     if (result.ok) return { ok: true, attempts: attempt + 1 };
     lastError = result.error || "Unknown error";
-    if (attempt < UNIFI_RETRY_COUNT) {
-      await new Promise((r) => setTimeout(r, 1000));
-    }
+    if (attempt < UNIFI_RETRY_COUNT) await new Promise((r) => setTimeout(r, 1000));
   }
   return { ok: false, error: lastError, attempts: UNIFI_RETRY_COUNT + 1 };
 }
 
 async function authorizeClient(
   db: ReturnType<typeof supabaseAdmin>,
-  storeId: string | null,
-  storeSlug: string,
-  clientMac: string | null,
-  sessionId: string,
-  clientIp: string
+  storeId: string | null, storeSlug: string, clientMac: string | null, sessionId: string, clientIp: string
 ): Promise<boolean> {
   if (!storeId) {
-    await db.from("captive_sessions")
-      .update({ status: "failed", fail_reason: "NO_STORE_CONFIGURED" })
-      .eq("id", sessionId);
+    await db.from("captive_sessions").update({ status: "failed", fail_reason: "NO_STORE_CONFIGURED" }).eq("id", sessionId);
     return false;
   }
 
@@ -363,70 +395,39 @@ async function authorizeClient(
     .maybeSingle();
 
   if (!store?.unifi_controller_url || !store?.unifi_api_key_or_token) {
-    await db.from("captive_sessions")
-      .update({ status: "failed", fail_reason: "UNIFI_NOT_CONFIGURED" })
-      .eq("id", sessionId);
+    await db.from("captive_sessions").update({ status: "failed", fail_reason: "UNIFI_NOT_CONFIGURED" }).eq("id", sessionId);
     await db.from("audit_logs").insert({
-      store_id: storeId,
-      entity: "session",
-      entity_id: sessionId,
-      action: "fail",
-      meta: { reason: "UNIFI_NOT_CONFIGURED", store_slug: storeSlug, ip: clientIp },
+      store_id: storeId, entity: "session", entity_id: sessionId,
+      action: "fail", meta: { reason: "UNIFI_NOT_CONFIGURED", store_slug: storeSlug, ip: clientIp },
     });
     return false;
   }
 
   if (!clientMac || !isValidMac(clientMac)) {
-    await db.from("captive_sessions")
-      .update({ status: "failed", fail_reason: "INVALID_MAC_ADDRESS" })
-      .eq("id", sessionId);
+    await db.from("captive_sessions").update({ status: "failed", fail_reason: "INVALID_MAC_ADDRESS" }).eq("id", sessionId);
     await db.from("audit_logs").insert({
-      store_id: storeId,
-      entity: "session",
-      entity_id: sessionId,
-      action: "fail",
-      meta: { reason: "INVALID_MAC_ADDRESS", mac: clientMac, store_slug: storeSlug, ip: clientIp },
+      store_id: storeId, entity: "session", entity_id: sessionId,
+      action: "fail", meta: { reason: "INVALID_MAC_ADDRESS", mac: clientMac, store_slug: storeSlug, ip: clientIp },
     });
     return false;
   }
 
   const siteId = store.unifi_site_id || "default";
-  const result = await unifiAuthorizeWithRetry(
-    store.unifi_controller_url,
-    store.unifi_api_key_or_token,
-    siteId,
-    clientMac
-  );
+  const result = await unifiAuthorizeWithRetry(store.unifi_controller_url, store.unifi_api_key_or_token, siteId, clientMac);
 
   if (result.ok) {
-    await db.from("captive_sessions")
-      .update({ status: "authorized", authorized_at: new Date().toISOString() })
-      .eq("id", sessionId);
+    await db.from("captive_sessions").update({ status: "authorized", authorized_at: new Date().toISOString() }).eq("id", sessionId);
     await db.from("audit_logs").insert({
-      store_id: storeId,
-      entity: "session",
-      entity_id: sessionId,
-      action: "authorize",
-      meta: { mac: clientMac, store_slug: storeSlug, ip: clientIp, attempts: result.attempts },
+      store_id: storeId, entity: "session", entity_id: sessionId,
+      action: "authorize", meta: { mac: clientMac, store_slug: storeSlug, ip: clientIp, attempts: result.attempts },
     });
     return true;
   } else {
     const failReason = result.error?.slice(0, 500) || "UNKNOWN";
-    await db.from("captive_sessions")
-      .update({ status: "failed", fail_reason: failReason })
-      .eq("id", sessionId);
+    await db.from("captive_sessions").update({ status: "failed", fail_reason: failReason }).eq("id", sessionId);
     await db.from("audit_logs").insert({
-      store_id: storeId,
-      entity: "session",
-      entity_id: sessionId,
-      action: "fail",
-      meta: {
-        reason: failReason,
-        mac: clientMac,
-        store_slug: storeSlug,
-        ip: clientIp,
-        attempts: result.attempts,
-      },
+      store_id: storeId, entity: "session", entity_id: sessionId,
+      action: "fail", meta: { reason: failReason, mac: clientMac, store_slug: storeSlug, ip: clientIp, attempts: result.attempts },
     });
     return false;
   }
@@ -434,11 +435,34 @@ async function authorizeClient(
 
 // ========== Route Handlers ==========
 
-async function handleBootstrap(url: URL): Promise<Response> {
+async function handleBootstrap(req: Request, url: URL): Promise<Response> {
   const db = supabaseAdmin();
-  const rawSlug = url.searchParams.get("store") || url.searchParams.get("s");
 
-  // Fetch active consent (always needed)
+  // Detect store from IP first, then fall back to query param
+  const detected = await detectStoreFromRequest(db, req);
+
+  // Also check query param as fallback
+  const rawSlug = url.searchParams.get("store") || url.searchParams.get("s");
+  let storeName = detected.store_name;
+  let storeCity = detected.store_city;
+  let storeSlug = detected.store_slug;
+
+  if (!detected.store_id && rawSlug) {
+    const slug = sanitizeString(rawSlug, MAX_SLUG_LEN);
+    if (slug && isValidSlug(slug)) {
+      const { data: store } = await db
+        .from("stores")
+        .select("id, slug, name, city, is_active")
+        .eq("slug", slug)
+        .maybeSingle();
+      if (store?.is_active) {
+        storeName = store.name;
+        storeCity = store.city;
+        storeSlug = store.slug;
+      }
+    }
+  }
+
   const { data: consent } = await db
     .from("consent_versions")
     .select("version, text")
@@ -447,52 +471,13 @@ async function handleBootstrap(url: URL): Promise<Response> {
     .limit(1)
     .maybeSingle();
 
-  // If no store provided, return generic bootstrap
-  if (!rawSlug) {
-    return jsonResponse({
-      store: { slug: null, name: "Wi-Fi Drogaria Minas Brasil", city: null },
-      consent: consent || null,
-      required_fields: {
-        name: { required: true },
-        email: { required: false },
-        phone: { required: false },
-        at_least_one_contact: true,
-      },
-    });
-  }
-
-  const slug = sanitizeString(rawSlug, MAX_SLUG_LEN);
-  if (!slug || !isValidSlug(slug)) return errorResponse("Invalid store slug");
-
-  const { data: store } = await db
-    .from("stores")
-    .select("id, slug, name, city, is_active")
-    .eq("slug", slug)
-    .maybeSingle();
-
-  if (!store) {
-    // Store not found — still return generic so portal can work
-    return jsonResponse({
-      store: { slug, name: "Wi-Fi Drogaria Minas Brasil", city: null },
-      consent: consent || null,
-      required_fields: {
-        name: { required: true },
-        email: { required: false },
-        phone: { required: false },
-        at_least_one_contact: true,
-      },
-    });
-  }
-
-  if (!store.is_active) return errorResponse("Esta loja está temporariamente indisponível.", 403);
-
   return jsonResponse({
-    store: { slug: store.slug, name: store.name, city: store.city },
+    store: { slug: storeSlug, name: storeName, city: storeCity },
     consent: consent || null,
     required_fields: {
       name: { required: true },
       email: { required: false },
-      phone: { required: false },
+      phone: { required: true },
       at_least_one_contact: true,
     },
   });
@@ -500,27 +485,27 @@ async function handleBootstrap(url: URL): Promise<Response> {
 
 async function handleStart(req: Request): Promise<Response> {
   const clientIp = getPublicIp(req) || "unknown";
+  const db = supabaseAdmin();
 
-  if (checkRateLimit(`start:${clientIp}`, RATE_LIMIT_MAX_START)) {
-    return errorResponse("Muitas requisições. Aguarde um momento.", 429);
-  }
+  // Distributed rate limit
+  const rl = await checkRateLimitDb(db, `ip:${clientIp}`, 60, 20, 120);
+  if (!rl.allowed) return errorResponse("Muitas requisições. Aguarde um momento.", 429);
 
   const body = await safeParseJson(req);
   if (!body) return errorResponse("Invalid JSON body");
 
-  const db = supabaseAdmin();
+  // Detect store from IP
+  const detected = await detectStoreFromRequest(db, req);
+  let storeId = detected.store_id;
+  let storeSlug = detected.store_slug;
 
-  // Try to resolve store (optional)
-  let storeId: string | null = null;
-  const storeSlug = sanitizeString(body.store_slug, MAX_SLUG_LEN);
-
-  if (storeSlug && isValidSlug(storeSlug)) {
-    const { data: store } = await db
-      .from("stores")
-      .select("id, is_active")
-      .eq("slug", storeSlug)
-      .maybeSingle();
-    if (store?.is_active) storeId = store.id;
+  // Fallback to body slug
+  if (!storeId) {
+    const bodySlug = sanitizeString(body.store_slug, MAX_SLUG_LEN);
+    if (bodySlug && isValidSlug(bodySlug)) {
+      const { data: store } = await db.from("stores").select("id, is_active").eq("slug", bodySlug).maybeSingle();
+      if (store?.is_active) { storeId = store.id; storeSlug = bodySlug; }
+    }
   }
 
   const mac = normalizeMac(body.client_mac);
@@ -547,11 +532,8 @@ async function handleStart(req: Request): Promise<Response> {
   }
 
   await db.from("audit_logs").insert({
-    store_id: storeId,
-    entity: "session",
-    entity_id: session.id,
-    action: "create",
-    meta: { client_mac: mac, ip: clientIp, store_slug: storeSlug },
+    store_id: storeId, entity: "session", entity_id: session.id,
+    action: "create", meta: { client_mac: mac, ip: clientIp, store_slug: storeSlug },
   });
 
   return jsonResponse({ session_id: session.id });
@@ -560,24 +542,23 @@ async function handleStart(req: Request): Promise<Response> {
 async function handleSubmit(req: Request): Promise<Response> {
   const clientIp = getPublicIp(req);
   const clientIpStr = clientIp || "unknown";
+  const db = supabaseAdmin();
 
-  if (checkRateLimit(`submit:${clientIpStr}`, RATE_LIMIT_MAX_SUBMIT)) {
-    return errorResponse("Muitas tentativas. Aguarde um minuto.", 429);
-  }
+  // Distributed rate limits
+  const rlIp = await checkRateLimitDb(db, `submit:ip:${clientIpStr}`, 60, 5, 120);
+  if (!rlIp.allowed) return errorResponse("Muitas tentativas. Aguarde um minuto.", 429);
 
   const body = await safeParseJson(req);
   if (!body) return errorResponse("Invalid JSON body");
 
-  // Validate required fields
   const name = sanitizeString(body.name, MAX_NAME_LEN);
   if (!name) return errorResponse("Nome é obrigatório");
 
   const email = sanitizeString(body.email, MAX_EMAIL_LEN);
   const phone = sanitizeString(body.phone, MAX_PHONE_LEN);
 
-  if (!email && !phone) return errorResponse("Informe ao menos e-mail ou telefone");
+  if (!phone || !isValidPhone(phone)) return errorResponse("Telefone válido é obrigatório");
   if (email && !isValidEmail(email)) return errorResponse("E-mail inválido");
-  if (phone && !isValidPhone(phone)) return errorResponse("Telefone inválido");
 
   const consentVersion = sanitizeString(body.consent_version, 20);
   if (!consentVersion) return errorResponse("Consentimento é obrigatório");
@@ -586,176 +567,325 @@ async function handleSubmit(req: Request): Promise<Response> {
   if (sessionId && !isValidUUID(sessionId)) return errorResponse("session_id inválido");
 
   const clientMac = normalizeMac(body.client_mac);
-  if (body.client_mac && !clientMac) {
-    console.warn("Invalid MAC provided:", typeof body.client_mac === "string" ? body.client_mac.slice(0, 20) : "non-string");
+
+  // Rate limit by MAC too
+  if (clientMac) {
+    const rlMac = await checkRateLimitDb(db, `submit:mac:${clientMac}`, 60, 5, 120);
+    if (!rlMac.allowed) return errorResponse("Muitas tentativas para este dispositivo.", 429);
   }
 
-  const db = supabaseAdmin();
+  // Detect store from IP
+  const detected = await detectStoreFromRequest(db, req);
+  let storeId = detected.store_id;
+  let storeSlug = detected.store_slug;
+  let redirectUrl = detected.redirect_url;
 
-  // Resolve store (optional)
-  let storeId: string | null = null;
-  let storeSlug = sanitizeString(body.store_slug, MAX_SLUG_LEN) || "geral";
-  let redirectUrl: string | null = null;
-
-  const rawSlug = sanitizeString(body.store_slug, MAX_SLUG_LEN);
-  if (rawSlug && isValidSlug(rawSlug)) {
-    const { data: store } = await db
-      .from("stores")
-      .select("id, is_active, post_auth_redirect_url")
-      .eq("slug", rawSlug)
-      .maybeSingle();
-    if (store?.is_active) {
-      storeId = store.id;
-      storeSlug = rawSlug;
-      redirectUrl = store.post_auth_redirect_url || null;
+  // Fallback to body slug
+  if (!storeId) {
+    const rawSlug = sanitizeString(body.store_slug, MAX_SLUG_LEN);
+    if (rawSlug && isValidSlug(rawSlug)) {
+      const { data: store } = await db.from("stores").select("id, is_active, post_auth_redirect_url").eq("slug", rawSlug).maybeSingle();
+      if (store?.is_active) { storeId = store.id; storeSlug = rawSlug; redirectUrl = store.post_auth_redirect_url || null; }
     }
   }
 
-  // Validate consent version
-  const { data: consent } = await db
-    .from("consent_versions")
-    .select("version, text")
-    .eq("version", consentVersion)
-    .maybeSingle();
-
+  // Validate consent
+  const { data: consent } = await db.from("consent_versions").select("version, text").eq("version", consentVersion).maybeSingle();
   if (!consent) return errorResponse("Versão de consentimento inválida");
 
   // Dedup check
-  if (clientMac && storeId && isDuplicate(clientMac, storeId)) {
-    return errorResponse("Cadastro duplicado detectado. Aguarde alguns segundos.", 429);
-  }
+  const dedupKey = `${storeId || "none"}:${clientMac || clientIpStr}`;
+  if (isDuplicate(dedupKey)) return errorResponse("Cadastro duplicado detectado. Aguarde alguns segundos.", 429);
 
-  // Compute consent text hash
+  // Consent text hash
   const consentTextHash = consent.text
     ? await crypto.subtle.digest("SHA-256", new TextEncoder().encode(consent.text)).then((buf) =>
-        Array.from(new Uint8Array(buf))
-          .map((b) => b.toString(16).padStart(2, "0"))
-          .join("")
+        Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("")
       )
     : null;
 
-  // GeoIP enrichment (non-blocking — won't fail the request)
-  let geoData: GeoIpData & { source: string } = {
-    city: null, region: null, country: null, isp: null, asn: null, source: "none"
-  };
-
+  // GeoIP enrichment
+  let geoData: GeoIpData & { source: string } = { city: null, region: null, country: null, isp: null, asn: null, source: "none" };
   if (clientIp) {
-    try {
-      geoData = await enrichGeoIp(db, clientIp);
-    } catch (e) {
+    try { geoData = await enrichGeoIp(db, clientIp); } catch (e) {
       console.warn("GeoIP enrichment failed:", (e as Error).message);
     }
   }
 
-  // Create lead — MUST succeed even if UniFi/GeoIP fails
-  const { data: lead, error: leadError } = await db
-    .from("leads")
-    .insert({
-      store_id: storeId,
-      session_id: sessionId || null,
-      name,
-      email: email || null,
-      phone: phone || null,
-      client_mac: clientMac,
-      consented_at: new Date().toISOString(),
-      consent_version: consentVersion,
-      consent_text_hash: consentTextHash,
-      source: "captive_portal",
-      origin_ip: clientIp,
-      origin_city: geoData.city,
-      origin_region: geoData.region,
-      origin_country: geoData.country,
-      origin_isp: geoData.isp,
-      origin_asn: geoData.asn,
+  // Create lead (idempotent: check if already exists for this session)
+  let leadId: string;
+  if (sessionId) {
+    const { data: existingLead } = await db
+      .from("leads")
+      .select("id")
+      .eq("session_id", sessionId)
+      .maybeSingle();
+    if (existingLead) {
+      leadId = existingLead.id;
+    } else {
+      const { data: lead, error: leadError } = await db.from("leads").insert({
+        store_id: storeId, session_id: sessionId || null, name,
+        email: email || null, phone: phone || null, client_mac: clientMac,
+        consented_at: new Date().toISOString(), consent_version: consentVersion,
+        consent_text_hash: consentTextHash, source: "captive_portal",
+        origin_ip: clientIp, origin_city: geoData.city, origin_region: geoData.region,
+        origin_country: geoData.country, origin_isp: geoData.isp, origin_asn: geoData.asn,
+        origin_source: geoData.source,
+      }).select("id").single();
+      if (leadError) {
+        console.error("Lead insert error:", leadError.message);
+        return errorResponse("Erro ao salvar cadastro. Tente novamente.", 500);
+      }
+      leadId = lead.id;
+    }
+  } else {
+    const { data: lead, error: leadError } = await db.from("leads").insert({
+      store_id: storeId, session_id: null, name,
+      email: email || null, phone: phone || null, client_mac: clientMac,
+      consented_at: new Date().toISOString(), consent_version: consentVersion,
+      consent_text_hash: consentTextHash, source: "captive_portal",
+      origin_ip: clientIp, origin_city: geoData.city, origin_region: geoData.region,
+      origin_country: geoData.country, origin_isp: geoData.isp, origin_asn: geoData.asn,
       origin_source: geoData.source,
-    })
-    .select("id")
-    .single();
-
-  if (leadError) {
-    console.error("Lead insert error:", leadError.message);
-    await db.from("audit_logs").insert({
-      store_id: storeId,
-      entity: "lead",
-      entity_id: null,
-      action: "fail",
-      meta: {
-        error_message: leadError.message.slice(0, 300),
-        ip: clientIpStr,
-        store_slug: storeSlug,
-        mac: clientMac,
-      },
-    });
-    return errorResponse("Erro ao salvar cadastro. Tente novamente.", 500);
+    }).select("id").single();
+    if (leadError) {
+      console.error("Lead insert error:", leadError.message);
+      return errorResponse("Erro ao salvar cadastro. Tente novamente.", 500);
+    }
+    leadId = lead.id;
   }
 
-  // Increment cluster lead count (fire-and-forget)
+  // Increment cluster
   if (clientIp) {
     incrementClusterLeadCount(db, clientIp).catch((e) =>
       console.warn("incrementClusterLeadCount failed:", (e as Error).message)
     );
   }
 
-  // Update session status
+  // Update session
   if (sessionId) {
     await db.from("captive_sessions")
-      .update({
-        status: "submitted",
-        submitted_at: new Date().toISOString(),
-        client_mac: clientMac,
-      })
+      .update({ status: "submitted", submitted_at: new Date().toISOString(), client_mac: clientMac })
       .eq("id", sessionId);
   }
 
-  // Audit lead creation
-  await db.from("audit_logs").insert({
+  // Generate OTP code
+  const otpCode = generateOtpCode();
+  const otpHash = await hashOtp(otpCode);
+  const expiresAt = new Date(Date.now() + OTP_EXPIRES_SECONDS * 1000).toISOString();
+
+  // Upsert verification (unique partial index ensures 1 pending per session)
+  if (sessionId) {
+    // Expire any existing pending for this session
+    await db.from("captive_verifications")
+      .update({ status: "expired" })
+      .eq("session_id", sessionId)
+      .eq("status", "pending");
+  }
+
+  const { error: verError } = await db.from("captive_verifications").insert({
     store_id: storeId,
-    entity: "lead",
-    entity_id: lead.id,
-    action: "create",
-    meta: { session_id: sessionId, mac: clientMac, ip: clientIpStr, store_slug: storeSlug, origin_city: geoData.city },
+    session_id: sessionId,
+    lead_id: leadId,
+    phone,
+    code_hash: otpHash,
+    status: "pending",
+    expires_at: expiresAt,
   });
 
-  // Attempt UniFi authorization (non-blocking for lead)
-  let authorized = false;
-  if (sessionId && clientMac && storeId) {
-    try {
-      authorized = await authorizeClient(db, storeId, storeSlug, clientMac, sessionId as string, clientIpStr);
-    } catch (err) {
-      console.error("UniFi authorization error:", (err as Error).message);
-      await db.from("audit_logs").insert({
-        store_id: storeId,
-        entity: "session",
-        entity_id: sessionId,
-        action: "fail",
-        meta: {
-          reason: "UNIFI_EXCEPTION",
-          error_message: (err as Error).message.slice(0, 300),
-          mac: clientMac,
-          ip: clientIpStr,
-          store_slug: storeSlug,
-        },
-      });
-    }
+  if (verError) {
+    console.error("Verification insert error:", verError.message);
+    // Don't fail — lead is saved
   }
+
+  // Send WhatsApp code
+  const storeName = detected.store_name || "Drogaria Minas Brasil";
+  await sendWhatsAppCode(phone, otpCode, storeName);
+
+  await db.from("audit_logs").insert({
+    store_id: storeId, entity: "lead", entity_id: leadId,
+    action: "create", meta: { session_id: sessionId, mac: clientMac, ip: clientIpStr, store_slug: storeSlug, origin_city: geoData.city },
+  });
 
   const resolvedRedirectUrl = redirectUrl || DEFAULT_REDIRECT_URL;
 
-  await db.from("audit_logs").insert({
-    store_id: storeId,
-    entity: "session",
-    entity_id: sessionId || null,
-    action: "redirect",
-    meta: { store_slug: storeSlug, redirect_url: resolvedRedirectUrl, authorized },
+  return jsonResponse({
+    ok: true,
+    authorized: false,
+    redirect_url: resolvedRedirectUrl,
+    requires_verification: true,
+    message: "Código de verificação enviado para seu WhatsApp.",
   });
+}
+
+// ========== OTP: Request Code (resend) ==========
+async function handleRequestCode(req: Request): Promise<Response> {
+  const clientIp = getPublicIp(req) || "unknown";
+  const db = supabaseAdmin();
+
+  const body = await safeParseJson(req);
+  if (!body) return errorResponse("Invalid JSON body");
+
+  const sessionId = body.session_id;
+  if (!isValidUUID(sessionId)) return errorResponse("session_id inválido");
+
+  const phone = sanitizeString(body.phone, MAX_PHONE_LEN);
+  if (!phone || !isValidPhone(phone)) return errorResponse("Telefone inválido");
+
+  // Rate limits
+  const rlIp = await checkRateLimitDb(db, `reqcode:ip:${clientIp}`, 60, 5, 120);
+  if (!rlIp.allowed) return errorResponse("Muitas tentativas. Aguarde.", 429);
+
+  const rlPhone = await checkRateLimitDb(db, `reqcode:phone:${phone}`, 60, 3, 120);
+  if (!rlPhone.allowed) return errorResponse("Muitas tentativas para este número.", 429);
+
+  // Find existing pending verification
+  const { data: existing } = await db
+    .from("captive_verifications")
+    .select("id, resends, created_at, lead_id, store_id")
+    .eq("session_id", sessionId as string)
+    .eq("status", "pending")
+    .maybeSingle();
+
+  if (!existing) return errorResponse("Nenhuma verificação pendente para esta sessão.", 404);
+  if (existing.resends >= OTP_MAX_RESENDS) return errorResponse("Limite de reenvios atingido.", 429);
+
+  // Cooldown check
+  const elapsed = (Date.now() - new Date(existing.created_at).getTime()) / 1000;
+  if (elapsed < OTP_RESEND_COOLDOWN_SEC && existing.resends > 0) {
+    return errorResponse(`Aguarde ${Math.ceil(OTP_RESEND_COOLDOWN_SEC - elapsed)}s para reenviar.`, 429);
+  }
+
+  // Generate new code
+  const otpCode = generateOtpCode();
+  const otpHash = await hashOtp(otpCode);
+  const expiresAt = new Date(Date.now() + OTP_EXPIRES_SECONDS * 1000).toISOString();
+
+  await db.from("captive_verifications").update({
+    code_hash: otpHash,
+    expires_at: expiresAt,
+    resends: existing.resends + 1,
+    attempts: 0,
+  }).eq("id", existing.id);
+
+  // Detect store name
+  let storeName = "Drogaria Minas Brasil";
+  if (existing.store_id) {
+    const { data: store } = await db.from("stores").select("name").eq("id", existing.store_id).maybeSingle();
+    if (store) storeName = store.name;
+  }
+
+  await sendWhatsAppCode(phone, otpCode, storeName);
 
   return jsonResponse({
     ok: true,
-    authorized,
+    message: "Novo código enviado.",
+    resends_remaining: OTP_MAX_RESENDS - existing.resends - 1,
+  });
+}
+
+// ========== OTP: Verify Code ==========
+async function handleVerifyCode(req: Request): Promise<Response> {
+  const clientIp = getPublicIp(req) || "unknown";
+  const db = supabaseAdmin();
+
+  const body = await safeParseJson(req);
+  if (!body) return errorResponse("Invalid JSON body");
+
+  const sessionId = body.session_id;
+  if (!isValidUUID(sessionId)) return errorResponse("session_id inválido");
+
+  const code = sanitizeString(body.code, 6);
+  if (!code || code.length !== 6 || !/^\d{6}$/.test(code)) return errorResponse("Código inválido");
+
+  // Rate limits
+  const rlIp = await checkRateLimitDb(db, `verify:ip:${clientIp}`, 60, 10, 120);
+  if (!rlIp.allowed) return errorResponse("Muitas tentativas. Aguarde.", 429);
+
+  const rlSession = await checkRateLimitDb(db, `verify:session:${sessionId}`, 300, 10, 300);
+  if (!rlSession.allowed) return errorResponse("Muitas tentativas para esta sessão.", 429);
+
+  const { data: verification } = await db
+    .from("captive_verifications")
+    .select("id, code_hash, attempts, expires_at, session_id, lead_id, store_id")
+    .eq("session_id", sessionId as string)
+    .eq("status", "pending")
+    .maybeSingle();
+
+  if (!verification) return errorResponse("Nenhuma verificação pendente.", 404);
+
+  // Check expiration
+  if (new Date(verification.expires_at) < new Date()) {
+    await db.from("captive_verifications").update({ status: "expired" }).eq("id", verification.id);
+    return errorResponse("Código expirado. Solicite um novo.", 410);
+  }
+
+  // Check attempts
+  if (verification.attempts >= OTP_MAX_ATTEMPTS) {
+    await db.from("captive_verifications").update({ status: "locked" }).eq("id", verification.id);
+    return errorResponse("Número máximo de tentativas atingido.", 429);
+  }
+
+  // Increment attempts
+  await db.from("captive_verifications").update({ attempts: verification.attempts + 1 }).eq("id", verification.id);
+
+  // Verify hash
+  const inputHash = await hashOtp(code);
+  if (inputHash !== verification.code_hash) {
+    const remaining = OTP_MAX_ATTEMPTS - verification.attempts - 1;
+    return errorResponse(`Código incorreto. ${remaining} tentativa(s) restante(s).`);
+  }
+
+  // Code is correct!
+  await db.from("captive_verifications").update({
+    status: "verified",
+    verified_at: new Date().toISOString(),
+  }).eq("id", verification.id);
+
+  // Authorize client via UniFi
+  const { data: session } = await db
+    .from("captive_sessions")
+    .select("client_mac, store_id, redirect_url")
+    .eq("id", sessionId as string)
+    .maybeSingle();
+
+  let authorized = false;
+  let redirectUrl: string | null = null;
+
+  if (session) {
+    const storeId = session.store_id || verification.store_id;
+    let storeSlug = "geral";
+
+    if (storeId) {
+      const { data: store } = await db.from("stores").select("slug, post_auth_redirect_url").eq("id", storeId).maybeSingle();
+      if (store) {
+        storeSlug = store.slug;
+        redirectUrl = store.post_auth_redirect_url || null;
+      }
+    }
+
+    if (storeId && session.client_mac) {
+      try {
+        authorized = await authorizeClient(db, storeId, storeSlug, session.client_mac, sessionId as string, clientIp);
+      } catch (err) {
+        console.error("UniFi authorization error:", (err as Error).message);
+      }
+    }
+
+    if (!authorized) {
+      await db.from("captive_sessions")
+        .update({ status: "authorized", authorized_at: new Date().toISOString() })
+        .eq("id", sessionId as string);
+    }
+  }
+
+  const resolvedRedirectUrl = redirectUrl || session?.redirect_url || DEFAULT_REDIRECT_URL;
+
+  return jsonResponse({
+    ok: true,
+    authorized: true,
     redirect_url: resolvedRedirectUrl,
-    message: authorized
-      ? "Acesso liberado! Você já pode navegar."
-      : "Cadastro realizado. Caso a internet não libere automaticamente, desconecte e reconecte ao WiFi.",
+    message: "Código verificado! Acesso liberado.",
   });
 }
 
@@ -763,18 +893,13 @@ async function handleSubmit(req: Request): Promise<Response> {
 
 async function requireAdmin(req: Request): Promise<{ db: ReturnType<typeof supabaseAdmin>; userId: string } | Response> {
   const authHeader = req.headers.get("Authorization");
-  if (!authHeader?.startsWith("Bearer ")) {
-    return errorResponse("Unauthorized", 401);
-  }
+  if (!authHeader?.startsWith("Bearer ")) return errorResponse("Unauthorized", 401);
 
   const authClient = supabaseAuth(authHeader);
   const token = authHeader.replace("Bearer ", "");
 
   const { data: userData, error: userErr } = await authClient.auth.getUser(token);
-  if (userErr || !userData?.user) {
-    if (userErr) console.warn("Auth error:", userErr.message);
-    return errorResponse("Unauthorized", 401);
-  }
+  if (userErr || !userData?.user) return errorResponse("Unauthorized", 401);
 
   const userId = userData.user.id;
   const db = supabaseAdmin();
@@ -787,7 +912,6 @@ async function requireAdmin(req: Request): Promise<{ db: ReturnType<typeof supab
     .maybeSingle();
 
   if (!roleData) return errorResponse("Forbidden: admin role required", 403);
-
   return { db, userId };
 }
 
@@ -797,11 +921,13 @@ async function handleAdminStores(req: Request): Promise<Response> {
   const { db } = auth;
 
   if (req.method === "GET") {
+    // NEVER return secrets in GET
     const { data, error } = await db
       .from("stores")
       .select("id, slug, name, city, is_active, post_auth_redirect_url, unifi_site_id, unifi_controller_url, created_at, updated_at")
       .order("created_at", { ascending: false });
     if (error) return errorResponse(error.message, 500);
+    // Mask: don't include unifi_api_key_or_token
     return jsonResponse(data);
   }
 
@@ -814,22 +940,16 @@ async function handleAdminStores(req: Request): Promise<Response> {
     if (!slug || !isValidSlug(slug)) return errorResponse("Slug inválido");
     if (!name) return errorResponse("Nome obrigatório");
 
-    const { data, error } = await db
-      .from("stores")
-      .insert({
-        slug,
-        name,
-        city: sanitizeString(body.city, 100) || null,
-        is_active: body.is_active === false ? false : true,
-        post_auth_redirect_url: sanitizeString(body.post_auth_redirect_url, 500) || null,
-        unifi_site_id: sanitizeString(body.unifi_site_id, 100) || null,
-        unifi_controller_url: sanitizeString(body.unifi_controller_url, 500) || null,
-        unifi_api_key_or_token: typeof body.unifi_api_key_or_token === "string"
-          ? body.unifi_api_key_or_token.trim().slice(0, 500) || null
-          : null,
-      })
-      .select("id, slug, name")
-      .single();
+    const { data, error } = await db.from("stores").insert({
+      slug, name,
+      city: sanitizeString(body.city, 100) || null,
+      is_active: body.is_active === false ? false : true,
+      post_auth_redirect_url: sanitizeString(body.post_auth_redirect_url, 500) || null,
+      unifi_site_id: sanitizeString(body.unifi_site_id, 100) || null,
+      unifi_controller_url: sanitizeString(body.unifi_controller_url, 500) || null,
+      unifi_api_key_or_token: typeof body.unifi_api_key_or_token === "string"
+        ? body.unifi_api_key_or_token.trim().slice(0, 500) || null : null,
+    }).select("id, slug, name").single();
     if (error) return errorResponse(error.message, 500);
     return jsonResponse(data, 201);
   }
@@ -839,33 +959,22 @@ async function handleAdminStores(req: Request): Promise<Response> {
     if (!body || !isValidUUID(body.id)) return errorResponse("Missing or invalid store id");
 
     const updateData: Record<string, unknown> = {};
-    if (body.slug !== undefined) {
-      const s = sanitizeString(body.slug, MAX_SLUG_LEN);
-      if (s && isValidSlug(s)) updateData.slug = s;
-    }
-    if (body.name !== undefined) {
-      const n = sanitizeString(body.name, MAX_NAME_LEN);
-      if (n) updateData.name = n;
-    }
+    if (body.slug !== undefined) { const s = sanitizeString(body.slug, MAX_SLUG_LEN); if (s && isValidSlug(s)) updateData.slug = s; }
+    if (body.name !== undefined) { const n = sanitizeString(body.name, MAX_NAME_LEN); if (n) updateData.name = n; }
     if (body.city !== undefined) updateData.city = sanitizeString(body.city, 100);
     if (body.is_active !== undefined) updateData.is_active = !!body.is_active;
     if (body.post_auth_redirect_url !== undefined) updateData.post_auth_redirect_url = sanitizeString(body.post_auth_redirect_url, 500);
     if (body.unifi_site_id !== undefined) updateData.unifi_site_id = sanitizeString(body.unifi_site_id, 100);
     if (body.unifi_controller_url !== undefined) updateData.unifi_controller_url = sanitizeString(body.unifi_controller_url, 500);
+    // Allow setting secrets via PUT only
     if (body.unifi_api_key_or_token !== undefined) {
       updateData.unifi_api_key_or_token = typeof body.unifi_api_key_or_token === "string"
-        ? body.unifi_api_key_or_token.trim().slice(0, 500) || null
-        : null;
+        ? body.unifi_api_key_or_token.trim().slice(0, 500) || null : null;
     }
 
     if (Object.keys(updateData).length === 0) return errorResponse("Nenhum campo para atualizar");
 
-    const { data, error } = await db
-      .from("stores")
-      .update(updateData)
-      .eq("id", body.id as string)
-      .select("id, slug, name")
-      .single();
+    const { data, error } = await db.from("stores").update(updateData).eq("id", body.id as string).select("id, slug, name").single();
     if (error) return errorResponse(error.message, 500);
     return jsonResponse(data);
   }
@@ -874,20 +983,13 @@ async function handleAdminStores(req: Request): Promise<Response> {
     const body = await safeParseJson(req);
     if (!body || !isValidUUID(body.id)) return errorResponse("Missing or invalid store id");
 
-    const { error } = await db
-      .from("stores")
-      .delete()
-      .eq("id", body.id as string);
+    const { error } = await db.from("stores").delete().eq("id", body.id as string);
     if (error) return errorResponse(error.message, 500);
 
     await db.from("audit_logs").insert({
-      store_id: body.id as string,
-      entity: "store",
-      entity_id: body.id as string,
-      action: "delete",
-      meta: { deleted_by: auth.userId },
+      store_id: body.id as string, entity: "store", entity_id: body.id as string,
+      action: "delete", meta: { deleted_by: auth.userId },
     });
-
     return jsonResponse({ ok: true });
   }
 
@@ -925,21 +1027,13 @@ async function handleAdminLeads(req: Request, url: URL): Promise<Response> {
     const csvRows = [headers.join(",")];
     for (const lead of data || []) {
       const storeInfo = lead.stores as unknown as { slug: string; name: string } | null;
-      csvRows.push(
-        [
-          lead.id,
-          storeInfo?.slug || "",
-          `"${(lead.name || "").replace(/"/g, '""')}"`,
-          lead.email || "",
-          lead.phone || "",
-          lead.client_mac || "",
-          (lead as any).origin_ip || "",
-          (lead as any).origin_city || "",
-          (lead as any).origin_region || "",
-          lead.created_at,
-          lead.consent_version,
-        ].join(",")
-      );
+      csvRows.push([
+        lead.id, storeInfo?.slug || "",
+        `"${(lead.name || "").replace(/"/g, '""')}"`,
+        lead.email || "", lead.phone || "", lead.client_mac || "",
+        (lead as any).origin_ip || "", (lead as any).origin_city || "", (lead as any).origin_region || "",
+        lead.created_at, lead.consent_version,
+      ].join(","));
     }
 
     return new Response(csvRows.join("\n"), {
@@ -954,7 +1048,6 @@ async function handleAdminLeads(req: Request, url: URL): Promise<Response> {
   query = query.range(offset, offset + limit - 1);
   const { data, count, error } = await query;
   if (error) return errorResponse(error.message, 500);
-
   return jsonResponse({ data, total: count, page, limit });
 }
 
@@ -964,8 +1057,7 @@ async function handleAdminConsent(req: Request): Promise<Response> {
   const { db } = auth;
 
   if (req.method === "GET") {
-    const { data, error } = await db
-      .from("consent_versions")
+    const { data, error } = await db.from("consent_versions")
       .select("id, version, text, is_active, created_at")
       .order("created_at", { ascending: false });
     if (error) return errorResponse(error.message, 500);
@@ -975,7 +1067,6 @@ async function handleAdminConsent(req: Request): Promise<Response> {
   if (req.method === "POST") {
     const body = await safeParseJson(req);
     if (!body) return errorResponse("Invalid JSON");
-
     const version = sanitizeString(body.version, 20);
     const text = sanitizeString(body.text, 10000);
     if (!version) return errorResponse("version é obrigatória");
@@ -985,11 +1076,9 @@ async function handleAdminConsent(req: Request): Promise<Response> {
       await db.from("consent_versions").update({ is_active: false }).eq("is_active", true);
     }
 
-    const { data, error } = await db
-      .from("consent_versions")
+    const { data, error } = await db.from("consent_versions")
       .insert({ version, text, is_active: true })
-      .select("id, version, is_active, created_at")
-      .single();
+      .select("id, version, is_active, created_at").single();
     if (error) return errorResponse(error.message, 500);
     return jsonResponse(data, 201);
   }
@@ -1017,11 +1106,9 @@ async function handleAdminSessions(req: Request, url: URL): Promise<Response> {
 
   const { data, count, error } = await query;
   if (error) return errorResponse(error.message, 500);
-
   return jsonResponse({ data, total: count, page, limit });
 }
 
-// ========== Admin: Origin IP Clusters ==========
 async function handleAdminClusters(req: Request, url: URL): Promise<Response> {
   const auth = await requireAdmin(req);
   if (auth instanceof Response) return auth;
@@ -1051,32 +1138,59 @@ async function handleAdminClusters(req: Request, url: URL): Promise<Response> {
     const headers = ["public_ip", "city", "region", "country", "isp", "asn", "lead_count", "first_seen_at", "last_seen_at"];
     const csvRows = [headers.join(",")];
     for (const c of data || []) {
-      csvRows.push([
-        c.public_ip,
-        c.city || "",
-        c.region || "",
-        c.country || "",
-        c.isp || "",
-        c.asn || "",
-        c.lead_count,
-        c.first_seen_at,
-        c.last_seen_at,
-      ].join(","));
+      csvRows.push([c.public_ip, c.city || "", c.region || "", c.country || "", c.isp || "", c.asn || "", c.lead_count, c.first_seen_at, c.last_seen_at].join(","));
     }
-
     return new Response(csvRows.join("\n"), {
-      headers: {
-        ...corsHeaders,
-        "Content-Type": "text/csv; charset=utf-8",
-        "Content-Disposition": `attachment; filename="clusters_${new Date().toISOString().slice(0, 10)}.csv"`,
-      },
+      headers: { ...corsHeaders, "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="clusters_${new Date().toISOString().slice(0, 10)}.csv"` },
     });
   }
 
   const { data, count, error } = await (query as any).range(offset, offset + limit - 1);
   if (error) return errorResponse(error.message, 500);
-
   return jsonResponse({ data, total: count, page, limit });
+}
+
+// ========== Admin: Store Public IPs ==========
+async function handleAdminStoreIps(req: Request, url: URL): Promise<Response> {
+  const auth = await requireAdmin(req);
+  if (auth instanceof Response) return auth;
+  const { db } = auth;
+
+  if (req.method === "GET") {
+    const storeId = url.searchParams.get("store_id");
+    let query = db.from("store_public_ips")
+      .select("id, store_id, public_ip, is_active, created_at, stores(slug, name)")
+      .order("created_at", { ascending: false });
+    if (storeId && isValidUUID(storeId)) query = query.eq("store_id", storeId);
+    const { data, error } = await query;
+    if (error) return errorResponse(error.message, 500);
+    return jsonResponse(data);
+  }
+
+  if (req.method === "POST") {
+    const body = await safeParseJson(req);
+    if (!body) return errorResponse("Invalid JSON");
+    if (!isValidUUID(body.store_id)) return errorResponse("store_id inválido");
+    const ip = sanitizeString(body.public_ip, 45);
+    if (!ip) return errorResponse("public_ip obrigatório");
+
+    const { data, error } = await db.from("store_public_ips")
+      .insert({ store_id: body.store_id as string, public_ip: ip, is_active: body.is_active !== false })
+      .select("id, store_id, public_ip, is_active")
+      .single();
+    if (error) return errorResponse(error.message, 500);
+    return jsonResponse(data, 201);
+  }
+
+  if (req.method === "DELETE") {
+    const body = await safeParseJson(req);
+    if (!body || !isValidUUID(body.id)) return errorResponse("Missing or invalid id");
+    const { error } = await db.from("store_public_ips").delete().eq("id", body.id as string);
+    if (error) return errorResponse(error.message, 500);
+    return jsonResponse({ ok: true });
+  }
+
+  return errorResponse("Method not allowed", 405);
 }
 
 // ========== Test Endpoint (Admin Only) ==========
@@ -1090,63 +1204,37 @@ async function handleTestAuthorize(req: Request): Promise<Response> {
 
   const storeSlug = sanitizeString(body.store_slug, MAX_SLUG_LEN);
   const mac = normalizeMac(body.mac);
-
   if (!storeSlug) return errorResponse("store_slug obrigatório");
   if (!mac || !isValidMac(mac)) return errorResponse("MAC inválido (ex: AA:BB:CC:DD:EE:FF)");
 
-  const { data: store } = await db
-    .from("stores")
+  const { data: store } = await db.from("stores")
     .select("id, unifi_controller_url, unifi_api_key_or_token, unifi_site_id")
-    .eq("slug", storeSlug)
-    .maybeSingle();
+    .eq("slug", storeSlug).maybeSingle();
 
   if (!store) return errorResponse("Store not found", 404);
   if (!store.unifi_controller_url || !store.unifi_api_key_or_token) {
-    return jsonResponse({
-      ok: false,
-      reason: "UNIFI_NOT_CONFIGURED",
-      message: "Loja não possui configuração UniFi completa.",
-    });
+    return jsonResponse({ ok: false, reason: "UNIFI_NOT_CONFIGURED", message: "Loja não possui configuração UniFi completa." });
   }
 
   const siteId = store.unifi_site_id || "default";
-  const result = await unifiAuthorizeWithRetry(
-    store.unifi_controller_url,
-    store.unifi_api_key_or_token,
-    siteId,
-    mac
-  );
+  const result = await unifiAuthorizeWithRetry(store.unifi_controller_url, store.unifi_api_key_or_token, siteId, mac);
 
   await db.from("audit_logs").insert({
-    store_id: store.id,
-    entity: "session",
-    entity_id: null,
+    store_id: store.id, entity: "session", entity_id: null,
     action: result.ok ? "test_authorize_success" : "test_authorize_fail",
-    meta: {
-      mac,
-      store_slug: storeSlug,
-      result: result.ok ? "success" : result.error?.slice(0, 300),
-      attempts: result.attempts,
-    },
+    meta: { mac, store_slug: storeSlug, result: result.ok ? "success" : result.error?.slice(0, 300), attempts: result.attempts },
   });
 
   return jsonResponse({
-    ok: result.ok,
-    attempts: result.attempts,
+    ok: result.ok, attempts: result.attempts,
     error: result.ok ? undefined : result.error?.slice(0, 200),
     message: result.ok ? "MAC autorizado com sucesso" : "Falha na autorização",
   });
 }
 
 // ========== XML Export (Admin) ==========
-
 function escapeXml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
 }
 
 async function handleAdminLeadsXml(req: Request, url: URL): Promise<Response> {
@@ -1159,11 +1247,9 @@ async function handleAdminLeadsXml(req: Request, url: URL): Promise<Response> {
   const from = url.searchParams.get("from");
   const to = url.searchParams.get("to");
 
-  let query = db
-    .from("leads")
+  let query = db.from("leads")
     .select("id, name, email, phone, client_mac, created_at, consented_at, consent_version, origin_ip, origin_city, origin_region, stores(slug, name)")
-    .order("created_at", { ascending: false })
-    .limit(10000);
+    .order("created_at", { ascending: false }).limit(10000);
 
   let resolvedStoreId: string | null = null;
   if (storeSlug) {
@@ -1208,22 +1294,56 @@ async function handleAdminLeadsXml(req: Request, url: URL): Promise<Response> {
   }
 
   xml += `</leads_export>`;
-
   const filename = storeSlug ? `leads_${storeSlug}_${dateStamp}.xml` : `leads_all_${dateStamp}.xml`;
 
   await db.from("audit_logs").insert({
-    store_id: resolvedStoreId,
-    entity: "lead",
-    entity_id: null,
-    action: "export_xml",
-    meta: { scope, store_slug: storeSlug, from, to, count: rows.length },
+    store_id: resolvedStoreId, entity: "lead", entity_id: null,
+    action: "export_xml", meta: { scope, store_slug: storeSlug, from, to, count: rows.length },
   });
 
   return new Response(xml, {
-    headers: {
-      ...corsHeaders,
-      "Content-Type": "application/xml; charset=utf-8",
-      "Content-Disposition": `attachment; filename="${filename}"`,
+    headers: { ...corsHeaders, "Content-Type": "application/xml; charset=utf-8", "Content-Disposition": `attachment; filename="${filename}"` },
+  });
+}
+
+// ========== Housekeeping ==========
+async function handleHousekeeping(req: Request): Promise<Response> {
+  const auth = await requireAdmin(req);
+  if (auth instanceof Response) return auth;
+  const { db } = auth;
+
+  const retentionDays = 90;
+  const cutoff = new Date(Date.now() - retentionDays * 86400000).toISOString();
+
+  // Clean expired verifications
+  const { count: expiredVerifications } = await db
+    .from("captive_verifications")
+    .delete()
+    .lt("expires_at", new Date().toISOString())
+    .in("status", ["pending", "expired"])
+    .select("id", { count: "exact", head: true });
+
+  // Clean old rate limits
+  const { count: oldRateLimits } = await db
+    .from("rate_limits")
+    .delete()
+    .lt("updated_at", new Date(Date.now() - 86400000).toISOString())
+    .select("key", { count: "exact", head: true });
+
+  // Clean old sessions (optional, retention-based)
+  const { count: oldSessions } = await db
+    .from("captive_sessions")
+    .delete()
+    .lt("started_at", cutoff)
+    .select("id", { count: "exact", head: true });
+
+  return jsonResponse({
+    ok: true,
+    cleaned: {
+      expired_verifications: expiredVerifications || 0,
+      old_rate_limits: oldRateLimits || 0,
+      old_sessions: oldSessions || 0,
+      retention_days: retentionDays,
     },
   });
 }
@@ -1240,24 +1360,22 @@ Deno.serve(async (req: Request) => {
 
   try {
     // Public portal endpoints
-    if (path === "/bootstrap" && req.method === "GET") {
-      return await handleBootstrap(url);
-    }
-    if (path === "/start" && req.method === "POST") {
-      return await handleStart(req);
-    }
-    if (path === "/submit" && req.method === "POST") {
-      return await handleSubmit(req);
-    }
+    if (path === "/bootstrap" && req.method === "GET") return await handleBootstrap(req, url);
+    if (path === "/start" && req.method === "POST") return await handleStart(req);
+    if (path === "/submit" && req.method === "POST") return await handleSubmit(req);
+    if (path === "/request-code" && req.method === "POST") return await handleRequestCode(req);
+    if (path === "/verify-code" && req.method === "POST") return await handleVerifyCode(req);
 
     // Admin endpoints
     if (path === "/admin/stores") return await handleAdminStores(req);
+    if (path === "/admin/store-ips") return await handleAdminStoreIps(req, url);
     if (path === "/admin/leads-xml" && req.method === "GET") return await handleAdminLeadsXml(req, url);
     if (path === "/admin/leads") return await handleAdminLeads(req, url);
     if (path === "/admin/consent") return await handleAdminConsent(req);
     if (path === "/admin/sessions") return await handleAdminSessions(req, url);
     if (path === "/admin/clusters") return await handleAdminClusters(req, url);
     if (path === "/admin/test-authorize" && req.method === "POST") return await handleTestAuthorize(req);
+    if (path === "/admin/housekeeping" && req.method === "POST") return await handleHousekeeping(req);
 
     return errorResponse("Not found", 404);
   } catch (err) {
