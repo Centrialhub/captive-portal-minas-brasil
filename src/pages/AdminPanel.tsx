@@ -511,10 +511,11 @@ function LeadsTab({ token }: { token: string }) {
         )}
       </div>
       <p className="mb-3 text-xs text-muted-foreground font-medium">Total: {leads.total || 0}</p>
-      <BrandedTable headers={["Nome", "Email", "Telefone", "MAC", "Loja", "Data"]}>
+      <BrandedTable headers={["Nome", "CPF", "Email", "Telefone", "MAC", "Loja", "Data"]}>
         {(leads.data || []).map((l: any, i: number) => (
           <tr key={l.id} className={i % 2 === 0 ? "bg-card" : "bg-muted/40"}>
             <td className="p-3">{l.name}</td>
+            <td className="p-3">{l.cpf || "-"}</td>
             <td className="p-3">{l.email || "-"}</td>
             <td className="p-3">{l.phone || "-"}</td>
             <td className="p-3 font-mono text-xs">{l.client_mac || "-"}</td>
