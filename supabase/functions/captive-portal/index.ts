@@ -30,11 +30,12 @@ const GEOIP_PROVIDER = Deno.env.get("GEOIP_PROVIDER") || "ipapi";
 // OTP config
 const OTP_PEPPER = Deno.env.get("OTP_PEPPER") || "default-pepper-change-me";
 const OTP_EXPIRES_SECONDS = parseInt(Deno.env.get("OTP_EXPIRES_SECONDS") || "300");
-const WHATSAPP_CODE_WEBHOOK_URL = Deno.env.get("WHATSAPP_CODE_WEBHOOK_URL") || "";
-const WHATSAPP_CODE_WEBHOOK_SECRET = Deno.env.get("WHATSAPP_CODE_WEBHOOK_SECRET") || "";
 const OTP_MAX_ATTEMPTS = 5;
 const OTP_MAX_RESENDS = 3;
 const OTP_RESEND_COOLDOWN_SEC = 60;
+
+// Cron secret for scheduled housekeeping
+const CRON_SECRET = Deno.env.get("CRON_SECRET") || "";
 
 // ========== Helpers ==========
 function supabaseAdmin() {
@@ -182,7 +183,7 @@ async function checkRateLimitDb(
 
     if (error) {
       console.warn("Rate limit RPC error:", error.message);
-      return { allowed: true, remaining: maxHits, blocked_until: null }; // fail open
+      return { allowed: true, remaining: maxHits, blocked_until: null };
     }
 
     const result = typeof data === "string" ? JSON.parse(data) : data;
@@ -321,24 +322,77 @@ async function hashOtp(code: string): Promise<string> {
   return Array.from(new Uint8Array(hash)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-async function sendWhatsAppCode(phone: string, code: string, storeName: string): Promise<boolean> {
-  if (!WHATSAPP_CODE_WEBHOOK_URL) {
-    console.warn("WHATSAPP_CODE_WEBHOOK_URL not configured");
-    return false;
+// ========== WhatsApp Webhook Config from DB ==========
+interface WhatsAppConfig {
+  url: string;
+  secret: string | null;
+}
+
+async function getWhatsappConfig(
+  db: ReturnType<typeof supabaseAdmin>,
+  _storeId: string | null
+): Promise<WhatsAppConfig | null> {
+  // Future: could check per-store config first
+  // For now, use global_settings only
+  const { data } = await db
+    .from("global_settings")
+    .select("whatsapp_webhook_url, whatsapp_webhook_secret, whatsapp_webhook_enabled")
+    .eq("id", 1)
+    .maybeSingle();
+
+  if (!data) return null;
+  if (!data.whatsapp_webhook_enabled || !data.whatsapp_webhook_url) return null;
+
+  return {
+    url: data.whatsapp_webhook_url,
+    secret: data.whatsapp_webhook_secret || null,
+  };
+}
+
+async function sendWhatsAppCode(
+  db: ReturnType<typeof supabaseAdmin>,
+  storeId: string | null,
+  phone: string,
+  code: string,
+  storeName: string,
+  sessionId: string | null,
+  clientIp: string | null,
+  expiresAt: string
+): Promise<{ sent: boolean; error?: string }> {
+  const config = await getWhatsappConfig(db, storeId);
+  if (!config) {
+    console.warn("WhatsApp webhook not configured");
+    return { sent: false, error: "Webhook WhatsApp não configurado." };
   }
+
   try {
-    const res = await fetch(WHATSAPP_CODE_WEBHOOK_URL, {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (config.secret) {
+      headers["Authorization"] = `Bearer ${config.secret}`;
+    }
+
+    const res = await fetch(config.url, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(WHATSAPP_CODE_WEBHOOK_SECRET ? { "X-Webhook-Secret": WHATSAPP_CODE_WEBHOOK_SECRET } : {}),
-      },
-      body: JSON.stringify({ phone, code, store_name: storeName, type: "otp_verification" }),
+      headers,
+      body: JSON.stringify({
+        phone,
+        code,
+        store_name: storeName,
+        store_id: storeId,
+        session_id: sessionId,
+        public_ip: clientIp,
+        expires_at: expiresAt,
+        type: "otp_verification",
+      }),
     });
-    return res.ok;
+    if (!res.ok) {
+      console.error("WhatsApp webhook HTTP error:", res.status);
+      return { sent: false, error: `Webhook retornou HTTP ${res.status}` };
+    }
+    return { sent: true };
   } catch (e) {
     console.error("WhatsApp webhook error:", (e as Error).message);
-    return false;
+    return { sent: false, error: "Erro de rede ao enviar código." };
   }
 }
 
@@ -435,33 +489,11 @@ async function authorizeClient(
 
 // ========== Route Handlers ==========
 
-async function handleBootstrap(req: Request, url: URL): Promise<Response> {
+async function handleBootstrap(req: Request): Promise<Response> {
   const db = supabaseAdmin();
 
-  // Detect store from IP first, then fall back to query param
+  // Detect store from IP only — ignore any ?store= param
   const detected = await detectStoreFromRequest(db, req);
-
-  // Also check query param as fallback
-  const rawSlug = url.searchParams.get("store") || url.searchParams.get("s");
-  let storeName = detected.store_name;
-  let storeCity = detected.store_city;
-  let storeSlug = detected.store_slug;
-
-  if (!detected.store_id && rawSlug) {
-    const slug = sanitizeString(rawSlug, MAX_SLUG_LEN);
-    if (slug && isValidSlug(slug)) {
-      const { data: store } = await db
-        .from("stores")
-        .select("id, slug, name, city, is_active")
-        .eq("slug", slug)
-        .maybeSingle();
-      if (store?.is_active) {
-        storeName = store.name;
-        storeCity = store.city;
-        storeSlug = store.slug;
-      }
-    }
-  }
 
   const { data: consent } = await db
     .from("consent_versions")
@@ -472,7 +504,7 @@ async function handleBootstrap(req: Request, url: URL): Promise<Response> {
     .maybeSingle();
 
   return jsonResponse({
-    store: { slug: storeSlug, name: storeName, city: storeCity },
+    store: { slug: detected.store_slug, name: detected.store_name, city: detected.store_city },
     consent: consent || null,
     required_fields: {
       name: { required: true },
@@ -494,19 +526,8 @@ async function handleStart(req: Request): Promise<Response> {
   const body = await safeParseJson(req);
   if (!body) return errorResponse("Invalid JSON body");
 
-  // Detect store from IP
+  // Detect store from IP only
   const detected = await detectStoreFromRequest(db, req);
-  let storeId = detected.store_id;
-  let storeSlug = detected.store_slug;
-
-  // Fallback to body slug
-  if (!storeId) {
-    const bodySlug = sanitizeString(body.store_slug, MAX_SLUG_LEN);
-    if (bodySlug && isValidSlug(bodySlug)) {
-      const { data: store } = await db.from("stores").select("id, is_active").eq("slug", bodySlug).maybeSingle();
-      if (store?.is_active) { storeId = store.id; storeSlug = bodySlug; }
-    }
-  }
 
   const mac = normalizeMac(body.client_mac);
   const apMac = normalizeMac(body.ap_mac);
@@ -514,7 +535,7 @@ async function handleStart(req: Request): Promise<Response> {
   const { data: session, error } = await db
     .from("captive_sessions")
     .insert({
-      store_id: storeId,
+      store_id: detected.store_id,
       client_mac: mac,
       client_ip: sanitizeString(body.client_ip, 45) || clientIp,
       ap_mac: apMac,
@@ -532,8 +553,8 @@ async function handleStart(req: Request): Promise<Response> {
   }
 
   await db.from("audit_logs").insert({
-    store_id: storeId, entity: "session", entity_id: session.id,
-    action: "create", meta: { client_mac: mac, ip: clientIp, store_slug: storeSlug },
+    store_id: detected.store_id, entity: "session", entity_id: session.id,
+    action: "create", meta: { client_mac: mac, ip: clientIp, store_slug: detected.store_slug },
   });
 
   return jsonResponse({ session_id: session.id });
@@ -574,20 +595,11 @@ async function handleSubmit(req: Request): Promise<Response> {
     if (!rlMac.allowed) return errorResponse("Muitas tentativas para este dispositivo.", 429);
   }
 
-  // Detect store from IP
+  // Detect store from IP only — ignore store_slug from body
   const detected = await detectStoreFromRequest(db, req);
-  let storeId = detected.store_id;
-  let storeSlug = detected.store_slug;
-  let redirectUrl = detected.redirect_url;
-
-  // Fallback to body slug
-  if (!storeId) {
-    const rawSlug = sanitizeString(body.store_slug, MAX_SLUG_LEN);
-    if (rawSlug && isValidSlug(rawSlug)) {
-      const { data: store } = await db.from("stores").select("id, is_active, post_auth_redirect_url").eq("slug", rawSlug).maybeSingle();
-      if (store?.is_active) { storeId = store.id; storeSlug = rawSlug; redirectUrl = store.post_auth_redirect_url || null; }
-    }
-  }
+  const storeId = detected.store_id;
+  const storeSlug = detected.store_slug;
+  const redirectUrl = detected.redirect_url;
 
   // Validate consent
   const { data: consent } = await db.from("consent_versions").select("version, text").eq("version", consentVersion).maybeSingle();
@@ -674,9 +686,8 @@ async function handleSubmit(req: Request): Promise<Response> {
   const otpHash = await hashOtp(otpCode);
   const expiresAt = new Date(Date.now() + OTP_EXPIRES_SECONDS * 1000).toISOString();
 
-  // Upsert verification (unique partial index ensures 1 pending per session)
+  // Expire any existing pending for this session
   if (sessionId) {
-    // Expire any existing pending for this session
     await db.from("captive_verifications")
       .update({ status: "expired" })
       .eq("session_id", sessionId)
@@ -695,16 +706,21 @@ async function handleSubmit(req: Request): Promise<Response> {
 
   if (verError) {
     console.error("Verification insert error:", verError.message);
-    // Don't fail — lead is saved
   }
 
-  // Send WhatsApp code
+  // Send WhatsApp code via DB config
   const storeName = detected.store_name || "Drogaria Minas Brasil";
-  await sendWhatsAppCode(phone, otpCode, storeName);
+  const whatsappResult = await sendWhatsAppCode(db, storeId, phone, otpCode, storeName, sessionId as string | null, clientIp, expiresAt);
+
+  if (!whatsappResult.sent) {
+    console.warn("WhatsApp code not sent:", whatsappResult.error);
+    // Don't fail the flow — lead is saved, verification is pending
+    // but warn the user
+  }
 
   await db.from("audit_logs").insert({
     store_id: storeId, entity: "lead", entity_id: leadId,
-    action: "create", meta: { session_id: sessionId, mac: clientMac, ip: clientIpStr, store_slug: storeSlug, origin_city: geoData.city },
+    action: "create", meta: { session_id: sessionId, mac: clientMac, ip: clientIpStr, store_slug: storeSlug, origin_city: geoData.city, whatsapp_sent: whatsappResult.sent },
   });
 
   const resolvedRedirectUrl = redirectUrl || DEFAULT_REDIRECT_URL;
@@ -714,7 +730,9 @@ async function handleSubmit(req: Request): Promise<Response> {
     authorized: false,
     redirect_url: resolvedRedirectUrl,
     requires_verification: true,
-    message: "Código de verificação enviado para seu WhatsApp.",
+    message: whatsappResult.sent
+      ? "Código de verificação enviado para seu WhatsApp."
+      : "Cadastro salvo. " + (whatsappResult.error || "Código não pôde ser enviado."),
   });
 }
 
@@ -768,14 +786,18 @@ async function handleRequestCode(req: Request): Promise<Response> {
     attempts: 0,
   }).eq("id", existing.id);
 
-  // Detect store name
+  // Detect store name for the message
   let storeName = "Drogaria Minas Brasil";
   if (existing.store_id) {
     const { data: store } = await db.from("stores").select("name").eq("id", existing.store_id).maybeSingle();
     if (store) storeName = store.name;
   }
 
-  await sendWhatsAppCode(phone, otpCode, storeName);
+  const whatsappResult = await sendWhatsAppCode(db, existing.store_id, phone, otpCode, storeName, sessionId as string, clientIp, expiresAt);
+
+  if (!whatsappResult.sent) {
+    return errorResponse(whatsappResult.error || "Não foi possível enviar o código.", 503);
+  }
 
   return jsonResponse({
     ok: true,
@@ -889,6 +911,60 @@ async function handleVerifyCode(req: Request): Promise<Response> {
   });
 }
 
+// ========== Internal Housekeeping ==========
+async function internalHousekeeping(db: ReturnType<typeof supabaseAdmin>): Promise<Record<string, number>> {
+  const now = new Date();
+
+  // 1. Delete expired verifications older than 30 days
+  const verifCutoff = new Date(now.getTime() - 30 * 86400000).toISOString();
+  const { count: expiredVerifications } = await db
+    .from("captive_verifications")
+    .delete()
+    .lt("expires_at", verifCutoff)
+    .in("status", ["pending", "expired", "locked"])
+    .select("id", { count: "exact", head: true });
+
+  // 2. Clean old rate limits (older than 1 day)
+  const { count: oldRateLimits } = await db
+    .from("rate_limits")
+    .delete()
+    .lt("updated_at", new Date(now.getTime() - 86400000).toISOString())
+    .select("key", { count: "exact", head: true });
+
+  // 3. Delete old non-authorized sessions older than 180 days
+  const sessionCutoff180 = new Date(now.getTime() - 180 * 86400000).toISOString();
+  const { count: oldSessions } = await db
+    .from("captive_sessions")
+    .delete()
+    .lt("started_at", sessionCutoff180)
+    .in("status", ["started", "submitted", "failed"])
+    .select("id", { count: "exact", head: true });
+
+  // 4. Delete authorized sessions older than 365 days
+  const sessionCutoff365 = new Date(now.getTime() - 365 * 86400000).toISOString();
+  const { count: oldAuthorizedSessions } = await db
+    .from("captive_sessions")
+    .delete()
+    .lt("started_at", sessionCutoff365)
+    .eq("status", "authorized")
+    .select("id", { count: "exact", head: true });
+
+  // 5. Truncate audit_logs older than 180 days
+  const auditCutoff = new Date(now.getTime() - 180 * 86400000).toISOString();
+  const { count: oldAuditLogs } = await db
+    .from("audit_logs")
+    .delete()
+    .lt("created_at", auditCutoff)
+    .select("id", { count: "exact", head: true });
+
+  return {
+    expired_verifications: expiredVerifications || 0,
+    old_rate_limits: oldRateLimits || 0,
+    old_sessions: (oldSessions || 0) + (oldAuthorizedSessions || 0),
+    old_audit_logs: oldAuditLogs || 0,
+  };
+}
+
 // ========== Admin Endpoints ==========
 
 async function requireAdmin(req: Request): Promise<{ db: ReturnType<typeof supabaseAdmin>; userId: string } | Response> {
@@ -915,6 +991,67 @@ async function requireAdmin(req: Request): Promise<{ db: ReturnType<typeof supab
   return { db, userId };
 }
 
+// ========== Admin: Global Settings ==========
+async function handleAdminSettings(req: Request): Promise<Response> {
+  const auth = await requireAdmin(req);
+  if (auth instanceof Response) return auth;
+  const { db } = auth;
+
+  if (req.method === "GET") {
+    const { data, error } = await db
+      .from("global_settings")
+      .select("whatsapp_webhook_url, whatsapp_webhook_secret, whatsapp_webhook_enabled, updated_at")
+      .eq("id", 1)
+      .maybeSingle();
+
+    if (error) return errorResponse(error.message, 500);
+
+    return jsonResponse({
+      whatsapp_webhook_url: data?.whatsapp_webhook_url || null,
+      whatsapp_webhook_enabled: data?.whatsapp_webhook_enabled || false,
+      whatsapp_webhook_secret_configured: !!data?.whatsapp_webhook_secret,
+      updated_at: data?.updated_at || null,
+    });
+  }
+
+  if (req.method === "PUT") {
+    const body = await safeParseJson(req);
+    if (!body) return errorResponse("Invalid JSON");
+
+    const updateData: Record<string, unknown> = {};
+
+    if (body.whatsapp_webhook_url !== undefined) {
+      const url = sanitizeString(body.whatsapp_webhook_url, 500);
+      if (url && !url.startsWith("https://")) return errorResponse("URL deve começar com https://");
+      updateData.whatsapp_webhook_url = url || null;
+    }
+
+    if (body.whatsapp_webhook_enabled !== undefined) {
+      updateData.whatsapp_webhook_enabled = !!body.whatsapp_webhook_enabled;
+    }
+
+    // Secret: only accept if explicitly provided (replace)
+    if (typeof body.whatsapp_webhook_secret === "string") {
+      const secret = body.whatsapp_webhook_secret.trim();
+      if (secret.length > 0 && secret.length < 8) return errorResponse("Secret deve ter pelo menos 8 caracteres");
+      updateData.whatsapp_webhook_secret = secret || null;
+    }
+
+    if (Object.keys(updateData).length === 0) return errorResponse("Nenhum campo para atualizar");
+
+    const { error } = await db
+      .from("global_settings")
+      .update(updateData)
+      .eq("id", 1);
+
+    if (error) return errorResponse(error.message, 500);
+
+    return jsonResponse({ ok: true, message: "Configurações atualizadas." });
+  }
+
+  return errorResponse("Method not allowed", 405);
+}
+
 async function handleAdminStores(req: Request): Promise<Response> {
   const auth = await requireAdmin(req);
   if (auth instanceof Response) return auth;
@@ -927,7 +1064,6 @@ async function handleAdminStores(req: Request): Promise<Response> {
       .select("id, slug, name, city, is_active, post_auth_redirect_url, unifi_site_id, unifi_controller_url, created_at, updated_at")
       .order("created_at", { ascending: false });
     if (error) return errorResponse(error.message, 500);
-    // Mask: don't include unifi_api_key_or_token
     return jsonResponse(data);
   }
 
@@ -1306,46 +1442,31 @@ async function handleAdminLeadsXml(req: Request, url: URL): Promise<Response> {
   });
 }
 
-// ========== Housekeeping ==========
+// ========== Housekeeping (Admin manual) ==========
 async function handleHousekeeping(req: Request): Promise<Response> {
   const auth = await requireAdmin(req);
   if (auth instanceof Response) return auth;
   const { db } = auth;
 
-  const retentionDays = 90;
-  const cutoff = new Date(Date.now() - retentionDays * 86400000).toISOString();
+  const cleaned = await internalHousekeeping(db);
+  return jsonResponse({ ok: true, cleaned });
+}
 
-  // Clean expired verifications
-  const { count: expiredVerifications } = await db
-    .from("captive_verifications")
-    .delete()
-    .lt("expires_at", new Date().toISOString())
-    .in("status", ["pending", "expired"])
-    .select("id", { count: "exact", head: true });
+// ========== Housekeeping (Cron) ==========
+async function handleCronHousekeeping(req: Request): Promise<Response> {
+  // Authenticate via CRON_SECRET
+  const authHeader = req.headers.get("Authorization");
+  const token = authHeader?.replace("Bearer ", "");
 
-  // Clean old rate limits
-  const { count: oldRateLimits } = await db
-    .from("rate_limits")
-    .delete()
-    .lt("updated_at", new Date(Date.now() - 86400000).toISOString())
-    .select("key", { count: "exact", head: true });
+  if (!CRON_SECRET || !token || token !== CRON_SECRET) {
+    return errorResponse("Unauthorized", 401);
+  }
 
-  // Clean old sessions (optional, retention-based)
-  const { count: oldSessions } = await db
-    .from("captive_sessions")
-    .delete()
-    .lt("started_at", cutoff)
-    .select("id", { count: "exact", head: true });
+  const db = supabaseAdmin();
+  const cleaned = await internalHousekeeping(db);
 
-  return jsonResponse({
-    ok: true,
-    cleaned: {
-      expired_verifications: expiredVerifications || 0,
-      old_rate_limits: oldRateLimits || 0,
-      old_sessions: oldSessions || 0,
-      retention_days: retentionDays,
-    },
-  });
+  console.log("Cron housekeeping completed:", JSON.stringify(cleaned));
+  return jsonResponse({ ok: true, cleaned });
 }
 
 // ========== Main Router ==========
@@ -1360,13 +1481,17 @@ Deno.serve(async (req: Request) => {
 
   try {
     // Public portal endpoints
-    if (path === "/bootstrap" && req.method === "GET") return await handleBootstrap(req, url);
+    if (path === "/bootstrap" && req.method === "GET") return await handleBootstrap(req);
     if (path === "/start" && req.method === "POST") return await handleStart(req);
     if (path === "/submit" && req.method === "POST") return await handleSubmit(req);
     if (path === "/request-code" && req.method === "POST") return await handleRequestCode(req);
     if (path === "/verify-code" && req.method === "POST") return await handleVerifyCode(req);
 
+    // Cron endpoint
+    if (path === "/cron/housekeeping" && req.method === "POST") return await handleCronHousekeeping(req);
+
     // Admin endpoints
+    if (path === "/admin/settings") return await handleAdminSettings(req);
     if (path === "/admin/stores") return await handleAdminStores(req);
     if (path === "/admin/store-ips") return await handleAdminStoreIps(req, url);
     if (path === "/admin/leads-xml" && req.method === "GET") return await handleAdminLeadsXml(req, url);

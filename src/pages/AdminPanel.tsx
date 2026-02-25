@@ -8,7 +8,7 @@ export default function AdminPanel() {
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [loginError, setLoginError] = useState("");
-  const [activeTab, setActiveTab] = useState<"stores" | "leads" | "consent" | "sessions" | "clusters" | "store-ips">("stores");
+  const [activeTab, setActiveTab] = useState<"stores" | "leads" | "consent" | "sessions" | "clusters" | "store-ips" | "settings">("stores");
 
   useEffect(() => {
     supabase.auth.onAuthStateChange((_event, s) => {
@@ -52,6 +52,7 @@ export default function AdminPanel() {
     { key: "consent" as const, label: "Consentimento" },
     { key: "sessions" as const, label: "Sessões" },
     { key: "clusters" as const, label: "Origens (IP)" },
+    { key: "settings" as const, label: "⚙ Configurações" },
   ];
 
   return (
@@ -96,6 +97,7 @@ export default function AdminPanel() {
             {activeTab === "consent" && <ConsentTab token={token} />}
             {activeTab === "sessions" && <SessionsTab token={token} />}
             {activeTab === "clusters" && <ClustersTab token={token} />}
+            {activeTab === "settings" && <SettingsTab token={token} />}
           </div>
         </main>
       </div>
@@ -117,6 +119,183 @@ function BrandedTable({ headers, children }: { headers: string[]; children: Reac
         </thead>
         <tbody className="divide-y divide-border">{children}</tbody>
       </table>
+    </div>
+  );
+}
+
+/* ============ Settings Tab (Global) ============ */
+function SettingsTab({ token }: { token: string }) {
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+  const [webhookUrl, setWebhookUrl] = useState("");
+  const [webhookEnabled, setWebhookEnabled] = useState(false);
+  const [secretConfigured, setSecretConfigured] = useState(false);
+  const [newSecret, setNewSecret] = useState("");
+  const [showSecretField, setShowSecretField] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await api.adminRequest("settings", token);
+      if (data.error) { setMessage(`Erro: ${data.error}`); return; }
+      setWebhookUrl(data.whatsapp_webhook_url || "");
+      setWebhookEnabled(data.whatsapp_webhook_enabled || false);
+      setSecretConfigured(data.whatsapp_webhook_secret_configured || false);
+    } catch {
+      setMessage("Erro ao carregar configurações.");
+    }
+    setLoading(false);
+  }, [token]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleSave = async () => {
+    setSaving(true);
+    setMessage("");
+    try {
+      const payload: Record<string, unknown> = {
+        whatsapp_webhook_url: webhookUrl || null,
+        whatsapp_webhook_enabled: webhookEnabled,
+      };
+      if (showSecretField && newSecret) {
+        payload.whatsapp_webhook_secret = newSecret;
+      }
+      const result = await api.adminRequest("settings", token, {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      });
+      if (result.error) {
+        setMessage(`Erro: ${result.error}`);
+      } else {
+        setMessage("Configurações salvas com sucesso!");
+        setShowSecretField(false);
+        setNewSecret("");
+        load();
+      }
+    } catch {
+      setMessage("Erro ao salvar.");
+    }
+    setSaving(false);
+  };
+
+  if (loading) return <p className="text-sm text-muted-foreground">Carregando...</p>;
+
+  return (
+    <div className="space-y-6">
+      <div className="rounded-lg border bg-card p-6">
+        <h3 className="text-sm font-bold text-foreground mb-4">Webhook WhatsApp (OTP)</h3>
+        <div className="space-y-3">
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-foreground">URL do Webhook</label>
+            <input
+              type="url"
+              value={webhookUrl}
+              onChange={(e) => setWebhookUrl(e.target.value)}
+              placeholder="https://..."
+              className="w-full rounded-lg border-2 border-border bg-background px-3 py-2 text-foreground text-sm focus:border-secondary outline-none"
+            />
+          </div>
+
+          <div className="flex items-center gap-3">
+            <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <input
+                type="checkbox"
+                checked={webhookEnabled}
+                onChange={(e) => setWebhookEnabled(e.target.checked)}
+                className="accent-primary"
+              />
+              <span className="font-medium text-foreground">Ativar verificação via WhatsApp</span>
+            </label>
+          </div>
+
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-xs font-semibold text-foreground">Secret do Webhook</span>
+              <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${secretConfigured ? "bg-brand-success-bg text-brand-success" : "bg-destructive/10 text-destructive"}`}>
+                {secretConfigured ? "Configurado ✓" : "Não configurado"}
+              </span>
+            </div>
+            {!showSecretField ? (
+              <button
+                onClick={() => setShowSecretField(true)}
+                className="text-xs font-medium text-primary hover:underline"
+              >
+                {secretConfigured ? "Alterar secret" : "Definir secret"}
+              </button>
+            ) : (
+              <div className="flex gap-2">
+                <input
+                  type="password"
+                  value={newSecret}
+                  onChange={(e) => setNewSecret(e.target.value)}
+                  placeholder="Novo secret (mínimo 8 caracteres)"
+                  className="flex-1 rounded-lg border-2 border-border bg-background px-3 py-2 text-foreground text-sm focus:border-secondary outline-none"
+                />
+                <button
+                  onClick={() => { setShowSecretField(false); setNewSecret(""); }}
+                  className="text-xs text-muted-foreground hover:underline"
+                >
+                  Cancelar
+                </button>
+              </div>
+            )}
+          </div>
+
+          {message && (
+            <p className={`text-sm font-medium ${message.startsWith("Erro") ? "text-destructive" : "text-brand-success"}`}>
+              {message}
+            </p>
+          )}
+
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="rounded-lg bg-secondary px-4 py-2 text-sm font-bold text-secondary-foreground hover:bg-brand-yellow-hover disabled:opacity-50 transition-colors"
+          >
+            {saving ? "Salvando..." : "Salvar configurações"}
+          </button>
+        </div>
+      </div>
+
+      <div className="rounded-lg border bg-card p-6">
+        <h3 className="text-sm font-bold text-foreground mb-2">Housekeeping Manual</h3>
+        <p className="text-xs text-muted-foreground mb-3">
+          Limpa verificações expiradas, sessões antigas e logs antigos. Normalmente executado automaticamente via cron diário.
+        </p>
+        <HousekeepingButton token={token} />
+      </div>
+    </div>
+  );
+}
+
+function HousekeepingButton({ token }: { token: string }) {
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+
+  const run = async () => {
+    setRunning(true);
+    setResult(null);
+    try {
+      const data = await api.adminRequest("housekeeping", token, { method: "POST" });
+      if (data.error) {
+        setResult(`Erro: ${data.error}`);
+      } else {
+        const c = data.cleaned || {};
+        setResult(`Removidos: ${c.expired_verifications || 0} verificações, ${c.old_sessions || 0} sessões, ${c.old_audit_logs || 0} logs, ${c.old_rate_limits || 0} rate limits`);
+      }
+    } catch {
+      setResult("Erro de rede.");
+    }
+    setRunning(false);
+  };
+
+  return (
+    <div>
+      <button onClick={run} disabled={running} className="rounded-lg bg-foreground px-3 py-1.5 text-sm font-medium text-background hover:opacity-80 disabled:opacity-50 transition-opacity">
+        {running ? "Executando..." : "Executar housekeeping"}
+      </button>
+      {result && <p className="mt-2 text-xs text-muted-foreground">{result}</p>}
     </div>
   );
 }
