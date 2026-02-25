@@ -23,6 +23,7 @@ export default function CaptivePortal() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
+  const [cpf, setCpf] = useState("");
   const [consented, setConsented] = useState(false);
 
   // OTP step
@@ -91,6 +92,7 @@ export default function CaptivePortal() {
         name,
         email,
         phone,
+        cpf,
         client_mac: clientMac,
         consent_version: bootstrapData.consent.version,
       });
@@ -304,6 +306,14 @@ export default function CaptivePortal() {
             <input type="email" value={email} onChange={(e) => setEmail(e.target.value)}
               className="w-full rounded-lg border-2 border-border bg-background px-3 py-2.5 text-foreground focus:border-secondary focus:ring-2 focus:ring-secondary/30 outline-none transition-all"
               placeholder="email@exemplo.com (opcional)" />
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-semibold text-foreground">CPF *</label>
+            <input type="text" value={cpf} onChange={(e) => setCpf(e.target.value)} required
+              inputMode="numeric" maxLength={14}
+              className="w-full rounded-lg border-2 border-border bg-background px-3 py-2.5 text-foreground focus:border-secondary focus:ring-2 focus:ring-secondary/30 outline-none transition-all"
+              placeholder="000.000.000-00" />
+            <p className="mt-1 text-xs text-muted-foreground">Certifique-se que o seu CPF está correto</p>
           </div>
           <div>
             <label className="mb-1 block text-sm font-semibold text-foreground">Telefone (WhatsApp) *</label>

@@ -27,6 +27,7 @@ export const api = {
     name: string;
     email?: string;
     phone?: string;
+    cpf?: string;
     client_mac?: string;
     consent_version: string;
   }) {

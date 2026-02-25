@@ -244,6 +244,7 @@ export type Database = {
           consent_text_hash: string | null
           consent_version: string
           consented_at: string
+          cpf: string | null
           created_at: string
           email: string | null
           id: string
@@ -266,6 +267,7 @@ export type Database = {
           consent_text_hash?: string | null
           consent_version: string
           consented_at: string
+          cpf?: string | null
           created_at?: string
           email?: string | null
           id?: string
@@ -288,6 +290,7 @@ export type Database = {
           consent_text_hash?: string | null
           consent_version?: string
           consented_at?: string
+          cpf?: string | null
           created_at?: string
           email?: string | null
           id?: string
