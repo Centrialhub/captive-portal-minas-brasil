@@ -1,7 +1,8 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { api } from "@/lib/api";
 import logoMinasBrasil from "@/assets/logo-minas-brasil.png";
 import brazilMap from "@/assets/brazil-map.png";
+import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
 
 interface BootstrapData {
   store: { slug: string | null; name: string; city?: string | null };
@@ -35,6 +36,14 @@ export default function CaptivePortal() {
   const [phone, setPhone] = useState("");
   const [consented, setConsented] = useState(false);
 
+  // OTP step
+  const [step, setStep] = useState<"form" | "otp">("form");
+  const [otpCode, setOtpCode] = useState("");
+  const [verifying, setVerifying] = useState(false);
+  const [resending, setResending] = useState(false);
+  const [resendCooldown, setResendCooldown] = useState(0);
+  const cooldownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const clientMac = params.get("id") || params.get("mac") || undefined;
@@ -44,16 +53,10 @@ export default function CaptivePortal() {
 
     (async () => {
       try {
-        // Bootstrap works with or without store slug
         const data = await api.bootstrap(storeSlug || "");
-        if (data.error) {
-          setError(data.error);
-          setLoading(false);
-          return;
-        }
+        if (data.error) { setError(data.error); setLoading(false); return; }
         setBootstrapData(data);
 
-        // Start session (store_slug optional)
         const session = await api.startSession({
           store_slug: storeSlug || undefined,
           client_mac: clientMac,
@@ -68,6 +71,22 @@ export default function CaptivePortal() {
       setLoading(false);
     })();
   }, [storeSlug]);
+
+  // Cleanup cooldown interval
+  useEffect(() => {
+    return () => { if (cooldownRef.current) clearInterval(cooldownRef.current); };
+  }, []);
+
+  const startCooldown = (seconds: number) => {
+    setResendCooldown(seconds);
+    if (cooldownRef.current) clearInterval(cooldownRef.current);
+    cooldownRef.current = setInterval(() => {
+      setResendCooldown((prev) => {
+        if (prev <= 1) { clearInterval(cooldownRef.current!); return 0; }
+        return prev - 1;
+      });
+    }, 1000);
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -91,22 +110,66 @@ export default function CaptivePortal() {
 
       if (result.error) {
         setError(result.error);
+      } else if (result.requires_verification) {
+        setRedirectUrl(result.redirect_url || null);
+        setStep("otp");
+        startCooldown(60);
       } else {
         setSuccess(result.message || "Cadastro realizado com sucesso!");
         setAuthorized(!!result.authorized);
         const rUrl = result.redirect_url || null;
         setRedirectUrl(rUrl);
-
         if (result.authorized && rUrl) {
-          setTimeout(() => {
-            window.location.replace(rUrl);
-          }, 800);
+          setTimeout(() => window.location.replace(rUrl), 800);
         }
       }
     } catch {
       setError("Erro ao enviar cadastro.");
     }
     setSubmitting(false);
+  };
+
+  const handleVerify = async () => {
+    if (!sessionId || otpCode.length !== 6) return;
+    setVerifying(true);
+    setError(null);
+
+    try {
+      const result = await api.verifyCode({ session_id: sessionId, code: otpCode });
+      if (result.error) {
+        setError(result.error);
+        setOtpCode("");
+      } else {
+        setSuccess(result.message || "Código verificado!");
+        setAuthorized(true);
+        const rUrl = result.redirect_url || redirectUrl;
+        setRedirectUrl(rUrl);
+        if (rUrl) {
+          setTimeout(() => window.location.replace(rUrl), 800);
+        }
+      }
+    } catch {
+      setError("Erro ao verificar código.");
+    }
+    setVerifying(false);
+  };
+
+  const handleResend = async () => {
+    if (!sessionId || resendCooldown > 0) return;
+    setResending(true);
+    setError(null);
+
+    try {
+      const result = await api.requestCode({ session_id: sessionId, phone });
+      if (result.error) {
+        setError(result.error);
+      } else {
+        startCooldown(60);
+      }
+    } catch {
+      setError("Erro ao reenviar código.");
+    }
+    setResending(false);
   };
 
   if (loading) {
@@ -135,16 +198,11 @@ export default function CaptivePortal() {
           {authorized && redirectUrl && (
             <p className="mt-4 text-sm text-muted-foreground">
               Você está sendo redirecionado para nosso site.{" "}
-              <a href={redirectUrl} className="text-primary font-medium underline">
-                Clique aqui se não redirecionar
-              </a>
+              <a href={redirectUrl} className="text-primary font-medium underline">Clique aqui se não redirecionar</a>
             </p>
           )}
           {!authorized && redirectUrl && (
-            <a
-              href={redirectUrl}
-              className="mt-6 inline-block rounded-lg bg-secondary px-6 py-3 text-sm font-bold text-secondary-foreground hover:bg-brand-yellow-hover transition-colors"
-            >
+            <a href={redirectUrl} className="mt-6 inline-block rounded-lg bg-secondary px-6 py-3 text-sm font-bold text-secondary-foreground hover:bg-brand-yellow-hover transition-colors">
               Ir para o site
             </a>
           )}
@@ -159,6 +217,64 @@ export default function CaptivePortal() {
         <div className="w-full max-w-md rounded-xl bg-card p-8 text-center shadow-2xl">
           <img src={logoMinasBrasil} alt="Drogaria Minas Brasil" className="mx-auto mb-4 h-14 object-contain" />
           <p className="text-destructive font-medium">{error}</p>
+        </div>
+      </div>
+    );
+  }
+
+  // OTP Step
+  if (step === "otp") {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-primary p-4 relative overflow-hidden">
+        <img src={brazilMap} alt="" className="absolute left-0 bottom-0 h-80 opacity-10 pointer-events-none select-none" />
+        <div className="relative z-10 w-full max-w-md rounded-xl bg-card p-6 shadow-2xl">
+          <div className="text-center mb-5">
+            <img src={logoMinasBrasil} alt="Drogaria Minas Brasil" className="mx-auto mb-2 h-16 object-contain" />
+          </div>
+
+          <h1 className="mb-2 text-lg font-extrabold text-foreground text-center">Verificação por WhatsApp</h1>
+          <p className="mb-5 text-sm text-muted-foreground text-center">
+            Digite o código de 6 dígitos enviado para <strong>{phone}</strong>
+          </p>
+
+          {error && (
+            <div className="mb-3 rounded-lg bg-destructive/10 p-3">
+              <p className="text-sm text-destructive font-medium">{error}</p>
+            </div>
+          )}
+
+          <div className="flex justify-center mb-5">
+            <InputOTP maxLength={6} value={otpCode} onChange={setOtpCode}>
+              <InputOTPGroup>
+                <InputOTPSlot index={0} />
+                <InputOTPSlot index={1} />
+                <InputOTPSlot index={2} />
+                <InputOTPSlot index={3} />
+                <InputOTPSlot index={4} />
+                <InputOTPSlot index={5} />
+              </InputOTPGroup>
+            </InputOTP>
+          </div>
+
+          <button
+            onClick={handleVerify}
+            disabled={verifying || otpCode.length !== 6}
+            className="w-full rounded-lg bg-secondary px-4 py-3 font-bold text-secondary-foreground hover:bg-brand-yellow-hover disabled:opacity-50 transition-colors text-base mb-3"
+          >
+            {verifying ? "Verificando..." : "Verificar código"}
+          </button>
+
+          <button
+            onClick={handleResend}
+            disabled={resending || resendCooldown > 0}
+            className="w-full rounded-lg border-2 border-border px-4 py-2.5 text-sm font-medium text-muted-foreground hover:bg-muted disabled:opacity-50 transition-colors"
+          >
+            {resendCooldown > 0 ? `Reenviar código (${resendCooldown}s)` : resending ? "Reenviando..." : "Reenviar código"}
+          </button>
+
+          <p className="mt-4 text-center text-[10px] text-muted-foreground">
+            Drogaria Minas Brasil © {new Date().getFullYear()}
+          </p>
         </div>
       </div>
     );
@@ -192,36 +308,21 @@ export default function CaptivePortal() {
         <form onSubmit={handleSubmit} className="space-y-3">
           <div>
             <label className="mb-1 block text-sm font-semibold text-foreground">Nome *</label>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              required
+            <input type="text" value={name} onChange={(e) => setName(e.target.value)} required
               className="w-full rounded-lg border-2 border-border bg-background px-3 py-2.5 text-foreground focus:border-secondary focus:ring-2 focus:ring-secondary/30 outline-none transition-all"
-              placeholder="Seu nome completo"
-            />
+              placeholder="Seu nome completo" />
           </div>
           <div>
-            <label className="mb-1 block text-sm font-semibold text-foreground">E-mail *</label>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
+            <label className="mb-1 block text-sm font-semibold text-foreground">E-mail</label>
+            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)}
               className="w-full rounded-lg border-2 border-border bg-background px-3 py-2.5 text-foreground focus:border-secondary focus:ring-2 focus:ring-secondary/30 outline-none transition-all"
-              placeholder="email@exemplo.com"
-            />
+              placeholder="email@exemplo.com (opcional)" />
           </div>
           <div>
-            <label className="mb-1 block text-sm font-semibold text-foreground">Telefone *</label>
-            <input
-              type="tel"
-              value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-              required
+            <label className="mb-1 block text-sm font-semibold text-foreground">Telefone (WhatsApp) *</label>
+            <input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} required
               className="w-full rounded-lg border-2 border-border bg-background px-3 py-2.5 text-foreground focus:border-secondary focus:ring-2 focus:ring-secondary/30 outline-none transition-all"
-              placeholder="(11) 99999-9999"
-            />
+              placeholder="(11) 99999-9999" />
           </div>
 
           {bootstrapData?.consent && (
@@ -237,22 +338,15 @@ export default function CaptivePortal() {
                 </div>
               </details>
               <label className="flex items-start gap-2 text-sm cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={consented}
-                  onChange={(e) => setConsented(e.target.checked)}
-                  className="mt-0.5 accent-primary"
-                />
+                <input type="checkbox" checked={consented} onChange={(e) => setConsented(e.target.checked)}
+                  className="mt-0.5 accent-primary" />
                 <span className="text-foreground font-medium">Li e aceito os termos</span>
               </label>
             </>
           )}
 
-          <button
-            type="submit"
-            disabled={submitting || !consented}
-            className="w-full rounded-lg bg-secondary px-4 py-3 font-bold text-secondary-foreground hover:bg-brand-yellow-hover disabled:opacity-50 transition-colors text-base"
-          >
+          <button type="submit" disabled={submitting || !consented}
+            className="w-full rounded-lg bg-secondary px-4 py-3 font-bold text-secondary-foreground hover:bg-brand-yellow-hover disabled:opacity-50 transition-colors text-base">
             {submitting ? "Enviando..." : "Conectar ao Wi-Fi"}
           </button>
         </form>
