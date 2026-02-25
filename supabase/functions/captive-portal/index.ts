@@ -578,7 +578,9 @@ async function handleSubmit(req: Request): Promise<Response> {
 
   const email = sanitizeString(body.email, MAX_EMAIL_LEN);
   const phone = sanitizeString(body.phone, MAX_PHONE_LEN);
+  const cpf = sanitizeString(body.cpf, 20);
 
+  if (!cpf) return errorResponse("CPF é obrigatório");
   if (!phone || !isValidPhone(phone)) return errorResponse("Telefone válido é obrigatório");
   if (email && !isValidEmail(email)) return errorResponse("E-mail inválido");
 
@@ -638,7 +640,7 @@ async function handleSubmit(req: Request): Promise<Response> {
     } else {
       const { data: lead, error: leadError } = await db.from("leads").insert({
         store_id: storeId, session_id: sessionId || null, name,
-        email: email || null, phone: phone || null, client_mac: clientMac,
+        email: email || null, phone: phone || null, cpf: cpf || null, client_mac: clientMac,
         consented_at: new Date().toISOString(), consent_version: consentVersion,
         consent_text_hash: consentTextHash, source: "captive_portal",
         origin_ip: clientIp, origin_city: geoData.city, origin_region: geoData.region,
@@ -654,7 +656,7 @@ async function handleSubmit(req: Request): Promise<Response> {
   } else {
     const { data: lead, error: leadError } = await db.from("leads").insert({
       store_id: storeId, session_id: null, name,
-      email: email || null, phone: phone || null, client_mac: clientMac,
+      email: email || null, phone: phone || null, cpf: cpf || null, client_mac: clientMac,
       consented_at: new Date().toISOString(), consent_version: consentVersion,
       consent_text_hash: consentTextHash, source: "captive_portal",
       origin_ip: clientIp, origin_city: geoData.city, origin_region: geoData.region,
