@@ -1,0 +1,12 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/captive-portal/:path*",
+      "destination": "https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal/:path*"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}
