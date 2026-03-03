@@ -1,4 +1,12 @@
-const API_BASE = "/api/captive-portal";
+function getApiBase(): string {
+  const host = window.location.hostname;
+  if (host === "wifi.guedesepaixao.com.br" || host.endsWith(".vercel.app")) {
+    return "/api/captive-portal";
+  }
+  return "https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal";
+}
+
+const API_BASE = getApiBase();
 
 /** Fetch with timeout + retry (for pre-auth captive resilience) */
 async function resilientFetch(
