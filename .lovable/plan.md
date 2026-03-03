@@ -1,39 +1,32 @@
 
 
-# Corrigir 404 no Captive Assistant
+# Tornar o Portal Resiliente a Falhas de Rede
 
 ## Diagnóstico
 
-O `vercel.json` com rewrites só funciona em deploy no Vercel. Se o captive assistant está apontando para o preview do Lovable (`*.lovable.app`) ou outro ambiente que não seja Vercel, as chamadas a `/api/captive-portal/bootstrap` retornam 404 porque não há servidor proxy — o arquivo `vercel.json` é ignorado.
+A configuração do UniFi está correta — o domínio e o IP do Vercel estão no walled garden. O problema é que o **captive assistant** (mini-browser do Android/iOS) tem restrições adicionais que podem bloquear chamadas HTTPS ou assets JS antes da autorização completa.
 
-Além disso, mesmo no Vercel, se o deploy ainda não incluiu o `vercel.json`, o mesmo problema acontece.
+Como não podemos controlar o comportamento do captive assistant, a solução é **tornar o portal funcional mesmo quando o bootstrap falha**.
 
 ## Solução
 
-Tornar o `API_BASE` em `src/lib/api.ts` dinâmico com fallback:
+Modificar `src/pages/CaptivePortal.tsx` para:
 
-- **Em produção (Vercel)**: usar caminho relativo `/api/captive-portal` (same-origin proxy)
-- **Em outros ambientes** (Lovable preview, dev local): usar URL absoluta do Supabase `https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal`
+1. **Mostrar o formulário imediatamente** com dados fallback em vez de travar com "Erro ao conectar"
+2. **Tentar bootstrap em background** — se conseguir, atualiza os dados; se não, o formulário já está visível
+3. **Submeter lead mesmo sem session_id** — o backend já aceita isso
 
-### Lógica de detecção
+### Dados fallback quando bootstrap falha:
+- Nome da loja: "Drogaria Minas Brasil"  
+- Consent text: texto padrão da LGPD hardcoded
+- Consent version: "offline-fallback"
 
-```typescript
-function getApiBase(): string {
-  const host = window.location.hostname;
-  // Em produção (Vercel) usa proxy same-origin
-  if (host === "wifi.guedesepaixao.com.br") {
-    return "/api/captive-portal";
-  }
-  // Fallback: URL direta do Supabase
-  return "https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal";
-}
+### Mudança no fluxo:
+- Atual: loading → bootstrap → (erro = tela travada) | (ok = formulário)
+- Novo: loading breve → formulário com fallback → bootstrap atualiza dados se conseguir
 
-const API_BASE = getApiBase();
-```
+### Arquivo modificado:
+- `src/pages/CaptivePortal.tsx` — useEffect de inicialização e estado inicial
 
-### Arquivo modificado
-
-- `src/lib/api.ts` — apenas a definição de `API_BASE` muda, todo o resto (resilientFetch, retry, endpoints) permanece igual.
-
-Nenhuma mudança visual. Nenhuma mudança no `vercel.json`.
+Nenhuma mudança no backend, no `vercel.json`, ou no `api.ts`.
 
