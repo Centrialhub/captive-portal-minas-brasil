@@ -1,35 +1,39 @@
 
 
-# Adicionar CPF nas exportacoes e tabela admin
+# Corrigir 404 no Captive Assistant
 
-## Situacao atual
+## Diagnóstico
 
-- **Banco de dados**: CPF ja esta sendo salvo corretamente na tabela `leads`.
-- **CSV export**: Campo CPF nao esta incluido nos headers nem nos dados exportados.
-- **XML export**: Nenhuma tag `<cpf>` e gerada no XML.
-- **Tabela de leads no painel admin**: Coluna CPF nao aparece.
+O `vercel.json` com rewrites só funciona em deploy no Vercel. Se o captive assistant está apontando para o preview do Lovable (`*.lovable.app`) ou outro ambiente que não seja Vercel, as chamadas a `/api/captive-portal/bootstrap` retornam 404 porque não há servidor proxy — o arquivo `vercel.json` é ignorado.
 
-## Alteracoes necessarias
+Além disso, mesmo no Vercel, se o deploy ainda não incluiu o `vercel.json`, o mesmo problema acontece.
 
-### 1. Edge Function - CSV Export (~linha 1168)
+## Solução
 
-Adicionar "cpf" ao array de headers do CSV e incluir `lead.cpf` na linha de dados.
+Tornar o `API_BASE` em `src/lib/api.ts` dinâmico com fallback:
 
-### 2. Edge Function - XML Export (~linha 1425)
+- **Em produção (Vercel)**: usar caminho relativo `/api/captive-portal` (same-origin proxy)
+- **Em outros ambientes** (Lovable preview, dev local): usar URL absoluta do Supabase `https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal`
 
-Adicionar tag `<cpf>` logo apos `<name>` na geracao do XML:
-```xml
-<cpf>12345678900</cpf>
+### Lógica de detecção
+
+```typescript
+function getApiBase(): string {
+  const host = window.location.hostname;
+  // Em produção (Vercel) usa proxy same-origin
+  if (host === "wifi.guedesepaixao.com.br") {
+    return "/api/captive-portal";
+  }
+  // Fallback: URL direta do Supabase
+  return "https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal";
+}
+
+const API_BASE = getApiBase();
 ```
 
-### 3. Painel Admin - Tabela de Leads (~linha 514)
+### Arquivo modificado
 
-Adicionar coluna "CPF" nos headers da tabela e exibir `l.cpf || "-"` nas linhas.
+- `src/lib/api.ts` — apenas a definição de `API_BASE` muda, todo o resto (resilientFetch, retry, endpoints) permanece igual.
 
-## Arquivo modificado
-
-- `supabase/functions/captive-portal/index.ts` (CSV e XML)
-- `src/pages/AdminPanel.tsx` (tabela de leads)
-
-Nenhuma migracao de banco necessaria -- a coluna `cpf` ja existe.
+Nenhuma mudança visual. Nenhuma mudança no `vercel.json`.
 
