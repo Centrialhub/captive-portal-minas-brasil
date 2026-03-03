@@ -10,8 +10,17 @@ interface BootstrapData {
   required_fields: Record<string, unknown>;
 }
 
+const FALLBACK_BOOTSTRAP: BootstrapData = {
+  store: { slug: null, name: "Drogaria Minas Brasil" },
+  consent: {
+    version: "offline-fallback",
+    text: "Ao se conectar à rede Wi-Fi da Drogaria Minas Brasil, você concorda com a coleta e tratamento dos seus dados pessoais (nome, CPF, e-mail e telefone) para fins de autenticação, segurança da rede e comunicações promocionais. Seus dados serão tratados conforme a Lei Geral de Proteção de Dados (LGPD - Lei nº 13.709/2018). Você pode solicitar a exclusão dos seus dados a qualquer momento entrando em contato conosco.",
+  },
+  required_fields: {},
+};
+
 export default function CaptivePortal() {
-  const [bootstrapData, setBootstrapData] = useState<BootstrapData | null>(null);
+  const [bootstrapData, setBootstrapData] = useState<BootstrapData>(FALLBACK_BOOTSTRAP);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -41,12 +50,21 @@ export default function CaptivePortal() {
     const ssid = params.get("ssid") || undefined;
     const redirectParam = params.get("url") || undefined;
 
+    // Show form immediately, try bootstrap in background
+    setLoading(false);
+
     (async () => {
       try {
         const data = await api.bootstrap();
-        if (data.error) { setError(data.error); setLoading(false); return; }
-        setBootstrapData(data);
+        if (!data.error) {
+          setBootstrapData(data);
+        }
+      } catch {
+        // Fallback already set, form is visible
+        if (import.meta.env.DEV) console.warn("[captive] bootstrap failed, using fallback");
+      }
 
+      try {
         const session = await api.startSession({
           client_mac: clientMac,
           ap_mac: apMac,
@@ -55,9 +73,8 @@ export default function CaptivePortal() {
         });
         if (session.session_id) setSessionId(session.session_id);
       } catch {
-        setError("Erro ao conectar com o servidor.");
+        if (import.meta.env.DEV) console.warn("[captive] startSession failed");
       }
-      setLoading(false);
     })();
   }, []);
 
@@ -79,7 +96,7 @@ export default function CaptivePortal() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!consented || !bootstrapData?.consent) return;
+    if (!consented || !bootstrapData.consent) return;
     setSubmitting(true);
     setError(null);
 
@@ -200,16 +217,6 @@ export default function CaptivePortal() {
     );
   }
 
-  if (error && !bootstrapData) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-primary p-4">
-        <div className="w-full max-w-md rounded-xl bg-card p-8 text-center shadow-2xl">
-          <img src={logoMinasBrasil} alt="Drogaria Minas Brasil" className="mx-auto mb-4 h-14 object-contain" />
-          <p className="text-destructive font-medium">{error}</p>
-        </div>
-      </div>
-    );
-  }
 
   // OTP Step
   if (step === "otp") {
@@ -283,9 +290,9 @@ export default function CaptivePortal() {
           WiFi Gratuito Drogaria Minas Brasil
         </h1>
         <p className="mb-5 text-sm text-muted-foreground text-center">
-          {bootstrapData?.store.city
+          {bootstrapData.store.city
             ? `${bootstrapData.store.name} — ${bootstrapData.store.city}`
-            : bootstrapData?.store.name || "Wi-Fi Gratuito"}
+            : bootstrapData.store.name || "Wi-Fi Gratuito"}
         </p>
 
         {error && (
@@ -322,7 +329,7 @@ export default function CaptivePortal() {
               placeholder="(11) 99999-9999" />
           </div>
 
-          {bootstrapData?.consent && (
+          {bootstrapData.consent && (
             <>
               <details className="rounded-lg border-2 border-border bg-muted">
                 <summary className="cursor-pointer px-3 py-2.5 text-xs font-semibold text-muted-foreground select-none">
