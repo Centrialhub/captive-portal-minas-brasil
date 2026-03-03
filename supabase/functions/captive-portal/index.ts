@@ -1476,6 +1476,179 @@ async function handleCronHousekeeping(req: Request): Promise<Response> {
   return jsonResponse({ ok: true, cleaned });
 }
 
+// ========== Self-contained HTML Portal ==========
+async function handlePortalHtml(req: Request, url: URL): Promise<Response> {
+  const API_BASE = `${SUPABASE_URL}/functions/v1/captive-portal`;
+  const qp = url.searchParams;
+  const clientMac = (qp.get("id") || qp.get("mac") || "").replace(/'/g, "");
+  const redirectParam = (qp.get("url") || "").replace(/'/g, "");
+  const year = new Date().getFullYear();
+
+  const html = `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
+<title>WiFi Drogaria Minas Brasil</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#1a3a2a;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:16px}
+.card{background:#fff;border-radius:12px;padding:24px;max-width:400px;width:100%;box-shadow:0 10px 30px rgba(0,0,0,.3)}
+.tagline{font-size:10px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:1px;text-align:center;margin-bottom:12px}
+h1{font-size:18px;font-weight:800;text-align:center;margin-bottom:4px;color:#1a1a1a}
+.subtitle{font-size:13px;color:#888;text-align:center;margin-bottom:16px}
+label{display:block;font-size:13px;font-weight:600;margin-bottom:4px;color:#1a1a1a}
+input[type=text],input[type=email],input[type=tel]{width:100%;padding:10px 12px;border:2px solid #ddd;border-radius:8px;font-size:14px;outline:none;transition:border-color .2s}
+input[type=text]:focus,input[type=email]:focus,input[type=tel]:focus{border-color:#f5c542}
+.field{margin-bottom:10px}
+.hint{font-size:11px;color:#888;margin-top:4px}
+details{border:2px solid #ddd;border-radius:8px;background:#f9f9f9;margin-bottom:10px}
+summary{cursor:pointer;padding:10px 12px;font-size:11px;font-weight:600;color:#888}
+details p{padding:0 12px 12px;font-size:11px;color:#888;line-height:1.5}
+.consent-row{display:flex;align-items:flex-start;gap:8px;font-size:13px;cursor:pointer;margin-bottom:10px}
+.consent-row input{margin-top:2px;accent-color:#1a3a2a}
+.consent-row span{font-weight:500;color:#1a1a1a}
+.btn{width:100%;padding:12px;background:#f5c542;border:none;border-radius:8px;font-size:15px;font-weight:700;color:#1a1a1a;cursor:pointer;transition:opacity .2s}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.error{background:#fef2f2;border-radius:8px;padding:10px;margin-bottom:10px;color:#dc2626;font-size:13px;font-weight:500;display:none}
+.success-card{text-align:center;padding:32px 24px}
+.success-icon{width:64px;height:64px;background:#dcfce7;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 16px}
+.success-icon svg{width:32px;height:32px;color:#16a34a}
+.footer{text-align:center;font-size:10px;color:#888;margin-top:16px}
+.otp-container{display:flex;gap:8px;justify-content:center;margin-bottom:16px}
+.otp-input{width:42px;height:48px;text-align:center;font-size:20px;font-weight:700;border:2px solid #ddd;border-radius:8px;outline:none}
+.otp-input:focus{border-color:#f5c542}
+.btn-outline{width:100%;padding:10px;background:transparent;border:2px solid #ddd;border-radius:8px;font-size:13px;font-weight:500;color:#888;cursor:pointer;margin-top:8px}
+.btn-outline:disabled{opacity:.5;cursor:not-allowed}
+</style>
+</head>
+<body>
+<div class="card">
+  <div id="form-view">
+    <p class="tagline">vender barato &eacute; tradi&ccedil;&atilde;o</p>
+    <h1>WiFi Gratuito</h1>
+    <p class="subtitle" id="store-info">Drogaria Minas Brasil</p>
+    <div class="error" id="error-msg"></div>
+    <form id="portal-form">
+      <div class="field"><label>Nome *</label><input type="text" name="name" required placeholder="Seu nome completo"></div>
+      <div class="field"><label>E-mail</label><input type="email" name="email" placeholder="email@exemplo.com (opcional)"></div>
+      <div class="field"><label>CPF *</label><input type="text" name="cpf" required inputmode="numeric" maxlength="14" placeholder="000.000.000-00"><p class="hint">Certifique-se que o seu CPF est&aacute; correto</p></div>
+      <div class="field"><label>Telefone (WhatsApp) *</label><input type="tel" name="phone" required placeholder="(11) 99999-9999"></div>
+      <details><summary>Termos de Uso e Pol&iacute;tica de Privacidade (LGPD)</summary><p id="consent-text">Ao se conectar &agrave; rede Wi-Fi da Drogaria Minas Brasil, voc&ecirc; concorda com a coleta e tratamento dos seus dados pessoais para fins de autentica&ccedil;&atilde;o, seguran&ccedil;a da rede e comunica&ccedil;&otilde;es promocionais conforme a LGPD.</p></details>
+      <label class="consent-row"><input type="checkbox" id="consent-check"><span>Li e aceito os termos</span></label>
+      <button type="submit" class="btn" id="submit-btn" disabled>Conectar ao Wi-Fi</button>
+    </form>
+    <p class="footer">Drogaria Minas Brasil &copy; ${year}</p>
+  </div>
+  <div id="otp-view" style="display:none">
+    <h1 style="margin-bottom:8px">Verifica&ccedil;&atilde;o por WhatsApp</h1>
+    <p class="subtitle" id="otp-phone-msg">Digite o c&oacute;digo de 6 d&iacute;gitos</p>
+    <div class="error" id="otp-error"></div>
+    <div class="otp-container" id="otp-inputs"></div>
+    <button class="btn" id="verify-btn" disabled>Verificar c&oacute;digo</button>
+    <button class="btn-outline" id="resend-btn" disabled>Reenviar c&oacute;digo</button>
+    <p class="footer">Drogaria Minas Brasil &copy; ${year}</p>
+  </div>
+  <div id="success-view" style="display:none" class="success-card">
+    <div class="success-icon"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg></div>
+    <h1 id="success-title">Conectado!</h1>
+    <p class="subtitle" id="success-msg"></p>
+    <p class="footer" id="success-redirect" style="display:none"><a href="#" id="redirect-link" style="color:#1a3a2a;font-weight:500">Clique aqui se n&atilde;o redirecionar</a></p>
+    <p class="footer">Drogaria Minas Brasil &copy; ${year}</p>
+  </div>
+</div>
+<script>
+(function(){
+var API='${API_BASE}';
+var clientMac='${clientMac}';
+var sessionId=null;
+var consentVersion='offline-fallback';
+var redirectUrl='${redirectParam}'||null;
+var resendTimer=null,resendSeconds=0;
+var form=document.getElementById('portal-form');
+var consentCheck=document.getElementById('consent-check');
+var submitBtn=document.getElementById('submit-btn');
+var errorDiv=document.getElementById('error-msg');
+consentCheck.addEventListener('change',function(){submitBtn.disabled=!consentCheck.checked;});
+function req(method,path,body,cb,timeout){
+var x=new XMLHttpRequest();x.open(method,API+path,true);
+x.setRequestHeader('Content-Type','application/json');x.timeout=timeout||15000;
+x.onload=function(){try{cb(null,JSON.parse(x.responseText));}catch(e){cb('Erro ao processar.');}};
+x.onerror=x.ontimeout=function(){cb('Erro de conex\\u00e3o.');};
+x.send(body?JSON.stringify(body):null);
+}
+req('GET','/bootstrap',null,function(e,d){
+if(d&&d.store&&d.store.name){document.getElementById('store-info').textContent=d.store.city?d.store.name+' \\u2014 '+d.store.city:d.store.name;}
+if(d&&d.consent){document.getElementById('consent-text').textContent=d.consent.text;consentVersion=d.consent.version||consentVersion;}
+},5000);
+req('POST','/start',{client_mac:clientMac,user_agent:navigator.userAgent},function(e,d){if(d&&d.session_id)sessionId=d.session_id;},6000);
+function showErr(el,m){el.textContent=m;el.style.display='block';}
+function hideErr(el){el.style.display='none';}
+form.addEventListener('submit',function(ev){
+ev.preventDefault();hideErr(errorDiv);submitBtn.disabled=true;submitBtn.textContent='Enviando...';
+var fd=new FormData(form);
+req('POST','/submit',{session_id:sessionId,name:fd.get('name'),email:fd.get('email')||'',phone:fd.get('phone'),cpf:fd.get('cpf'),client_mac:clientMac,consent_version:consentVersion},function(err,r){
+if(err){showErr(errorDiv,err);submitBtn.disabled=false;submitBtn.textContent='Conectar ao Wi-Fi';return;}
+if(r.error){showErr(errorDiv,r.error);submitBtn.disabled=false;submitBtn.textContent='Conectar ao Wi-Fi';return;}
+if(r.requires_verification){redirectUrl=r.redirect_url||redirectUrl;showOtp(fd.get('phone'));return;}
+redirectUrl=r.redirect_url||redirectUrl;showSuccess(r.message||'Cadastro realizado!',!!r.authorized);
+});
+});
+function showOtp(phone){
+document.getElementById('form-view').style.display='none';
+document.getElementById('otp-view').style.display='block';
+document.getElementById('otp-phone-msg').innerHTML='Digite o c\\u00f3digo enviado para <strong>'+(phone||'')+'</strong>';
+var c=document.getElementById('otp-inputs');c.innerHTML='';
+for(var i=0;i<6;i++){var inp=document.createElement('input');inp.type='text';inp.inputMode='numeric';inp.maxLength=1;inp.className='otp-input';
+inp.addEventListener('input',function(){this.value=this.value.replace(/\\D/g,'');if(this.value&&this.nextElementSibling)this.nextElementSibling.focus();checkOtp();});
+inp.addEventListener('keydown',function(e){if(e.key==='Backspace'&&!this.value&&this.previousElementSibling)this.previousElementSibling.focus();});
+c.appendChild(inp);}c.children[0].focus();startCooldown(60);
+}
+function getOtp(){var v='';document.querySelectorAll('.otp-input').forEach(function(i){v+=i.value;});return v;}
+function checkOtp(){document.getElementById('verify-btn').disabled=getOtp().length!==6;}
+document.getElementById('verify-btn').addEventListener('click',function(){
+var code=getOtp();if(!sessionId||code.length!==6)return;var btn=this;btn.disabled=true;btn.textContent='Verificando...';
+var oe=document.getElementById('otp-error');hideErr(oe);
+req('POST','/verify-code',{session_id:sessionId,code:code},function(err,r){
+if(err){showErr(oe,err);btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';return;}
+if(r.error){showErr(oe,r.error);btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';document.querySelectorAll('.otp-input').forEach(function(i){i.value='';});document.querySelector('.otp-input').focus();return;}
+redirectUrl=r.redirect_url||redirectUrl;showSuccess(r.message||'C\\u00f3digo verificado!',true);
+});
+});
+document.getElementById('resend-btn').addEventListener('click',function(){
+if(!sessionId||resendSeconds>0)return;var btn=this;btn.disabled=true;btn.textContent='Reenviando...';
+var oe=document.getElementById('otp-error');hideErr(oe);
+var ph=document.getElementById('otp-phone-msg').querySelector('strong');
+req('POST','/request-code',{session_id:sessionId,phone:ph?ph.textContent:''},function(err,r){
+if(err||r.error){showErr(oe,err||r.error);btn.disabled=false;btn.textContent='Reenviar c\\u00f3digo';return;}
+startCooldown(60);
+});
+});
+function startCooldown(s){resendSeconds=s;var btn=document.getElementById('resend-btn');btn.disabled=true;btn.textContent='Reenviar ('+s+'s)';
+if(resendTimer)clearInterval(resendTimer);
+resendTimer=setInterval(function(){resendSeconds--;if(resendSeconds<=0){clearInterval(resendTimer);btn.disabled=false;btn.textContent='Reenviar c\\u00f3digo';}else btn.textContent='Reenviar ('+resendSeconds+'s)';},1000);
+}
+function showSuccess(msg,auth){
+document.getElementById('form-view').style.display='none';document.getElementById('otp-view').style.display='none';document.getElementById('success-view').style.display='block';
+document.getElementById('success-title').textContent=auth?'Conectado!':'Cadastro realizado!';document.getElementById('success-msg').textContent=msg;
+if(redirectUrl){document.getElementById('success-redirect').style.display='block';document.getElementById('redirect-link').href=redirectUrl;if(auth)setTimeout(function(){location.replace(redirectUrl);},1500);}
+}
+})();
+</script>
+</body>
+</html>`;
+
+  return new Response(html, {
+    headers: {
+      ...corsHeaders,
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-cache, no-store, must-revalidate",
+      "Content-Security-Policy": "default-src 'self' https:; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https:",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+}
+
 // ========== Main Router ==========
 
 Deno.serve(async (req: Request) => {
@@ -1487,6 +1660,9 @@ Deno.serve(async (req: Request) => {
   const path = url.pathname.replace(/^\/captive-portal/, "");
 
   try {
+    // Self-contained HTML portal (for captive assistant that can't reach Vercel)
+    if ((path === "/portal" || path === "/portal/") && req.method === "GET") return await handlePortalHtml(req, url);
+
     // Public portal endpoints
     if (path === "/bootstrap" && req.method === "GET") return await handleBootstrap(req);
     if (path === "/start" && req.method === "POST") return await handleStart(req);
