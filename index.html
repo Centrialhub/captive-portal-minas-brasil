@@ -25,7 +25,94 @@
 </head>
 
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <!-- Fallback inline form: shown if JS bundle fails to load (e.g. captive assistant) -->
+      <div id="fallback-portal" style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#1a3a2a;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:16px;margin:0;">
+        <div style="background:#fff;border-radius:12px;padding:24px;max-width:400px;width:100%;box-shadow:0 10px 30px rgba(0,0,0,.3);">
+          <div style="text-align:center;margin-bottom:16px;">
+            <img src="/favicon-mb.png" alt="Drogaria Minas Brasil" style="height:56px;object-fit:contain;" onerror="this.style.display='none'">
+            <p style="font-size:10px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:1px;margin:8px 0 0;">vender barato é tradição</p>
+          </div>
+          <h1 style="font-size:18px;font-weight:800;text-align:center;margin:0 0 4px;color:#1a1a1a;">WiFi Gratuito Drogaria Minas Brasil</h1>
+          <p style="font-size:13px;color:#888;text-align:center;margin:0 0 16px;">Preencha para conectar ao Wi-Fi</p>
+          <form id="fallback-form" style="display:flex;flex-direction:column;gap:10px;">
+            <div>
+              <label style="display:block;font-size:13px;font-weight:600;margin-bottom:4px;color:#1a1a1a;">Nome *</label>
+              <input name="name" required placeholder="Seu nome completo" style="width:100%;padding:10px 12px;border:2px solid #ddd;border-radius:8px;font-size:14px;box-sizing:border-box;outline:none;" onfocus="this.style.borderColor='#f5c542'" onblur="this.style.borderColor='#ddd'">
+            </div>
+            <div>
+              <label style="display:block;font-size:13px;font-weight:600;margin-bottom:4px;color:#1a1a1a;">E-mail</label>
+              <input name="email" type="email" placeholder="email@exemplo.com (opcional)" style="width:100%;padding:10px 12px;border:2px solid #ddd;border-radius:8px;font-size:14px;box-sizing:border-box;outline:none;" onfocus="this.style.borderColor='#f5c542'" onblur="this.style.borderColor='#ddd'">
+            </div>
+            <div>
+              <label style="display:block;font-size:13px;font-weight:600;margin-bottom:4px;color:#1a1a1a;">CPF *</label>
+              <input name="cpf" required inputmode="numeric" maxlength="14" placeholder="000.000.000-00" style="width:100%;padding:10px 12px;border:2px solid #ddd;border-radius:8px;font-size:14px;box-sizing:border-box;outline:none;" onfocus="this.style.borderColor='#f5c542'" onblur="this.style.borderColor='#ddd'">
+              <p style="font-size:11px;color:#888;margin:4px 0 0;">Certifique-se que o seu CPF está correto</p>
+            </div>
+            <div>
+              <label style="display:block;font-size:13px;font-weight:600;margin-bottom:4px;color:#1a1a1a;">Telefone (WhatsApp) *</label>
+              <input name="phone" type="tel" required placeholder="(11) 99999-9999" style="width:100%;padding:10px 12px;border:2px solid #ddd;border-radius:8px;font-size:14px;box-sizing:border-box;outline:none;" onfocus="this.style.borderColor='#f5c542'" onblur="this.style.borderColor='#ddd'">
+            </div>
+            <details style="border:2px solid #ddd;border-radius:8px;background:#f9f9f9;">
+              <summary style="cursor:pointer;padding:10px 12px;font-size:11px;font-weight:600;color:#888;">Termos de Uso e Política de Privacidade (LGPD)</summary>
+              <p style="padding:0 12px 12px;font-size:11px;color:#888;line-height:1.5;margin:0;">Ao se conectar à rede Wi-Fi da Drogaria Minas Brasil, você concorda com a coleta e tratamento dos seus dados pessoais (nome, CPF, e-mail e telefone) para fins de autenticação, segurança da rede e comunicações promocionais. Seus dados serão tratados conforme a Lei Geral de Proteção de Dados (LGPD - Lei nº 13.709/2018). Você pode solicitar a exclusão dos seus dados a qualquer momento entrando em contato conosco.</p>
+            </details>
+            <label style="display:flex;align-items:flex-start;gap:8px;font-size:13px;cursor:pointer;">
+              <input type="checkbox" id="fallback-consent" style="margin-top:2px;accent-color:#1a3a2a;">
+              <span style="font-weight:500;color:#1a1a1a;">Li e aceito os termos</span>
+            </label>
+            <button type="submit" id="fallback-submit" disabled style="width:100%;padding:12px;background:#f5c542;border:none;border-radius:8px;font-size:15px;font-weight:700;color:#1a1a1a;cursor:pointer;opacity:.5;transition:opacity .2s;">Conectar ao Wi-Fi</button>
+          </form>
+          <div id="fallback-status" style="display:none;text-align:center;padding:16px 0;">
+            <p style="font-size:14px;font-weight:500;color:#1a1a1a;"></p>
+          </div>
+          <p style="text-align:center;font-size:10px;color:#888;margin:16px 0 0;">Drogaria Minas Brasil © 2025</p>
+        </div>
+      </div>
+    </div>
+    <script>
+      // Fallback form logic — only runs if React hasn't mounted
+      (function(){
+        var consent = document.getElementById('fallback-consent');
+        var btn = document.getElementById('fallback-submit');
+        var form = document.getElementById('fallback-form');
+        var status = document.getElementById('fallback-status');
+        if (!consent || !btn || !form) return;
+        consent.addEventListener('change', function(){ btn.disabled = !consent.checked; btn.style.opacity = consent.checked ? '1' : '.5'; });
+        form.addEventListener('submit', function(e){
+          e.preventDefault();
+          btn.disabled = true; btn.textContent = 'Enviando...';
+          var fd = new FormData(form);
+          var payload = {
+            name: fd.get('name'),
+            email: fd.get('email') || '',
+            phone: fd.get('phone'),
+            cpf: fd.get('cpf'),
+            consent_version: 'offline-fallback',
+            client_mac: new URLSearchParams(location.search).get('id') || new URLSearchParams(location.search).get('mac') || ''
+          };
+          var apiBase = (location.hostname === 'wifi.guedesepaixao.com.br' || location.hostname.indexOf('.vercel.app') !== -1)
+            ? '/api/captive-portal' : 'https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal';
+          var xhr = new XMLHttpRequest();
+          xhr.open('POST', apiBase + '/submit');
+          xhr.setRequestHeader('Content-Type', 'application/json');
+          xhr.onload = function(){
+            try {
+              var r = JSON.parse(xhr.responseText);
+              if (r.error) { btn.textContent = 'Conectar ao Wi-Fi'; btn.disabled = false; alert(r.error); return; }
+              form.style.display = 'none';
+              status.style.display = 'block';
+              status.querySelector('p').textContent = r.message || 'Cadastro realizado! Você já pode navegar.';
+              if (r.redirect_url) { setTimeout(function(){ location.replace(r.redirect_url); }, 1500); }
+            } catch(_) { btn.textContent = 'Conectar ao Wi-Fi'; btn.disabled = false; alert('Erro ao processar resposta.'); }
+          };
+          xhr.onerror = function(){ btn.textContent = 'Conectar ao Wi-Fi'; btn.disabled = false; alert('Erro de conexão. Tente novamente.'); };
+          xhr.timeout = 15000;
+          xhr.ontimeout = xhr.onerror;
+          xhr.send(JSON.stringify(payload));
+        });
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
