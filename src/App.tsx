@@ -37,10 +37,43 @@ export default function App() {
   const [resending, setResending] = useState(false);
   const [cooldown, setCooldown] = useState(0);
   const cooldownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const sessionIdRef = useRef<string | null>(null);
+  const startPromiseRef = useRef<Promise<string | null> | null>(null);
+
+  // Ensure session_id exists before any submit/verify/resend call
+  const ensureSession = async (): Promise<string> => {
+    if (sessionIdRef.current) return sessionIdRef.current;
+
+    // If /start is already in-flight, wait for it
+    if (startPromiseRef.current) {
+      const id = await startPromiseRef.current;
+      if (id) return id;
+    }
+
+    // Otherwise call /start now
+    const params = getQueryParams();
+    const promise = api.startSession(params).then(s => {
+      const id = s.session_id || null;
+      if (id) {
+        sessionIdRef.current = id;
+        setSessionId(id);
+      }
+      return id;
+    });
+    startPromiseRef.current = promise;
+    const id = await promise;
+    if (!id) throw new Error("Não foi possível criar sessão. Tente novamente.");
+    return id;
+  };
 
   // Boot: show form immediately, fetch bootstrap/start in background
   useEffect(() => {
     setStep("form");
+
+    // Hide HTML fallback — React mounted successfully
+    const fb = document.getElementById("fb");
+    if (fb) fb.style.display = "none";
+
     const params = getQueryParams();
 
     (async () => {
@@ -50,9 +83,17 @@ export default function App() {
       } catch { /* use fallback */ }
 
       try {
-        const s = await api.startSession(params);
-        if (s.session_id) setSessionId(s.session_id);
-      } catch { /* non-blocking */ }
+        const promise = api.startSession(params).then(s => {
+          const id = s.session_id || null;
+          if (id) {
+            sessionIdRef.current = id;
+            setSessionId(id);
+          }
+          return id;
+        });
+        startPromiseRef.current = promise;
+        await promise;
+      } catch { /* non-blocking, ensureSession will retry */ }
     })();
   }, []);
 
