@@ -1,106 +1,199 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
-
-@layer base {
-  :root {
-    /* Minas Brasil brand palette */
-    --background: 0 0% 100%;
-    --foreground: 0 0% 0%;
-
-    --card: 0 0% 100%;
-    --card-foreground: 0 0% 0%;
-
-    --popover: 0 0% 100%;
-    --popover-foreground: 0 0% 0%;
-
-    /* Primary = Vermelho institucional #E30613 → hsl(356, 95%, 45%) */
-    --primary: 356 95% 45%;
-    --primary-foreground: 0 0% 100%;
-
-    /* Secondary = Amarelo #F5B800 → hsl(45, 100%, 48%) */
-    --secondary: 45 100% 48%;
-    --secondary-foreground: 0 0% 0%;
-
-    --muted: 0 0% 96%;
-    --muted-foreground: 0 0% 40%;
-
-    /* Accent = Amarelo */
-    --accent: 45 100% 48%;
-    --accent-foreground: 0 0% 0%;
-
-    --destructive: 0 72% 35%;
-    --destructive-foreground: 0 0% 100%;
-
-    --border: 0 0% 88%;
-    --input: 0 0% 88%;
-    --ring: 356 95% 45%;
-
-    --radius: 0.5rem;
-
-    /* Sidebar = Red brand */
-    --sidebar-background: 356 95% 45%;
-    --sidebar-foreground: 0 0% 100%;
-    --sidebar-primary: 45 100% 48%;
-    --sidebar-primary-foreground: 0 0% 0%;
-    --sidebar-accent: 356 80% 38%;
-    --sidebar-accent-foreground: 0 0% 100%;
-    --sidebar-border: 356 80% 38%;
-    --sidebar-ring: 45 100% 48%;
-
-    /* Brand extras */
-    --brand-red: 356 95% 45%;
-    --brand-yellow: 45 100% 48%;
-    --brand-yellow-hover: 45 100% 42%;
-    --brand-success: 140 60% 40%;
-    --brand-success-bg: 140 60% 95%;
-  }
-
-  .dark {
-    --background: 0 0% 7%;
-    --foreground: 0 0% 95%;
-    --card: 0 0% 10%;
-    --card-foreground: 0 0% 95%;
-    --popover: 0 0% 10%;
-    --popover-foreground: 0 0% 95%;
-    --primary: 356 95% 50%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 45 100% 48%;
-    --secondary-foreground: 0 0% 0%;
-    --muted: 0 0% 15%;
-    --muted-foreground: 0 0% 65%;
-    --accent: 45 100% 48%;
-    --accent-foreground: 0 0% 0%;
-    --destructive: 0 72% 35%;
-    --destructive-foreground: 0 0% 100%;
-    --border: 0 0% 20%;
-    --input: 0 0% 20%;
-    --ring: 356 95% 50%;
-    --sidebar-background: 356 90% 30%;
-    --sidebar-foreground: 0 0% 100%;
-    --sidebar-primary: 45 100% 48%;
-    --sidebar-primary-foreground: 0 0% 0%;
-    --sidebar-accent: 356 80% 25%;
-    --sidebar-accent-foreground: 0 0% 100%;
-    --sidebar-border: 356 80% 25%;
-    --sidebar-ring: 45 100% 48%;
-    --brand-red: 356 95% 50%;
-    --brand-yellow: 45 100% 48%;
-    --brand-yellow-hover: 45 100% 42%;
-    --brand-success: 140 60% 40%;
-    --brand-success-bg: 140 40% 15%;
-  }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  background: #c0392b;
+  color: #1a1a1a;
+  min-height: 100vh;
 }
 
-@layer base {
-  * {
-    @apply border-border;
-  }
+.portal-wrapper {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
 
-  body {
-    @apply bg-background text-foreground;
-    font-family: 'Inter', sans-serif;
-  }
+.portal-card {
+  background: #fff;
+  border-radius: 14px;
+  padding: 28px 22px;
+  max-width: 420px;
+  width: 100%;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.25);
+}
+
+.portal-logo {
+  height: 56px;
+  object-fit: contain;
+  margin-bottom: 6px;
+}
+
+.portal-slogan {
+  font-size: 10px;
+  font-weight: 700;
+  color: #999;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  margin-top: 2px;
+  margin-bottom: 12px;
+}
+
+.portal-title {
+  font-size: 20px;
+  font-weight: 800;
+  text-align: center;
+  margin-bottom: 4px;
+  color: #1a1a1a;
+}
+
+.portal-subtitle {
+  font-size: 14px;
+  color: #777;
+  text-align: center;
+  margin-bottom: 18px;
+}
+
+.portal-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 4px;
+  margin-top: 12px;
+  color: #1a1a1a;
+}
+
+.portal-input {
+  width: 100%;
+  padding: 11px 14px;
+  border: 2px solid #ddd;
+  border-radius: 10px;
+  font-size: 15px;
+  outline: none;
+  transition: border-color 0.15s;
+  background: #fff;
+  color: #1a1a1a;
+}
+.portal-input:focus {
+  border-color: #f5c542;
+}
+
+.portal-hint {
+  font-size: 11px;
+  color: #999;
+  margin-top: 3px;
+}
+
+.portal-error {
+  background: #fde8e8;
+  border: 1px solid #e74c3c;
+  color: #c0392b;
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 12px;
+}
+
+.portal-terms {
+  border: 2px solid #eee;
+  border-radius: 10px;
+  background: #f9f9f9;
+  margin-top: 14px;
+}
+.portal-terms summary {
+  cursor: pointer;
+  padding: 10px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #888;
+}
+.portal-terms p {
+  padding: 0 14px 14px;
+  font-size: 11px;
+  color: #888;
+  line-height: 1.6;
+}
+
+.portal-checkbox-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 14px;
+  cursor: pointer;
+  margin-top: 10px;
+  margin-bottom: 6px;
+}
+.portal-checkbox-label input[type="checkbox"] {
+  margin-top: 2px;
+  accent-color: #c0392b;
+  width: 18px;
+  height: 18px;
+}
+.portal-checkbox-label span {
+  font-weight: 500;
+  color: #1a1a1a;
+}
+
+.portal-btn {
+  display: block;
+  width: 100%;
+  padding: 14px;
+  background: #f5c542;
+  border: none;
+  border-radius: 10px;
+  font-size: 16px;
+  font-weight: 700;
+  color: #1a1a1a;
+  cursor: pointer;
+  margin-top: 14px;
+  transition: opacity 0.15s;
+}
+.portal-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.portal-btn:not(:disabled):hover {
+  opacity: 0.9;
+}
+
+.portal-btn-secondary {
+  display: block;
+  width: 100%;
+  padding: 12px;
+  background: transparent;
+  border: 2px solid #ddd;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 500;
+  color: #777;
+  cursor: pointer;
+  margin-top: 8px;
+  transition: background 0.15s;
+}
+.portal-btn-secondary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.portal-btn-secondary:not(:disabled):hover {
+  background: #f5f5f5;
+}
+
+.portal-footer {
+  text-align: center;
+  font-size: 10px;
+  color: #bbb;
+  margin-top: 18px;
+}
+
+.success-icon {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: #e8f5e9;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 14px;
 }

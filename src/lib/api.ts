@@ -8,35 +8,28 @@ function getApiBase(): string {
 
 const API_BASE = getApiBase();
 
-/** Fetch with timeout + retry (for pre-auth captive resilience) */
 async function resilientFetch(
   url: string,
   options?: RequestInit & { retries?: number; timeoutMs?: number },
 ): Promise<Response> {
   const { retries = 0, timeoutMs = 6000, ...fetchOpts } = options || {};
   const delays = [400, 1200];
-
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
-
       const res = await fetch(url, { ...fetchOpts, signal: controller.signal });
       clearTimeout(timer);
       return res;
     } catch (err) {
       lastError = err;
-      if (import.meta.env.DEV) {
-        console.warn(`[api] attempt ${attempt + 1} failed for ${url}`, err);
-      }
       if (attempt < retries) {
-        await new Promise((r) => setTimeout(r, delays[attempt] || 1200));
+        await new Promise(r => setTimeout(r, delays[attempt] || 1200));
       }
     }
   }
-
   throw lastError;
 }
 
@@ -93,22 +86,6 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
-    });
-    return res.json();
-  },
-
-  // Admin endpoints — keep absolute URL since admin runs post-auth
-  async adminRequest(path: string, token: string, options?: RequestInit) {
-    const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-    const FUNCTION_BASE = `${SUPABASE_URL}/functions/v1/captive-portal`;
-
-    const res = await fetch(`${FUNCTION_BASE}/admin/${path}`, {
-      ...options,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-        ...(options?.headers || {}),
-      },
     });
     return res.json();
   },
