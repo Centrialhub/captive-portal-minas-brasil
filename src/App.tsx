@@ -119,8 +119,11 @@ export default function App() {
     setError("");
 
     try {
+      // Guarantee session_id before submit
+      const sid = await ensureSession();
+
       const payload = buildSubmitPayload({
-        session_id: sessionId || undefined,
+        session_id: sid,
         name, email, phone, cpf,
         client_mac: getQueryParams().client_mac,
         consent_version: boot.consent?.version || "offline-fallback",
