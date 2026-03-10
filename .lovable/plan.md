@@ -1,55 +1,32 @@
 
 
-## Diagnosis
+# Tornar o Portal Resiliente a Falhas de Rede
 
-The user's three concerns map to concrete issues in the current codebase:
+## Diagnóstico
 
-1. **SPA routing is already disabled** -- no react-router, `vercel.json` catch-all serves `index.html`. This is already correct.
+A configuração do UniFi está correta — o domínio e o IP do Vercel estão no walled garden. O problema é que o **captive assistant** (mini-browser do Android/iOS) tem restrições adicionais que podem bloquear chamadas HTTPS ou assets JS antes da autorização completa.
 
-2. **ES6+ syntax compatibility** -- Vite's default build target is `esnext`/modern. The Android Captive Assistant uses a limited WebView that may choke on optional chaining (`?.`), nullish coalescing (`??`), or other modern syntax. The React bundle currently has **no legacy transpilation target** configured.
+Como não podemos controlar o comportamento do captive assistant, a solução é **tornar o portal funcional mesmo quando o bootstrap falha**.
 
-3. **HTTPS/Walled Garden** -- This is a UniFi controller configuration issue, not a code issue. However, we should document what domains need to be in the Walled Garden.
+## Solução
 
-## Plan
+Modificar `src/pages/CaptivePortal.tsx` para:
 
-### 1. Configure Vite build target for legacy browser compatibility
+1. **Mostrar o formulário imediatamente** com dados fallback em vez de travar com "Erro ao conectar"
+2. **Tentar bootstrap em background** — se conseguir, atualiza os dados; se não, o formulário já está visível
+3. **Submeter lead mesmo sem session_id** — o backend já aceita isso
 
-**File: `vite.config.ts`**
+### Dados fallback quando bootstrap falha:
+- Nome da loja: "Drogaria Minas Brasil"  
+- Consent text: texto padrão da LGPD hardcoded
+- Consent version: "offline-fallback"
 
-Add `build.target: 'es2015'` to force Vite to transpile all output JS to ES2015 (no optional chaining, no nullish coalescing, no top-level await). This ensures the React bundle works in the limited Android Captive Assistant WebView.
+### Mudança no fluxo:
+- Atual: loading → bootstrap → (erro = tela travada) | (ok = formulário)
+- Novo: loading breve → formulário com fallback → bootstrap atualiza dados se conseguir
 
-```ts
-build: {
-  target: 'es2015',
-},
-```
+### Arquivo modificado:
+- `src/pages/CaptivePortal.tsx` — useEffect de inicialização e estado inicial
 
-This is the most impactful change -- it directly addresses the "blank screen" issue where modern JS syntax crashes the WebView silently.
-
-### 2. Slim down `tailwind.config.ts`
-
-The current config has sidebar colors, accordion animations, radix references -- all remnants of a larger SPA. These are unused in a captive portal. Simplify to only what's actually used: brand colors and basic theme. This reduces CSS bundle size and removes the `tailwindcss-animate` dependency (which was already causing build issues).
-
-**File: `tailwind.config.ts`** -- strip to minimal config, remove `require("tailwindcss-animate")` plugin.
-
-**File: `package.json`** -- remove `tailwindcss-animate` from dependencies.
-
-### 3. Add Walled Garden documentation
-
-**File: `README.md`** -- Add a section documenting the required Walled Garden entries for UniFi:
-- `wifi.guedesepaixao.com.br` (portal domain)
-- `fqamejlyytrhovawgtwg.supabase.co` (API backend)
-- Vercel CDN IPs / `*.vercel.app` if applicable
-- OCSP domains for SSL validation
-
-### Summary of changes
-
-| File | Change |
-|---|---|
-| `vite.config.ts` | Add `build.target: 'es2015'` |
-| `tailwind.config.ts` | Strip unused theme config, remove `tailwindcss-animate` plugin |
-| `package.json` | Remove `tailwindcss-animate` dependency |
-| `README.md` | Add Walled Garden documentation |
-
-No changes to: `index.html`, `App.tsx`, `main.tsx`, `api.ts`, `portal-utils.ts`, `vercel.json`, backend.
+Nenhuma mudança no backend, no `vercel.json`, ou no `api.ts`.
 
