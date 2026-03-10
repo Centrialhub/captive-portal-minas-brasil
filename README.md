@@ -71,3 +71,19 @@ Yes, you can!
 To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
 
 Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
+
+## UniFi Walled Garden (Pre-Authorization Access)
+
+Para o captive portal funcionar corretamente no Android/iOS, adicione os seguintes domínios na lista **Pre-Authorization Access** (Walled Garden) da rede convidado no UniFi Controller:
+
+| Domínio / IP | Motivo |
+|---|---|
+| `wifi.guedesepaixao.com.br` | Portal captive (frontend) |
+| `fqamejlyytrhovawgtwg.supabase.co` | API backend (Supabase) |
+| `*.vercel.app` | CDN do Vercel (assets JS/CSS) |
+| `76.76.21.21` | IP do Vercel |
+| `ocsp.pki.goog` | Validação de certificado SSL (Google) |
+| `ocsp.digicert.com` | Validação de certificado SSL (DigiCert) |
+| `o.pki.goog` | Validação de certificado SSL (Google) |
+
+> **Dica:** Desative a opção "Secure Portal" no UniFi se o captive assistant do Android continuar com tela branca.
