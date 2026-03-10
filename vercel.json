@@ -3,6 +3,10 @@
     {
       "source": "/api/captive-portal/:path*",
       "destination": "https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal/:path*"
+    },
+    {
+      "source": "/((?!assets|favicon|robots|placeholder|src).*)",
+      "destination": "/index.html"
     }
   ]
 }
