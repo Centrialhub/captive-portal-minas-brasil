@@ -8,67 +8,344 @@
     <link rel="icon" type="image/png" href="/favicon-mb.png">
     <style>
       *{box-sizing:border-box;margin:0;padding:0}
-      body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#c0392b;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:16px}
+      body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;background:#c0392b;color:#1a1a1a;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:16px}
+      .pw{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:16px;width:100%}
+      .pc{background:#fff;border-radius:14px;padding:28px 22px;max-width:420px;width:100%;box-shadow:0 8px 32px rgba(0,0,0,.25)}
+      .logo{display:block;height:56px;object-fit:contain;margin:0 auto 6px}
+      .slogan{font-size:10px;font-weight:700;color:#999;text-transform:uppercase;letter-spacing:1.5px;text-align:center;margin:2px 0 12px}
+      h1{font-size:20px;font-weight:800;text-align:center;margin-bottom:4px;color:#1a1a1a}
+      .sub{font-size:14px;color:#777;text-align:center;margin-bottom:18px}
+      .lbl{display:block;font-size:13px;font-weight:600;margin:12px 0 4px;color:#1a1a1a}
+      .inp{width:100%;padding:11px 14px;border:2px solid #ddd;border-radius:10px;font-size:15px;outline:none;background:#fff;color:#1a1a1a;transition:border-color .15s}
+      .inp:focus{border-color:#f5c542}
+      .hint{font-size:11px;color:#999;margin-top:3px}
+      .err{background:#fde8e8;border:1px solid #e74c3c;color:#c0392b;border-radius:8px;padding:10px 14px;font-size:13px;font-weight:500;margin-bottom:12px;display:none}
+      .err.show{display:block}
+      .terms{border:2px solid #eee;border-radius:10px;background:#f9f9f9;margin-top:14px}
+      .terms summary{cursor:pointer;padding:10px 14px;font-size:12px;font-weight:600;color:#888}
+      .terms p{padding:0 14px 14px;font-size:11px;color:#888;line-height:1.6}
+      .chk{display:flex;align-items:flex-start;gap:8px;font-size:14px;cursor:pointer;margin:10px 0 6px}
+      .chk input{margin-top:2px;accent-color:#c0392b;width:18px;height:18px}
+      .chk span{font-weight:500;color:#1a1a1a}
+      .btn{display:block;width:100%;padding:14px;background:#f5c542;border:none;border-radius:10px;font-size:16px;font-weight:700;color:#1a1a1a;cursor:pointer;margin-top:14px;transition:opacity .15s;text-align:center;text-decoration:none}
+      .btn:disabled{opacity:.45;cursor:not-allowed}
+      .btn:not(:disabled):hover{opacity:.9}
+      .btn2{display:block;width:100%;padding:12px;background:transparent;border:2px solid #ddd;border-radius:10px;font-size:14px;font-weight:500;color:#777;cursor:pointer;margin-top:8px;transition:background .15s;text-align:center}
+      .btn2:disabled{opacity:.45;cursor:not-allowed}
+      .btn2:not(:disabled):hover{background:#f5f5f5}
+      .otp-inp{text-align:center;font-size:24px;letter-spacing:8px}
+      .footer{text-align:center;font-size:10px;color:#bbb;margin-top:18px}
+      .sicon{width:64px;height:64px;border-radius:50%;background:#e8f5e9;display:flex;align-items:center;justify-content:center;margin:0 auto 14px}
+      .hidden{display:none!important}
     </style>
   </head>
   <body>
     <div id="root">
-      <!-- Fallback: shown if JS fails to load -->
-      <div id="fallback-portal" style="background:#fff;border-radius:14px;padding:28px 22px;max-width:420px;width:100%;box-shadow:0 8px 32px rgba(0,0,0,.25);">
-        <div style="text-align:center;margin-bottom:12px;">
-          <img src="/favicon-mb.png" alt="Drogaria Minas Brasil" style="height:56px;object-fit:contain;" onerror="this.style.display='none'">
-          <p style="font-size:10px;font-weight:700;color:#999;text-transform:uppercase;letter-spacing:1.5px;margin-top:2px;">vender barato é tradição</p>
+      <!-- ═══ FULL STANDALONE FALLBACK PORTAL ═══ -->
+      <!-- This is a complete captive portal that works without React/JS bundle -->
+      <div id="fb" class="pw">
+        <div class="pc">
+          <!-- STEP: LOADING -->
+          <div id="fb-loading" style="text-align:center">
+            <img src="/favicon-mb.png" alt="Drogaria Minas Brasil" class="logo" onerror="this.style.display='none'">
+            <p style="color:#888;margin-top:12px">Carregando...</p>
+          </div>
+
+          <!-- STEP: FORM -->
+          <div id="fb-form" class="hidden">
+            <img src="/favicon-mb.png" alt="Drogaria Minas Brasil" class="logo" onerror="this.style.display='none'">
+            <p class="slogan">vender barato é tradição</p>
+            <h1>WiFi Gratuito</h1>
+            <p class="sub" id="fb-store-name">Drogaria Minas Brasil</p>
+            <div id="fb-form-err" class="err"></div>
+            <form id="fb-frm">
+              <label class="lbl">Nome *</label>
+              <input name="name" required placeholder="Seu nome completo" class="inp">
+              <label class="lbl">E-mail</label>
+              <input name="email" type="email" placeholder="email@exemplo.com (opcional)" class="inp">
+              <label class="lbl">CPF *</label>
+              <input name="cpf" required inputmode="numeric" maxlength="14" placeholder="000.000.000-00" class="inp">
+              <p class="hint">Certifique-se que o seu CPF está correto</p>
+              <label class="lbl">Telefone (WhatsApp) *</label>
+              <input name="phone" type="tel" required placeholder="(11) 99999-9999" class="inp">
+              <details class="terms">
+                <summary>Termos de Uso e Política de Privacidade (LGPD)</summary>
+                <p id="fb-consent-text">Ao se conectar à rede Wi-Fi da Drogaria Minas Brasil, você concorda com a coleta e tratamento dos seus dados pessoais para fins de autenticação, segurança da rede e comunicações. Seus dados serão tratados conforme a LGPD.</p>
+              </details>
+              <label class="chk">
+                <input type="checkbox" id="fb-chk">
+                <span>Li e aceito os termos</span>
+              </label>
+              <button type="submit" id="fb-sub" disabled class="btn">Conectar ao Wi-Fi</button>
+            </form>
+            <p class="footer">Drogaria Minas Brasil © <span class="year"></span></p>
+          </div>
+
+          <!-- STEP: OTP -->
+          <div id="fb-otp" class="hidden">
+            <img src="/favicon-mb.png" alt="Drogaria Minas Brasil" class="logo" onerror="this.style.display='none'">
+            <h1>Verificação</h1>
+            <p class="sub">Digite o código de 6 dígitos enviado para <strong id="fb-otp-phone"></strong></p>
+            <div id="fb-otp-err" class="err"></div>
+            <input id="fb-otp-code" type="text" inputmode="numeric" maxlength="6" placeholder="000000" class="inp otp-inp">
+            <button id="fb-otp-verify" disabled class="btn">Verificar código</button>
+            <button id="fb-otp-resend" class="btn2">Reenviar código</button>
+            <p class="footer">Drogaria Minas Brasil © <span class="year"></span></p>
+          </div>
+
+          <!-- STEP: SUCCESS -->
+          <div id="fb-success" class="hidden" style="text-align:center">
+            <div class="sicon">
+              <svg width="40" height="40" fill="none" stroke="#2e7d32" viewBox="0 0 24 24" stroke-width="2.5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+              </svg>
+            </div>
+            <h1>Conectado!</h1>
+            <p class="sub" id="fb-success-msg">Você já pode navegar normalmente.</p>
+            <a id="fb-success-link" href="#" class="btn hidden" style="display:none;margin-top:16px;text-decoration:none">Abrir no navegador</a>
+            <p class="footer">Drogaria Minas Brasil © <span class="year"></span></p>
+          </div>
+
+          <!-- STEP: ERROR -->
+          <div id="fb-error" class="hidden" style="text-align:center">
+            <h1>Erro</h1>
+            <p class="sub" id="fb-error-msg">Ocorreu um erro inesperado.</p>
+            <button id="fb-error-retry" class="btn">Tentar novamente</button>
+            <p class="footer">Drogaria Minas Brasil © <span class="year"></span></p>
+          </div>
         </div>
-        <h1 style="font-size:20px;font-weight:800;text-align:center;margin-bottom:4px;color:#1a1a1a;">WiFi Gratuito</h1>
-        <p style="font-size:14px;color:#777;text-align:center;margin-bottom:18px;">Preencha para conectar ao Wi-Fi</p>
-        <form id="fallback-form" style="display:flex;flex-direction:column;gap:10px;">
-          <div>
-            <label style="display:block;font-size:13px;font-weight:600;margin-bottom:4px;color:#1a1a1a;">Nome *</label>
-            <input name="name" required placeholder="Seu nome completo" style="width:100%;padding:11px 14px;border:2px solid #ddd;border-radius:10px;font-size:15px;outline:none;">
-          </div>
-          <div>
-            <label style="display:block;font-size:13px;font-weight:600;margin-bottom:4px;color:#1a1a1a;">E-mail</label>
-            <input name="email" type="email" placeholder="email@exemplo.com (opcional)" style="width:100%;padding:11px 14px;border:2px solid #ddd;border-radius:10px;font-size:15px;outline:none;">
-          </div>
-          <div>
-            <label style="display:block;font-size:13px;font-weight:600;margin-bottom:4px;color:#1a1a1a;">CPF *</label>
-            <input name="cpf" required inputmode="numeric" maxlength="14" placeholder="000.000.000-00" style="width:100%;padding:11px 14px;border:2px solid #ddd;border-radius:10px;font-size:15px;outline:none;">
-          </div>
-          <div>
-            <label style="display:block;font-size:13px;font-weight:600;margin-bottom:4px;color:#1a1a1a;">Telefone (WhatsApp) *</label>
-            <input name="phone" type="tel" required placeholder="(11) 99999-9999" style="width:100%;padding:11px 14px;border:2px solid #ddd;border-radius:10px;font-size:15px;outline:none;">
-          </div>
-          <details style="border:2px solid #eee;border-radius:10px;background:#f9f9f9;">
-            <summary style="cursor:pointer;padding:10px 14px;font-size:12px;font-weight:600;color:#888;">Termos de Uso e Política de Privacidade (LGPD)</summary>
-            <p style="padding:0 14px 14px;font-size:11px;color:#888;line-height:1.6;">Ao se conectar à rede Wi-Fi da Drogaria Minas Brasil, você concorda com a coleta e tratamento dos seus dados pessoais para fins de autenticação, segurança da rede e comunicações. Seus dados serão tratados conforme a LGPD.</p>
-          </details>
-          <label style="display:flex;align-items:flex-start;gap:8px;font-size:14px;cursor:pointer;">
-            <input type="checkbox" id="fallback-consent" style="margin-top:2px;accent-color:#c0392b;width:18px;height:18px;">
-            <span style="font-weight:500;color:#1a1a1a;">Li e aceito os termos</span>
-          </label>
-          <button type="submit" id="fallback-submit" disabled style="width:100%;padding:14px;background:#f5c542;border:none;border-radius:10px;font-size:16px;font-weight:700;color:#1a1a1a;cursor:pointer;opacity:.45;">Conectar ao Wi-Fi</button>
-        </form>
-        <div id="fallback-status" style="display:none;text-align:center;padding:16px 0;"><p></p></div>
-        <p style="text-align:center;font-size:10px;color:#bbb;margin-top:18px;">Drogaria Minas Brasil © 2025</p>
       </div>
     </div>
+
+    <!-- ═══ FALLBACK PORTAL ENGINE (vanilla JS, no dependencies) ═══ -->
     <script>
-      (function(){
-        var c=document.getElementById('fallback-consent'),b=document.getElementById('fallback-submit'),f=document.getElementById('fallback-form'),s=document.getElementById('fallback-status');
-        if(!c||!b||!f)return;
-        c.addEventListener('change',function(){b.disabled=!c.checked;b.style.opacity=c.checked?'1':'.45';});
-        f.addEventListener('submit',function(e){
-          e.preventDefault();b.disabled=true;b.textContent='Enviando...';
-          var fd=new FormData(f);
-          var p={name:fd.get('name'),email:fd.get('email')||'',phone:fd.get('phone'),cpf:fd.get('cpf'),consent_version:'offline-fallback',client_mac:new URLSearchParams(location.search).get('id')||new URLSearchParams(location.search).get('mac')||''};
-          var base=(location.hostname==='wifi.guedesepaixao.com.br'||location.hostname.indexOf('.vercel.app')!==-1)?'/api/captive-portal':'https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal';
-          var x=new XMLHttpRequest();x.open('POST',base+'/submit');x.setRequestHeader('Content-Type','application/json');
-          x.onload=function(){try{var r=JSON.parse(x.responseText);if(r.error){b.textContent='Conectar ao Wi-Fi';b.disabled=false;alert(r.error);return;}f.style.display='none';s.style.display='block';s.querySelector('p').textContent=r.message||'Cadastro realizado!';}catch(_){b.textContent='Conectar ao Wi-Fi';b.disabled=false;alert('Erro.');}};
-          x.onerror=function(){b.textContent='Conectar ao Wi-Fi';b.disabled=false;alert('Erro de conexão.');};
-          x.timeout=15000;x.ontimeout=x.onerror;x.send(JSON.stringify(p));
+    (function(){
+      'use strict';
+
+      // ── Helpers ──
+      var Y = new Date().getFullYear();
+      var years = document.querySelectorAll('.year');
+      for(var i=0;i<years.length;i++) years[i].textContent = Y;
+
+      function $(id){return document.getElementById(id)}
+      function show(id){$(id).classList.remove('hidden');if($(id).style.display==='none')$(id).style.display='';}
+      function hide(id){$(id).classList.add('hidden')}
+      function showErr(id,msg){var e=$(id);e.textContent=msg;e.classList.add('show')}
+      function hideErr(id){$(id).classList.remove('show')}
+
+      // ── API Base ──
+      var host = location.hostname;
+      var API = (host==='wifi.guedesepaixao.com.br'||host.indexOf('.vercel.app')!==-1)
+        ? '/api/captive-portal'
+        : 'https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal';
+
+      // ── Query Params ──
+      var qs = new URLSearchParams(location.search);
+      var params = {
+        client_mac: qs.get('id')||qs.get('mac')||'',
+        ap_mac: qs.get('ap')||'',
+        ssid: qs.get('ssid')||'',
+        redirect_url: qs.get('url')||''
+      };
+
+      // ── State ──
+      var state = {
+        session_id: null,
+        consent_version: 'offline-fallback',
+        redirect_url: params.redirect_url||null,
+        phone: '',
+        cooldown: 0,
+        cooldownTimer: null
+      };
+
+      // ── Fetch wrapper with timeout ──
+      function apiFetch(path, method, body, cb){
+        var url = API + path;
+        var x = new XMLHttpRequest();
+        x.open(method||'GET', url);
+        if(body) x.setRequestHeader('Content-Type','application/json');
+        x.timeout = 10000;
+        x.onload = function(){
+          try{var r=JSON.parse(x.responseText);cb(null,r);}
+          catch(e){cb('Resposta inválida do servidor');}
+        };
+        x.onerror = function(){cb('Erro de conexão. Verifique sua rede.');};
+        x.ontimeout = function(){cb('Tempo esgotado. Tente novamente.');};
+        x.send(body?JSON.stringify(body):null);
+      }
+
+      // ── Switch step ──
+      function goStep(step){
+        hide('fb-loading');hide('fb-form');hide('fb-otp');hide('fb-success');hide('fb-error');
+        show('fb-'+step);
+      }
+
+      // ── Bootstrap + Start ──
+      function boot(){
+        // Show form immediately (don't block on API)
+        goStep('form');
+
+        apiFetch('/bootstrap','GET',null,function(err,data){
+          if(!err && data && !data.error){
+            if(data.store && data.store.name){
+              var label = data.store.city ? data.store.name+' — '+data.store.city : data.store.name;
+              $('fb-store-name').textContent = label;
+            }
+            if(data.consent){
+              state.consent_version = data.consent.version || state.consent_version;
+              if(data.consent.text) $('fb-consent-text').textContent = data.consent.text;
+            }
+          }
         });
-      })();
+
+        var startBody = {user_agent:navigator.userAgent};
+        if(params.client_mac) startBody.client_mac = params.client_mac;
+        if(params.ap_mac) startBody.ap_mac = params.ap_mac;
+        if(params.ssid) startBody.ssid = params.ssid;
+        if(params.redirect_url) startBody.redirect_url = params.redirect_url;
+
+        apiFetch('/start','POST',startBody,function(err,data){
+          if(!err && data && data.session_id){
+            state.session_id = data.session_id;
+          }
+        });
+      }
+
+      // ── Form: consent toggle ──
+      var chk=$('fb-chk'), subBtn=$('fb-sub');
+      chk.addEventListener('change',function(){
+        subBtn.disabled = !chk.checked;
+      });
+
+      // ── Form: submit ──
+      $('fb-frm').addEventListener('submit',function(e){
+        e.preventDefault();
+        hideErr('fb-form-err');
+        subBtn.disabled=true;
+        subBtn.textContent='Enviando...';
+
+        var fd=new FormData($('fb-frm'));
+        state.phone = fd.get('phone')||'';
+
+        var payload = {
+          name: fd.get('name'),
+          email: fd.get('email')||'',
+          phone: state.phone,
+          cpf: fd.get('cpf'),
+          consent_version: state.consent_version,
+          client_mac: params.client_mac
+        };
+        if(state.session_id) payload.session_id = state.session_id;
+
+        apiFetch('/submit','POST',payload,function(err,data){
+          subBtn.textContent='Conectar ao Wi-Fi';
+          subBtn.disabled=!chk.checked;
+
+          if(err){showErr('fb-form-err',err);return;}
+          if(data.error){showErr('fb-form-err',data.error);return;}
+
+          if(data.redirect_url) state.redirect_url = data.redirect_url;
+
+          if(data.requires_verification){
+            $('fb-otp-phone').textContent = state.phone;
+            goStep('otp');
+            startCooldown(60);
+          } else {
+            showSuccess(data.message||'Cadastro realizado! Você já pode navegar.');
+          }
+        });
+      });
+
+      // ── OTP: code input ──
+      var codeInp=$('fb-otp-code');
+      codeInp.addEventListener('input',function(){
+        codeInp.value = codeInp.value.replace(/\D/g,'').slice(0,6);
+        $('fb-otp-verify').disabled = codeInp.value.length!==6;
+      });
+
+      // ── OTP: verify ──
+      $('fb-otp-verify').addEventListener('click',function(){
+        if(!state.session_id||codeInp.value.length!==6) return;
+        hideErr('fb-otp-err');
+        var btn=$('fb-otp-verify');
+        btn.disabled=true;btn.textContent='Verificando...';
+
+        apiFetch('/verify-code','POST',{session_id:state.session_id,code:codeInp.value},function(err,data){
+          btn.textContent='Verificar código';
+          btn.disabled=codeInp.value.length!==6;
+
+          if(err){showErr('fb-otp-err',err);codeInp.value='';btn.disabled=true;return;}
+          if(data.error){showErr('fb-otp-err',data.error);codeInp.value='';btn.disabled=true;return;}
+
+          if(data.redirect_url) state.redirect_url = data.redirect_url;
+          showSuccess(data.message||'Conectado com sucesso!');
+        });
+      });
+
+      // ── OTP: resend ──
+      $('fb-otp-resend').addEventListener('click',function(){
+        if(!state.session_id||state.cooldown>0) return;
+        hideErr('fb-otp-err');
+        var btn=$('fb-otp-resend');
+        btn.disabled=true;btn.textContent='Reenviando...';
+
+        apiFetch('/request-code','POST',{session_id:state.session_id,phone:state.phone},function(err,data){
+          if(err){showErr('fb-otp-err',err);btn.disabled=false;btn.textContent='Reenviar código';return;}
+          if(data.error){showErr('fb-otp-err',data.error);btn.disabled=false;btn.textContent='Reenviar código';return;}
+          startCooldown(60);
+        });
+      });
+
+      // ── Cooldown ──
+      function startCooldown(sec){
+        state.cooldown=sec;
+        if(state.cooldownTimer) clearInterval(state.cooldownTimer);
+        updateResendBtn();
+        state.cooldownTimer=setInterval(function(){
+          state.cooldown--;
+          if(state.cooldown<=0){
+            clearInterval(state.cooldownTimer);
+            state.cooldown=0;
+          }
+          updateResendBtn();
+        },1000);
+      }
+      function updateResendBtn(){
+        var btn=$('fb-otp-resend');
+        if(state.cooldown>0){
+          btn.disabled=true;
+          btn.textContent='Reenviar código ('+state.cooldown+'s)';
+        } else {
+          btn.disabled=false;
+          btn.textContent='Reenviar código';
+        }
+      }
+
+      // ── Success ──
+      function showSuccess(msg){
+        $('fb-success-msg').textContent=msg;
+        var link=$('fb-success-link');
+        if(state.redirect_url){
+          link.href=state.redirect_url;
+          link.style.display='inline-block';
+          link.classList.remove('hidden');
+        } else {
+          link.style.display='none';
+        }
+        goStep('success');
+      }
+
+      // ── Error retry ──
+      $('fb-error-retry').addEventListener('click',function(){
+        goStep('form');
+      });
+
+      // ── Init ──
+      boot();
+    })();
     </script>
+
+    <!-- React layer (optional enhancement, same flow) -->
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
