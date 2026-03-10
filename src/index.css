@@ -7,6 +7,9 @@ body {
   min-height: 100vh;
 }
 
+/* Hide fallback when React mounts */
+#fb { /* fallback shown by default */ }
+
 .portal-wrapper {
   min-height: 100vh;
   display: flex;
@@ -25,9 +28,10 @@ body {
 }
 
 .portal-logo {
+  display: block;
   height: 56px;
   object-fit: contain;
-  margin-bottom: 6px;
+  margin: 0 auto 6px;
 }
 
 .portal-slogan {
@@ -36,8 +40,8 @@ body {
   color: #999;
   text-transform: uppercase;
   letter-spacing: 1.5px;
-  margin-top: 2px;
-  margin-bottom: 12px;
+  text-align: center;
+  margin: 2px 0 12px;
 }
 
 .portal-title {
@@ -77,6 +81,12 @@ body {
 }
 .portal-input:focus {
   border-color: #f5c542;
+}
+
+.portal-otp-input {
+  text-align: center;
+  font-size: 24px;
+  letter-spacing: 8px;
 }
 
 .portal-hint {
@@ -149,6 +159,8 @@ body {
   cursor: pointer;
   margin-top: 14px;
   transition: opacity 0.15s;
+  text-align: center;
+  text-decoration: none;
 }
 .portal-btn:disabled {
   opacity: 0.45;
@@ -171,6 +183,7 @@ body {
   cursor: pointer;
   margin-top: 8px;
   transition: background 0.15s;
+  text-align: center;
 }
 .portal-btn-secondary:disabled {
   opacity: 0.45;

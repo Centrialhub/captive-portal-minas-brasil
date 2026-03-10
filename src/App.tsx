@@ -1,16 +1,15 @@
 import { useState, useEffect, useRef } from "react";
 import { api } from "./lib/api";
+import { getQueryParams, buildSubmitPayload, type PortalStep } from "./lib/portal-utils";
 import logoMinasBrasil from "./assets/logo-minas-brasil.png";
 import "./index.css";
-
-type Step = "loading" | "form" | "otp" | "success" | "error";
 
 interface BootstrapData {
   store: { slug: string | null; name: string; city?: string | null };
   consent: { version: string; text: string } | null;
 }
 
-const FALLBACK: BootstrapData = {
+const FALLBACK_BOOT: BootstrapData = {
   store: { slug: null, name: "Drogaria Minas Brasil" },
   consent: {
     version: "offline-fallback",
@@ -18,25 +17,14 @@ const FALLBACK: BootstrapData = {
   },
 };
 
-function getQueryParams() {
-  const p = new URLSearchParams(window.location.search);
-  return {
-    client_mac: p.get("id") || p.get("mac") || undefined,
-    ap_mac: p.get("ap") || undefined,
-    ssid: p.get("ssid") || undefined,
-    redirect_url: p.get("url") || undefined,
-  };
-}
-
 export default function App() {
-  const [step, setStep] = useState<Step>("loading");
-  const [boot, setBoot] = useState<BootstrapData>(FALLBACK);
+  const [step, setStep] = useState<PortalStep>("loading");
+  const [boot, setBoot] = useState<BootstrapData>(FALLBACK_BOOT);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [redirectUrl, setRedirectUrl] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
 
-  // Form
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
@@ -44,23 +32,22 @@ export default function App() {
   const [consented, setConsented] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
-  // OTP
   const [otpCode, setOtpCode] = useState("");
   const [verifying, setVerifying] = useState(false);
   const [resending, setResending] = useState(false);
   const [cooldown, setCooldown] = useState(0);
   const cooldownRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Boot
+  // Boot: show form immediately, fetch bootstrap/start in background
   useEffect(() => {
+    setStep("form");
     const params = getQueryParams();
-    setStep("form"); // show form immediately
 
     (async () => {
       try {
         const data = await api.bootstrap();
         if (!data.error) setBoot(data);
-      } catch { /* fallback already set */ }
+      } catch { /* use fallback */ }
 
       try {
         const s = await api.startSession(params);
@@ -77,7 +64,10 @@ export default function App() {
     setCooldown(sec);
     if (cooldownRef.current) clearInterval(cooldownRef.current);
     cooldownRef.current = setInterval(() => {
-      setCooldown(p => { if (p <= 1) { clearInterval(cooldownRef.current!); return 0; } return p - 1; });
+      setCooldown(p => {
+        if (p <= 1) { clearInterval(cooldownRef.current!); return 0; }
+        return p - 1;
+      });
     }, 1000);
   };
 
@@ -88,12 +78,13 @@ export default function App() {
     setError("");
 
     try {
-      const result = await api.submitLead({
+      const payload = buildSubmitPayload({
         session_id: sessionId || undefined,
         name, email, phone, cpf,
         client_mac: getQueryParams().client_mac,
         consent_version: boot.consent?.version || "offline-fallback",
       });
+      const result = await api.submitLead(payload);
 
       if (result.error) {
         setError(result.error);
@@ -102,7 +93,7 @@ export default function App() {
         setStep("otp");
         startCooldown(60);
       } else {
-        setSuccessMsg(result.message || "Cadastro realizado!");
+        setSuccessMsg(result.message || "Cadastro realizado! Você já pode navegar.");
         setRedirectUrl(result.redirect_url || null);
         setStep("success");
       }
@@ -159,6 +150,20 @@ export default function App() {
     );
   }
 
+  // ── ERROR ──
+  if (step === "error") {
+    return (
+      <div className="portal-wrapper">
+        <div className="portal-card" style={{ textAlign: "center" }}>
+          <h1 className="portal-title">Erro</h1>
+          <p className="portal-subtitle">{error || "Ocorreu um erro inesperado."}</p>
+          <button onClick={() => { setError(""); setStep("form"); }} className="portal-btn">Tentar novamente</button>
+          <p className="portal-footer">Drogaria Minas Brasil © {new Date().getFullYear()}</p>
+        </div>
+      </div>
+    );
+  }
+
   // ── SUCCESS ──
   if (step === "success") {
     return (
@@ -172,7 +177,7 @@ export default function App() {
           <h1 className="portal-title">Conectado!</h1>
           <p className="portal-subtitle">{successMsg}</p>
           {redirectUrl && (
-            <a href={redirectUrl} className="portal-btn" style={{ display: "inline-block", marginTop: 20, textDecoration: "none" }}>
+            <a href={redirectUrl} className="portal-btn" style={{ display: "inline-block", marginTop: 16, textDecoration: "none" }}>
               Abrir no navegador
             </a>
           )}
@@ -190,7 +195,7 @@ export default function App() {
           <div style={{ textAlign: "center" }}>
             <img src={logoMinasBrasil} alt="Drogaria Minas Brasil" className="portal-logo" />
           </div>
-          <h1 className="portal-title">Verificação por WhatsApp</h1>
+          <h1 className="portal-title">Verificação</h1>
           <p className="portal-subtitle">
             Digite o código de 6 dígitos enviado para <strong>{phone}</strong>
           </p>
@@ -203,9 +208,8 @@ export default function App() {
             maxLength={6}
             value={otpCode}
             onChange={e => setOtpCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
-            className="portal-input"
+            className="portal-input portal-otp-input"
             placeholder="000000"
-            style={{ textAlign: "center", fontSize: 24, letterSpacing: 8 }}
             autoFocus
           />
 

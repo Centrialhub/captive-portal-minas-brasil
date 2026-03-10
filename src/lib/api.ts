@@ -1,10 +1,4 @@
-function getApiBase(): string {
-  const host = window.location.hostname;
-  if (host === "wifi.guedesepaixao.com.br" || host.endsWith(".vercel.app")) {
-    return "/api/captive-portal";
-  }
-  return "https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal";
-}
+import { getApiBase } from "./portal-utils";
 
 const API_BASE = getApiBase();
 
@@ -12,8 +6,8 @@ async function resilientFetch(
   url: string,
   options?: RequestInit & { retries?: number; timeoutMs?: number },
 ): Promise<Response> {
-  const { retries = 0, timeoutMs = 6000, ...fetchOpts } = options || {};
-  const delays = [400, 1200];
+  const { retries = 0, timeoutMs = 8000, ...fetchOpts } = options || {};
+  const delays = [500, 1500];
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -26,7 +20,7 @@ async function resilientFetch(
     } catch (err) {
       lastError = err;
       if (attempt < retries) {
-        await new Promise(r => setTimeout(r, delays[attempt] || 1200));
+        await new Promise(r => setTimeout(r, delays[attempt] || 1500));
       }
     }
   }
@@ -41,7 +35,6 @@ export const api = {
 
   async startSession(data: {
     client_mac?: string;
-    client_ip?: string;
     ap_mac?: string;
     ssid?: string;
     redirect_url?: string;
