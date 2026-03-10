@@ -171,11 +171,13 @@ export default function App() {
   };
 
   const handleResend = async () => {
-    if (!sessionId || cooldown > 0) return;
+    const sid = sessionIdRef.current || sessionId;
+    if (!sid) { setError("Sessão não encontrada. Recarregue a página."); return; }
+    if (cooldown > 0) return;
     setResending(true);
     setError("");
     try {
-      const result = await api.requestCode({ session_id: sessionId, phone });
+      const result = await api.requestCode({ session_id: sid, phone });
       if (result.error) setError(result.error);
       else startCooldown(60);
     } catch {
