@@ -221,7 +221,7 @@ export default function App() {
           <h1 className="portal-title">Conectado!</h1>
           <p className="portal-subtitle">{successMsg}</p>
           {redirectUrl && (
-            <a href={redirectUrl} className="portal-btn" style={{ display: "inline-block", marginTop: 16, textDecoration: "none" }}>
+            <a href={redirectUrl} target="_blank" rel="noopener noreferrer" className="portal-btn" style={{ display: "inline-block", marginTop: 16, textDecoration: "none" }}>
               Abrir no navegador
             </a>
           )}
