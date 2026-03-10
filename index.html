@@ -102,7 +102,7 @@
             </div>
             <h1>Conectado!</h1>
             <p class="sub" id="fb-success-msg">Você já pode navegar normalmente.</p>
-            <a id="fb-success-link" href="#" class="btn hidden" style="display:none;margin-top:16px;text-decoration:none">Abrir no navegador</a>
+            <a id="fb-success-link" href="#" target="_blank" rel="noopener noreferrer" class="btn hidden" style="display:none;margin-top:16px;text-decoration:none">Abrir no navegador</a>
             <p class="footer">Drogaria Minas Brasil © <span class="year"></span></p>
           </div>
 
@@ -218,6 +218,25 @@
       });
 
       // ── Form: submit ──
+      // Ensure session_id exists before calling /submit
+      function ensureSession(cb){
+        if(state.session_id) return cb(null, state.session_id);
+        var startBody = {user_agent:navigator.userAgent};
+        if(params.client_mac) startBody.client_mac = params.client_mac;
+        if(params.ap_mac) startBody.ap_mac = params.ap_mac;
+        if(params.ssid) startBody.ssid = params.ssid;
+        if(params.redirect_url) startBody.redirect_url = params.redirect_url;
+
+        apiFetch('/start','POST',startBody,function(err,data){
+          if(err) return cb(err);
+          if(data && data.session_id){
+            state.session_id = data.session_id;
+            return cb(null, data.session_id);
+          }
+          cb('Não foi possível criar sessão. Tente novamente.');
+        });
+      }
+
       $('fb-frm').addEventListener('submit',function(e){
         e.preventDefault();
         hideErr('fb-form-err');
@@ -227,32 +246,41 @@
         var fd=new FormData($('fb-frm'));
         state.phone = fd.get('phone')||'';
 
-        var payload = {
-          name: fd.get('name'),
-          email: fd.get('email')||'',
-          phone: state.phone,
-          cpf: fd.get('cpf'),
-          consent_version: state.consent_version,
-          client_mac: params.client_mac
-        };
-        if(state.session_id) payload.session_id = state.session_id;
-
-        apiFetch('/submit','POST',payload,function(err,data){
-          subBtn.textContent='Conectar ao Wi-Fi';
-          subBtn.disabled=!chk.checked;
-
-          if(err){showErr('fb-form-err',err);return;}
-          if(data.error){showErr('fb-form-err',data.error);return;}
-
-          if(data.redirect_url) state.redirect_url = data.redirect_url;
-
-          if(data.requires_verification){
-            $('fb-otp-phone').textContent = state.phone;
-            goStep('otp');
-            startCooldown(60);
-          } else {
-            showSuccess(data.message||'Cadastro realizado! Você já pode navegar.');
+        ensureSession(function(sessErr, sid){
+          if(sessErr){
+            showErr('fb-form-err', sessErr);
+            subBtn.textContent='Conectar ao Wi-Fi';
+            subBtn.disabled=!chk.checked;
+            return;
           }
+
+          var payload = {
+            session_id: sid,
+            name: fd.get('name'),
+            email: fd.get('email')||'',
+            phone: state.phone,
+            cpf: fd.get('cpf'),
+            consent_version: state.consent_version,
+            client_mac: params.client_mac
+          };
+
+          apiFetch('/submit','POST',payload,function(err,data){
+            subBtn.textContent='Conectar ao Wi-Fi';
+            subBtn.disabled=!chk.checked;
+
+            if(err){showErr('fb-form-err',err);return;}
+            if(data.error){showErr('fb-form-err',data.error);return;}
+
+            if(data.redirect_url) state.redirect_url = data.redirect_url;
+
+            if(data.requires_verification){
+              $('fb-otp-phone').textContent = state.phone;
+              goStep('otp');
+              startCooldown(60);
+            } else {
+              showSuccess(data.message||'Cadastro realizado! Você já pode navegar.');
+            }
+          });
         });
       });
 

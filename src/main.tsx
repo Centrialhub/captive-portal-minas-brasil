@@ -1,8 +1,5 @@
 import { createRoot } from "react-dom/client";
 import App from "./App";
 
-// When React mounts, hide the HTML fallback
-const fallback = document.getElementById("fb");
-if (fallback) fallback.style.display = "none";
-
+// Do NOT hide fallback here — wait until React App signals it's ready
 createRoot(document.getElementById("root")!).render(<App />);
