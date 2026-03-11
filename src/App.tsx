@@ -141,7 +141,8 @@ export default function App() {
         setRedirectUrl(result.redirect_url || null);
         setStep("success");
       }
-    } catch {
+    } catch (err) {
+      console.error("[portal] submit error:", err);
       setError("Erro ao enviar cadastro. Tente novamente.");
     }
     setSubmitting(false);
