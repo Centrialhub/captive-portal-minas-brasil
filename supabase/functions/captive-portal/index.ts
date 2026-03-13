@@ -928,7 +928,7 @@ async function internalHousekeeping(db: ReturnType<typeof supabaseAdmin>): Promi
     .delete()
     .lt("expires_at", verifCutoff)
     .in("status", ["pending", "expired", "locked"])
-    .select("id", { count: "exact", head: true });
+    .select("id");
 
   // 2. Clean old rate limits (older than 1 day)
   const { count: oldRateLimits } = await db
