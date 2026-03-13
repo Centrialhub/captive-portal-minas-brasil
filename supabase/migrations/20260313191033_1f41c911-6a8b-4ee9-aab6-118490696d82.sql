@@ -1,0 +1,1 @@
+UPDATE stores SET unifi_controller_url = 'https://wifi.guedesepaixao.com.br/unifi-proxy' WHERE id = '0c69f654-71d9-4191-a8cb-22a67742fd60';
