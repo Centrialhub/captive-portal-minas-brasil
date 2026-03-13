@@ -1863,6 +1863,7 @@ Deno.serve(async (req: Request) => {
     if (path === "/admin/sessions") return await handleAdminSessions(req, url);
     if (path === "/admin/clusters") return await handleAdminClusters(req, url);
     if (path === "/admin/test-authorize" && req.method === "POST") return await handleTestAuthorize(req);
+    if (path === "/admin/test-unifi-reach" && req.method === "POST") return await handleTestUnifiReach(req);
     if (path === "/admin/housekeeping" && req.method === "POST") return await handleHousekeeping(req);
 
     return errorResponse("Not found", 404);
