@@ -397,36 +397,117 @@ async function sendWhatsAppCode(
   }
 }
 
-// ========== UniFi Provider ==========
-async function unifiAuthorizeByMac(
-  controllerUrl: string, apiKeyOrToken: string, siteId: string, clientMac: string
-): Promise<{ ok: boolean; error?: string }> {
-  const baseUrl = controllerUrl.replace(/\/+$/, "");
-  const url = `${baseUrl}/proxy/network/api/s/${siteId}/cmd/stamgr`;
-  const formattedMac = clientMac.replace(/(.{2})(?=.)/g, "$1:").toLowerCase();
-  const body = JSON.stringify({ cmd: "authorize-guest", mac: formattedMac, minutes: 1440 });
-  const headers: Record<string, string> = { "Content-Type": "application/json", "X-API-Key": apiKeyOrToken };
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), UNIFI_TIMEOUT_MS);
+// ========== UniFi Provider (Legacy Cookie Auth) ==========
+const UNIFI_USERNAME = Deno.env.get("UNIFI_USERNAME") || "";
+const UNIFI_PASSWORD = Deno.env.get("UNIFI_PASSWORD") || "";
+const UNIFI_CA_CERT = Deno.env.get("UNIFI_CA_CERT") || "";
+
+/** Create a Deno HTTP client that tolerates self-signed certs */
+function createUnifiHttpClient(): Deno.HttpClient {
+  const opts: Deno.CreateHttpClientOptions = {};
+  if (UNIFI_CA_CERT) {
+    opts.caCerts = [UNIFI_CA_CERT];
+  } else {
+    // deno-lint-ignore no-explicit-any
+    (opts as any).proxy = undefined; // no-op, but we need the client for certErrors
+  }
+  return Deno.createHttpClient(opts);
+}
+
+/**
+ * Legacy login: POST /api/login → extract unifises cookie
+ */
+async function unifiLegacyLogin(
+  baseUrl: string, httpClient: Deno.HttpClient
+): Promise<{ ok: boolean; cookie?: string; error?: string }> {
+  const url = `${baseUrl}/api/login`;
+  const ac = new AbortController();
+  const timeout = setTimeout(() => ac.abort(), UNIFI_TIMEOUT_MS);
   try {
-    const res = await fetch(url, { method: "POST", headers, body, signal: controller.signal });
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: UNIFI_USERNAME, password: UNIFI_PASSWORD }),
+      signal: ac.signal,
+      client: httpClient,
+    } as RequestInit);
     clearTimeout(timeout);
-    const resText = await res.text();
-    if (!res.ok) return { ok: false, error: `HTTP ${res.status}: ${resText.slice(0, 200)}` };
-    return { ok: true };
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      return { ok: false, error: `Login HTTP ${res.status}: ${text.slice(0, 200)}` };
+    }
+
+    // Extract unifises cookie from Set-Cookie header
+    const setCookie = res.headers.get("set-cookie") || "";
+    const match = setCookie.match(/unifises=([^;]+)/);
+    if (!match) {
+      return { ok: false, error: "Login succeeded but no unifises cookie returned" };
+    }
+
+    return { ok: true, cookie: match[1] };
   } catch (err) {
     clearTimeout(timeout);
-    const msg = (err as Error).name === "AbortError" ? `Timeout after ${UNIFI_TIMEOUT_MS}ms` : (err as Error).message;
+    const msg = (err as Error).name === "AbortError"
+      ? `Login timeout after ${UNIFI_TIMEOUT_MS}ms`
+      : (err as Error).message;
     return { ok: false, error: msg };
   }
 }
 
+/**
+ * Authorize a guest MAC via legacy cookie auth.
+ * 1. POST /api/login → cookie
+ * 2. POST /api/s/{site}/cmd/stamgr → authorize
+ */
+async function unifiAuthorizeByMac(
+  controllerUrl: string, siteId: string, clientMac: string
+): Promise<{ ok: boolean; error?: string }> {
+  const baseUrl = controllerUrl.replace(/\/+$/, "");
+  const httpClient = createUnifiHttpClient();
+
+  try {
+    // Step 1: Login
+    const login = await unifiLegacyLogin(baseUrl, httpClient);
+    if (!login.ok) return { ok: false, error: `UniFi login failed: ${login.error}` };
+
+    // Step 2: Authorize guest
+    const formattedMac = clientMac.replace(/(.{2})(?=.)/g, "$1:").toLowerCase();
+    const url = `${baseUrl}/api/s/${siteId}/cmd/stamgr`;
+    const ac = new AbortController();
+    const timeout = setTimeout(() => ac.abort(), UNIFI_TIMEOUT_MS);
+
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Cookie": `unifises=${login.cookie}`,
+      },
+      body: JSON.stringify({ cmd: "authorize-guest", mac: formattedMac, minutes: 1440 }),
+      signal: ac.signal,
+      client: httpClient,
+    } as RequestInit);
+    clearTimeout(timeout);
+
+    const resText = await res.text();
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}: ${resText.slice(0, 200)}` };
+    return { ok: true };
+  } catch (err) {
+    const msg = (err as Error).name === "AbortError"
+      ? `Timeout after ${UNIFI_TIMEOUT_MS}ms`
+      : (err as Error).message;
+    return { ok: false, error: msg };
+  } finally {
+    httpClient.close();
+  }
+}
+
 async function unifiAuthorizeWithRetry(
-  controllerUrl: string, token: string, siteId: string, mac: string
+  controllerUrl: string, siteId: string, mac: string
 ): Promise<{ ok: boolean; error?: string; attempts: number }> {
   let lastError = "";
   for (let attempt = 0; attempt <= UNIFI_RETRY_COUNT; attempt++) {
-    const result = await unifiAuthorizeByMac(controllerUrl, token, siteId, mac);
+    const result = await unifiAuthorizeByMac(controllerUrl, siteId, mac);
     if (result.ok) return { ok: true, attempts: attempt + 1 };
     lastError = result.error || "Unknown error";
     if (attempt < UNIFI_RETRY_COUNT) await new Promise((r) => setTimeout(r, 1000));
@@ -445,15 +526,24 @@ async function authorizeClient(
 
   const { data: store } = await db
     .from("stores")
-    .select("unifi_controller_url, unifi_api_key_or_token, unifi_site_id")
+    .select("unifi_controller_url, unifi_site_id")
     .eq("id", storeId)
     .maybeSingle();
 
-  if (!store?.unifi_controller_url || !store?.unifi_api_key_or_token) {
+  if (!store?.unifi_controller_url) {
     await db.from("captive_sessions").update({ status: "failed", fail_reason: "UNIFI_NOT_CONFIGURED" }).eq("id", sessionId);
     await db.from("audit_logs").insert({
       store_id: storeId, entity: "session", entity_id: sessionId,
       action: "fail", meta: { reason: "UNIFI_NOT_CONFIGURED", store_slug: storeSlug, ip: clientIp },
+    });
+    return false;
+  }
+
+  if (!UNIFI_USERNAME || !UNIFI_PASSWORD) {
+    await db.from("captive_sessions").update({ status: "failed", fail_reason: "UNIFI_CREDENTIALS_MISSING" }).eq("id", sessionId);
+    await db.from("audit_logs").insert({
+      store_id: storeId, entity: "session", entity_id: sessionId,
+      action: "fail", meta: { reason: "UNIFI_CREDENTIALS_MISSING", store_slug: storeSlug, ip: clientIp },
     });
     return false;
   }
@@ -468,7 +558,7 @@ async function authorizeClient(
   }
 
   const siteId = store.unifi_site_id || "default";
-  const result = await unifiAuthorizeWithRetry(store.unifi_controller_url, store.unifi_api_key_or_token, siteId, clientMac);
+  const result = await unifiAuthorizeWithRetry(store.unifi_controller_url, siteId, clientMac);
 
   if (result.ok) {
     await db.from("captive_sessions").update({ status: "authorized", authorized_at: new Date().toISOString() }).eq("id", sessionId);
