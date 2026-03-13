@@ -1,32 +1,50 @@
 
 
-# Tornar o Portal Resiliente a Falhas de Rede
+## Problema
 
-## Diagnóstico
+O código atual da função `unifiAuthorizeByMac` usa o header `X-API-Key` e o path `/proxy/network/api/s/{site}/cmd/stamgr`, que é o formato para UDM/Cloud Key com API Keys. O seu controlador **self-hosted** usa autenticação **legacy via cookie** e o path `/api/s/{site}/cmd/stamgr`.
 
-A configuração do UniFi está correta — o domínio e o IP do Vercel estão no walled garden. O problema é que o **captive assistant** (mini-browser do Android/iOS) tem restrições adicionais que podem bloquear chamadas HTTPS ou assets JS antes da autorização completa.
+## O que precisa mudar
 
-Como não podemos controlar o comportamento do captive assistant, a solução é **tornar o portal funcional mesmo quando o bootstrap falha**.
+### 1. Alterar a função de autorização UniFi (edge function)
 
-## Solução
+Substituir a autenticação por API Key por um fluxo de duas etapas:
 
-Modificar `src/pages/CaptivePortal.tsx` para:
+1. **Login**: `POST {controller}/api/login` com `{ "username": "...", "password": "..." }` — retorna um cookie `unifises`
+2. **Autorização**: `POST {controller}/api/s/{site}/cmd/stamgr` com o cookie da sessão e payload `{ "cmd": "authorize-guest", "mac": "aa:bb:cc:dd:ee:ff", "minutes": 1440 }`
 
-1. **Mostrar o formulário imediatamente** com dados fallback em vez de travar com "Erro ao conectar"
-2. **Tentar bootstrap em background** — se conseguir, atualiza os dados; se não, o formulário já está visível
-3. **Submeter lead mesmo sem session_id** — o backend já aceita isso
+O path muda de `/proxy/network/api/s/...` para `/api/s/...`.
 
-### Dados fallback quando bootstrap falha:
-- Nome da loja: "Drogaria Minas Brasil"  
-- Consent text: texto padrão da LGPD hardcoded
-- Consent version: "offline-fallback"
+### 2. Usar credenciais existentes
 
-### Mudança no fluxo:
-- Atual: loading → bootstrap → (erro = tela travada) | (ok = formulário)
-- Novo: loading breve → formulário com fallback → bootstrap atualiza dados se conseguir
+Os secrets `UNIFI_USERNAME` e `UNIFI_PASSWORD` já existem no Supabase. A coluna `unifi_api_key_or_token` na tabela `stores` passará a ser **opcional** (não usada no modo legacy). As credenciais de login serão lidas dos secrets do ambiente.
 
-### Arquivo modificado:
-- `src/pages/CaptivePortal.tsx` — useEffect de inicialização e estado inicial
+### 3. Tratamento de certificado SSL auto-assinado
 
-Nenhuma mudança no backend, no `vercel.json`, ou no `api.ts`.
+Controladores self-hosted geralmente usam certificados auto-assinados. O Deno por padrão rejeita esses certificados. Será necessário usar a opção `{ client: Deno.createHttpClient({ caCerts: [...] }) }` ou, se o secret `UNIFI_CA_CERT` estiver vazio, desabilitar a verificação de TLS para chamadas ao controlador.
+
+### 4. Mudanças na tabela `stores`
+
+- Preencher `unifi_controller_url` com a URL do controlador (ex: `https://192.168.1.1:8443`)
+- Preencher `unifi_site_id` (normalmente `default`)
+- `unifi_api_key_or_token` fica vazio (não usado no modo legacy)
+
+### Arquivos alterados
+
+- `supabase/functions/captive-portal/index.ts` — reescrever `unifiAuthorizeByMac` para usar login+cookie ao invés de API Key, e mudar o path para `/api/s/{site}/cmd/stamgr`
+
+### Fluxo resumido
+
+```text
+1. POST /api/login  →  cookie "unifises"
+2. POST /api/s/default/cmd/stamgr  →  autoriza o MAC
+   Header: Cookie: unifises=xxxxx
+   Body: { "cmd": "authorize-guest", "mac": "aa:bb:cc:dd:ee:ff", "minutes": 1440 }
+```
+
+### Pendências pós-implementação (configuração manual)
+
+- Cadastrar o IP público da loja na tabela `store_public_ips`
+- Preencher `unifi_controller_url` e `unifi_site_id` na tabela `stores`
+- Garantir que a VPS consegue alcançar o controlador UniFi (rede/firewall)
 
