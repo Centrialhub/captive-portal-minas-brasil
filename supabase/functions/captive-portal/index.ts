@@ -944,7 +944,7 @@ async function internalHousekeeping(db: ReturnType<typeof supabaseAdmin>): Promi
     .delete()
     .lt("started_at", sessionCutoff180)
     .in("status", ["started", "submitted", "failed"])
-    .select("id", { count: "exact", head: true });
+    .select("id");
 
   // 4. Delete authorized sessions older than 365 days
   const sessionCutoff365 = new Date(now.getTime() - 365 * 86400000).toISOString();
