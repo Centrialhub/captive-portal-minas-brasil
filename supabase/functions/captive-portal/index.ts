@@ -435,16 +435,15 @@ function createUnifiHttpClient(): Deno.HttpClient {
 }
 
 /**
- * Legacy login: POST /api/login → extract unifises cookie
+ * Try login on a specific endpoint, return cookie or TOKEN header.
  */
-async function unifiLegacyLogin(
-  baseUrl: string, httpClient: Deno.HttpClient
-): Promise<{ ok: boolean; cookie?: string; error?: string }> {
-  const url = `${baseUrl}/api/login`;
+async function unifiTryLogin(
+  loginUrl: string, httpClient: Deno.HttpClient
+): Promise<{ ok: boolean; cookie?: string; token?: string; error?: string; isUnifiOs?: boolean }> {
   const ac = new AbortController();
   const timeout = setTimeout(() => ac.abort(), UNIFI_TIMEOUT_MS);
   try {
-    const res = await fetch(url, {
+    const res = await fetch(loginUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username: UNIFI_USERNAME, password: UNIFI_PASSWORD }),
@@ -458,14 +457,24 @@ async function unifiLegacyLogin(
       return { ok: false, error: `Login HTTP ${res.status}: ${text.slice(0, 200)}` };
     }
 
-    // Extract unifises cookie from Set-Cookie header
+    // UniFi OS returns a TOKEN cookie; legacy returns unifises
     const setCookie = res.headers.get("set-cookie") || "";
-    const match = setCookie.match(/unifises=([^;]+)/);
-    if (!match) {
-      return { ok: false, error: "Login succeeded but no unifises cookie returned" };
+    const tokenMatch = setCookie.match(/TOKEN=([^;]+)/);
+    if (tokenMatch) {
+      return { ok: true, token: tokenMatch[1], isUnifiOs: true };
+    }
+    const legacyMatch = setCookie.match(/unifises=([^;]+)/);
+    if (legacyMatch) {
+      return { ok: true, cookie: legacyMatch[1], isUnifiOs: false };
     }
 
-    return { ok: true, cookie: match[1] };
+    // Some UniFi OS versions return x-csrf-token header instead
+    const csrfToken = res.headers.get("x-csrf-token");
+    if (csrfToken) {
+      return { ok: true, token: csrfToken, isUnifiOs: true };
+    }
+
+    return { ok: false, error: "Login succeeded but no auth cookie/token returned" };
   } catch (err) {
     clearTimeout(timeout);
     const msg = (err as Error).name === "AbortError"
@@ -476,9 +485,34 @@ async function unifiLegacyLogin(
 }
 
 /**
- * Authorize a guest MAC via legacy cookie auth.
- * 1. POST /api/login → cookie
- * 2. POST /api/s/{site}/cmd/stamgr → authorize
+ * Login to UniFi controller — tries UniFi OS endpoint first, then legacy.
+ */
+async function unifiLogin(
+  baseUrl: string, httpClient: Deno.HttpClient
+): Promise<{ ok: boolean; cookie?: string; token?: string; isUnifiOs?: boolean; error?: string }> {
+  // Try UniFi OS first: /api/auth/login
+  const osResult = await unifiTryLogin(`${baseUrl}/api/auth/login`, httpClient);
+  if (osResult.ok) {
+    console.log("UniFi login succeeded via UniFi OS endpoint (/api/auth/login)");
+    return osResult;
+  }
+
+  // If it was a 404 or route-not-found, try legacy /api/login
+  if (osResult.error?.includes("404") || osResult.error?.includes("not-found") || osResult.error?.includes("not found")) {
+    console.log("UniFi OS endpoint returned 404, trying legacy /api/login...");
+    const legacyResult = await unifiTryLogin(`${baseUrl}/api/login`, httpClient);
+    if (legacyResult.ok) {
+      console.log("UniFi login succeeded via legacy endpoint (/api/login)");
+      return legacyResult;
+    }
+    return { ok: false, error: `OS: ${osResult.error} | Legacy: ${legacyResult.error}` };
+  }
+
+  return osResult;
+}
+
+/**
+ * Authorize a guest MAC via UniFi controller (supports both OS and legacy).
  */
 async function unifiAuthorizeByMac(
   controllerUrl: string, siteId: string, clientMac: string
@@ -487,36 +521,64 @@ async function unifiAuthorizeByMac(
   const httpClient = createUnifiHttpClient();
 
   try {
-    // Step 1: Login
-    const login = await unifiLegacyLogin(baseUrl, httpClient);
+    // Step 1: Login (auto-detects OS vs legacy)
+    const login = await unifiLogin(baseUrl, httpClient);
     if (!login.ok) return { ok: false, error: `UniFi login failed: ${login.error}` };
 
     // Step 2: Authorize guest
     const formattedMac = clientMac.replace(/(.{2})(?=.)/g, "$1:").toLowerCase();
-    const url = `${baseUrl}/api/s/${siteId}/cmd/stamgr`;
-    const ac = new AbortController();
-    const timeout = setTimeout(() => ac.abort(), UNIFI_TIMEOUT_MS);
+    const body = JSON.stringify({ cmd: "authorize-guest", mac: formattedMac, minutes: 1440 });
 
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Cookie": `unifises=${login.cookie}`,
-      },
-      body: JSON.stringify({ cmd: "authorize-guest", mac: formattedMac, minutes: 1440 }),
-      signal: ac.signal,
-      client: httpClient,
-    } as RequestInit);
-    clearTimeout(timeout);
+    // Build auth headers based on login type
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (login.isUnifiOs && login.token) {
+      headers["Cookie"] = `TOKEN=${login.token}`;
+      headers["X-CSRF-Token"] = login.token;
+    } else if (login.cookie) {
+      headers["Cookie"] = `unifises=${login.cookie}`;
+    }
 
-    const resText = await res.text();
-    if (!res.ok) return { ok: false, error: `HTTP ${res.status}: ${resText.slice(0, 200)}` };
-    return { ok: true };
-  } catch (err) {
-    const msg = (err as Error).name === "AbortError"
-      ? `Timeout after ${UNIFI_TIMEOUT_MS}ms`
-      : (err as Error).message;
-    return { ok: false, error: msg };
+    // Determine authorize URL — try OS path first if login was OS
+    const authUrls = login.isUnifiOs
+      ? [
+          `${baseUrl}/proxy/network/api/s/${siteId}/cmd/stamgr`,
+          `${baseUrl}/api/s/${siteId}/cmd/stamgr`,
+        ]
+      : [`${baseUrl}/api/s/${siteId}/cmd/stamgr`];
+
+    let lastError = "";
+    for (const url of authUrls) {
+      const ac = new AbortController();
+      const timeout = setTimeout(() => ac.abort(), UNIFI_TIMEOUT_MS);
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers,
+          body,
+          signal: ac.signal,
+          client: httpClient,
+        } as RequestInit);
+        clearTimeout(timeout);
+
+        const resText = await res.text();
+        if (res.ok) {
+          console.log(`UniFi authorize succeeded via ${url}`);
+          return { ok: true };
+        }
+        lastError = `HTTP ${res.status}: ${resText.slice(0, 200)}`;
+        console.warn(`UniFi authorize failed at ${url}: ${lastError}`);
+        // If 404, try next URL
+        if (res.status === 404) continue;
+        return { ok: false, error: lastError };
+      } catch (err) {
+        clearTimeout(timeout);
+        lastError = (err as Error).name === "AbortError"
+          ? `Timeout after ${UNIFI_TIMEOUT_MS}ms`
+          : (err as Error).message;
+        console.warn(`UniFi authorize error at ${url}: ${lastError}`);
+      }
+    }
+    return { ok: false, error: lastError };
   } finally {
     httpClient.close();
   }
@@ -1877,19 +1939,34 @@ Deno.serve(async (req: Request) => {
       if (!ctrlUrl) return errorResponse("controller_url required");
       const httpClient = createUnifiHttpClient();
       try {
+        // First do a simple GET to see what the controller returns
         const ac = new AbortController();
         const t = setTimeout(() => ac.abort(), UNIFI_TIMEOUT_MS);
-        const r = await fetch(`${ctrlUrl}/api/login`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ username: UNIFI_USERNAME, password: UNIFI_PASSWORD }),
-          signal: ac.signal,
-          client: httpClient,
-        } as RequestInit);
-        clearTimeout(t);
-        const txt = await r.text().catch(() => "");
-        const hasCookie = /unifises=/.test(r.headers.get("set-cookie") || "");
-        return jsonResponse({ reachable: true, status: r.status, login_ok: r.ok, has_cookie: hasCookie, preview: txt.slice(0, 200) });
+        let rootInfo = "";
+        try {
+          const rootRes = await fetch(ctrlUrl, { signal: ac.signal, client: httpClient } as RequestInit);
+          clearTimeout(t);
+          rootInfo = `GET / → ${rootRes.status}, headers: ${JSON.stringify(Object.fromEntries([...rootRes.headers.entries()].slice(0, 10)))}`;
+        } catch (e) {
+          clearTimeout(t);
+          rootInfo = `GET / error: ${(e as Error).message}`;
+        }
+
+        // Try all known login endpoints
+        const endpoints = [
+          "/api/auth/login",           // UniFi OS
+          "/api/login",                // Legacy standalone
+          "/proxy/network/api/login",  // UDM Network app
+        ];
+        const results: Record<string, string> = {};
+        for (const ep of endpoints) {
+          const login = await unifiTryLogin(`${ctrlUrl}${ep}`, httpClient);
+          if (login.ok) {
+            return jsonResponse({ reachable: true, type: ep, login_ok: true, has_token: !!login.token, has_cookie: !!login.cookie, root: rootInfo });
+          }
+          results[ep] = login.error || "unknown error";
+        }
+        return jsonResponse({ reachable: true, login_ok: false, endpoints_tried: results, root: rootInfo });
       } catch (err) {
         return jsonResponse({ reachable: false, error: (err as Error).message });
       } finally {
