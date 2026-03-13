@@ -1939,18 +1939,34 @@ Deno.serve(async (req: Request) => {
       if (!ctrlUrl) return errorResponse("controller_url required");
       const httpClient = createUnifiHttpClient();
       try {
+        // First do a simple GET to see what the controller returns
         const ac = new AbortController();
         const t = setTimeout(() => ac.abort(), UNIFI_TIMEOUT_MS);
-        // Try UniFi OS first, then legacy
-        const osLogin = await unifiTryLogin(`${ctrlUrl}/api/auth/login`, httpClient);
-        if (osLogin.ok) {
-          return jsonResponse({ reachable: true, type: "unifi_os", login_ok: true, has_token: !!osLogin.token, has_cookie: !!osLogin.cookie });
+        let rootInfo = "";
+        try {
+          const rootRes = await fetch(ctrlUrl, { signal: ac.signal, client: httpClient } as RequestInit);
+          clearTimeout(t);
+          rootInfo = `GET / → ${rootRes.status}, headers: ${JSON.stringify(Object.fromEntries([...rootRes.headers.entries()].slice(0, 10)))}`;
+        } catch (e) {
+          clearTimeout(t);
+          rootInfo = `GET / error: ${(e as Error).message}`;
         }
-        const legacyLogin = await unifiTryLogin(`${ctrlUrl}/api/login`, httpClient);
-        if (legacyLogin.ok) {
-          return jsonResponse({ reachable: true, type: "legacy", login_ok: true, has_cookie: !!legacyLogin.cookie });
+
+        // Try all known login endpoints
+        const endpoints = [
+          "/api/auth/login",           // UniFi OS
+          "/api/login",                // Legacy standalone
+          "/proxy/network/api/login",  // UDM Network app
+        ];
+        const results: Record<string, string> = {};
+        for (const ep of endpoints) {
+          const login = await unifiTryLogin(`${ctrlUrl}${ep}`, httpClient);
+          if (login.ok) {
+            return jsonResponse({ reachable: true, type: ep, login_ok: true, has_token: !!login.token, has_cookie: !!login.cookie, root: rootInfo });
+          }
+          results[ep] = login.error || "unknown error";
         }
-        return jsonResponse({ reachable: true, login_ok: false, os_error: osLogin.error, legacy_error: legacyLogin.error });
+        return jsonResponse({ reachable: true, login_ok: false, endpoints_tried: results, root: rootInfo });
       } catch (err) {
         return jsonResponse({ reachable: false, error: (err as Error).message });
       } finally {
