@@ -400,16 +400,36 @@ async function sendWhatsAppCode(
 // ========== UniFi Provider (Legacy Cookie Auth) ==========
 const UNIFI_USERNAME = Deno.env.get("UNIFI_USERNAME") || "";
 const UNIFI_PASSWORD = Deno.env.get("UNIFI_PASSWORD") || "";
-const UNIFI_CA_CERT = Deno.env.get("UNIFI_CA_CERT") || "";
+const UNIFI_CA_CERT_RAW = Deno.env.get("UNIFI_CA_CERT") || "";
+
+/** Normalize PEM cert that may have lost newlines in env var storage */
+function normalizePem(pem: string): string {
+  if (!pem) return "";
+  // Remove existing newlines/spaces around markers
+  let s = pem.trim();
+  // If it's all on one line, reconstruct proper PEM format
+  if (!s.includes("\n")) {
+    s = s
+      .replace(/-----BEGIN CERTIFICATE-----\s*/, "")
+      .replace(/\s*-----END CERTIFICATE-----/, "")
+      .replace(/\s+/g, "");
+    // Split into 64-char lines
+    const lines: string[] = [];
+    for (let i = 0; i < s.length; i += 64) {
+      lines.push(s.slice(i, i + 64));
+    }
+    return `-----BEGIN CERTIFICATE-----\n${lines.join("\n")}\n-----END CERTIFICATE-----\n`;
+  }
+  return s;
+}
+
+const UNIFI_CA_CERT = normalizePem(UNIFI_CA_CERT_RAW);
 
 /** Create a Deno HTTP client that tolerates self-signed certs */
 function createUnifiHttpClient(): Deno.HttpClient {
   const opts: Deno.CreateHttpClientOptions = {};
   if (UNIFI_CA_CERT) {
     opts.caCerts = [UNIFI_CA_CERT];
-  } else {
-    // deno-lint-ignore no-explicit-any
-    (opts as any).proxy = undefined; // no-op, but we need the client for certErrors
   }
   return Deno.createHttpClient(opts);
 }
