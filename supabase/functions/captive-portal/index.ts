@@ -1425,6 +1425,93 @@ async function handleAdminStoreIps(req: Request, url: URL): Promise<Response> {
   return errorResponse("Method not allowed", 405);
 }
 
+// ========== Diagnostic: Test UniFi Connectivity (Admin Only) ==========
+async function handleTestUnifiReach(req: Request): Promise<Response> {
+  const auth = await requireAdmin(req);
+  if (auth instanceof Response) return auth;
+  const { db } = auth;
+
+  const body = await safeParseJson(req);
+  const controllerUrl = (body?.controller_url as string) || "";
+
+  // If no URL provided, try to get from a store
+  let targetUrl = controllerUrl;
+  if (!targetUrl && body?.store_slug) {
+    const { data: store } = await db.from("stores")
+      .select("unifi_controller_url")
+      .eq("slug", body.store_slug as string).maybeSingle();
+    targetUrl = store?.unifi_controller_url || "";
+  }
+
+  if (!targetUrl) return errorResponse("controller_url ou store_slug obrigatório");
+
+  const baseUrl = targetUrl.replace(/\/+$/, "");
+  const results: Record<string, unknown> = {
+    controller_url: baseUrl,
+    unifi_username_set: !!UNIFI_USERNAME,
+    unifi_password_set: !!UNIFI_PASSWORD,
+    unifi_ca_cert_set: !!UNIFI_CA_CERT,
+    tests: {},
+  };
+
+  // Test 1: TCP connectivity (try fetching the login page)
+  const httpClient = createUnifiHttpClient();
+  try {
+    const ac = new AbortController();
+    const timeout = setTimeout(() => ac.abort(), UNIFI_TIMEOUT_MS);
+    const res = await fetch(`${baseUrl}/api/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: UNIFI_USERNAME, password: UNIFI_PASSWORD }),
+      signal: ac.signal,
+      client: httpClient,
+    } as RequestInit);
+    clearTimeout(timeout);
+
+    const resText = await res.text().catch(() => "");
+    const setCookie = res.headers.get("set-cookie") || "";
+    const hasCookie = /unifises=/.test(setCookie);
+
+    (results.tests as Record<string, unknown>).login = {
+      status: res.status,
+      ok: res.ok,
+      has_unifises_cookie: hasCookie,
+      response_preview: resText.slice(0, 300),
+    };
+
+    // Test 2: If login succeeded, try stamgr endpoint
+    if (hasCookie) {
+      const cookie = setCookie.match(/unifises=([^;]+)/)?.[1];
+      const siteId = (body?.site_id as string) || "default";
+      const ac2 = new AbortController();
+      const timeout2 = setTimeout(() => ac2.abort(), UNIFI_TIMEOUT_MS);
+      // Use a dummy "get" command to test connectivity without authorizing anyone
+      const res2 = await fetch(`${baseUrl}/api/s/${siteId}/stat/sta`, {
+        method: "GET",
+        headers: { "Cookie": `unifises=${cookie}` },
+        signal: ac2.signal,
+        client: httpClient,
+      } as RequestInit);
+      clearTimeout(timeout2);
+      const res2Text = await res2.text().catch(() => "");
+      (results.tests as Record<string, unknown>).stamgr_reach = {
+        status: res2.status,
+        ok: res2.ok,
+        response_preview: res2Text.slice(0, 300),
+      };
+    }
+  } catch (err) {
+    const msg = (err as Error).name === "AbortError"
+      ? `Timeout after ${UNIFI_TIMEOUT_MS}ms — controller not reachable`
+      : (err as Error).message;
+    (results.tests as Record<string, unknown>).login = { error: msg };
+  } finally {
+    httpClient.close();
+  }
+
+  return jsonResponse(results);
+}
+
 // ========== Test Endpoint (Admin Only) ==========
 async function handleTestAuthorize(req: Request): Promise<Response> {
   const auth = await requireAdmin(req);
@@ -1440,16 +1527,19 @@ async function handleTestAuthorize(req: Request): Promise<Response> {
   if (!mac || !isValidMac(mac)) return errorResponse("MAC inválido (ex: AA:BB:CC:DD:EE:FF)");
 
   const { data: store } = await db.from("stores")
-    .select("id, unifi_controller_url, unifi_api_key_or_token, unifi_site_id")
+    .select("id, unifi_controller_url, unifi_site_id")
     .eq("slug", storeSlug).maybeSingle();
 
   if (!store) return errorResponse("Store not found", 404);
-  if (!store.unifi_controller_url || !store.unifi_api_key_or_token) {
-    return jsonResponse({ ok: false, reason: "UNIFI_NOT_CONFIGURED", message: "Loja não possui configuração UniFi completa." });
+  if (!store.unifi_controller_url) {
+    return jsonResponse({ ok: false, reason: "UNIFI_NOT_CONFIGURED", message: "Loja não possui unifi_controller_url configurada." });
+  }
+  if (!UNIFI_USERNAME || !UNIFI_PASSWORD) {
+    return jsonResponse({ ok: false, reason: "UNIFI_CREDENTIALS_MISSING", message: "Secrets UNIFI_USERNAME/UNIFI_PASSWORD não configurados." });
   }
 
   const siteId = store.unifi_site_id || "default";
-  const result = await unifiAuthorizeWithRetry(store.unifi_controller_url, store.unifi_api_key_or_token, siteId, mac);
+  const result = await unifiAuthorizeWithRetry(store.unifi_controller_url, siteId, mac);
 
   await db.from("audit_logs").insert({
     store_id: store.id, entity: "session", entity_id: null,
@@ -1760,6 +1850,33 @@ Deno.serve(async (req: Request) => {
     if (path === "/request-code" && req.method === "POST") return await handleRequestCode(req);
     if (path === "/verify-code" && req.method === "POST") return await handleVerifyCode(req);
 
+    // Temporary diagnostic — remove after testing
+    if (path === "/diag/unifi-ping" && req.method === "POST") {
+      const b = await safeParseJson(req);
+      const ctrlUrl = (b?.controller_url as string || "").replace(/\/+$/, "");
+      if (!ctrlUrl) return errorResponse("controller_url required");
+      const httpClient = createUnifiHttpClient();
+      try {
+        const ac = new AbortController();
+        const t = setTimeout(() => ac.abort(), UNIFI_TIMEOUT_MS);
+        const r = await fetch(`${ctrlUrl}/api/login`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username: UNIFI_USERNAME, password: UNIFI_PASSWORD }),
+          signal: ac.signal,
+          client: httpClient,
+        } as RequestInit);
+        clearTimeout(t);
+        const txt = await r.text().catch(() => "");
+        const hasCookie = /unifises=/.test(r.headers.get("set-cookie") || "");
+        return jsonResponse({ reachable: true, status: r.status, login_ok: r.ok, has_cookie: hasCookie, preview: txt.slice(0, 200) });
+      } catch (err) {
+        return jsonResponse({ reachable: false, error: (err as Error).message });
+      } finally {
+        httpClient.close();
+      }
+    }
+
     // Cron endpoint
     if (path === "/cron/housekeeping" && req.method === "POST") return await handleCronHousekeeping(req);
 
@@ -1773,6 +1890,7 @@ Deno.serve(async (req: Request) => {
     if (path === "/admin/sessions") return await handleAdminSessions(req, url);
     if (path === "/admin/clusters") return await handleAdminClusters(req, url);
     if (path === "/admin/test-authorize" && req.method === "POST") return await handleTestAuthorize(req);
+    if (path === "/admin/test-unifi-reach" && req.method === "POST") return await handleTestUnifiReach(req);
     if (path === "/admin/housekeeping" && req.method === "POST") return await handleHousekeeping(req);
 
     return errorResponse("Not found", 404);
