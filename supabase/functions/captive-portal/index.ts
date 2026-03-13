@@ -435,16 +435,15 @@ function createUnifiHttpClient(): Deno.HttpClient {
 }
 
 /**
- * Legacy login: POST /api/login → extract unifises cookie
+ * Try login on a specific endpoint, return cookie or TOKEN header.
  */
-async function unifiLegacyLogin(
-  baseUrl: string, httpClient: Deno.HttpClient
-): Promise<{ ok: boolean; cookie?: string; error?: string }> {
-  const url = `${baseUrl}/api/login`;
+async function unifiTryLogin(
+  loginUrl: string, httpClient: Deno.HttpClient
+): Promise<{ ok: boolean; cookie?: string; token?: string; error?: string; isUnifiOs?: boolean }> {
   const ac = new AbortController();
   const timeout = setTimeout(() => ac.abort(), UNIFI_TIMEOUT_MS);
   try {
-    const res = await fetch(url, {
+    const res = await fetch(loginUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username: UNIFI_USERNAME, password: UNIFI_PASSWORD }),
@@ -458,14 +457,24 @@ async function unifiLegacyLogin(
       return { ok: false, error: `Login HTTP ${res.status}: ${text.slice(0, 200)}` };
     }
 
-    // Extract unifises cookie from Set-Cookie header
+    // UniFi OS returns a TOKEN cookie; legacy returns unifises
     const setCookie = res.headers.get("set-cookie") || "";
-    const match = setCookie.match(/unifises=([^;]+)/);
-    if (!match) {
-      return { ok: false, error: "Login succeeded but no unifises cookie returned" };
+    const tokenMatch = setCookie.match(/TOKEN=([^;]+)/);
+    if (tokenMatch) {
+      return { ok: true, token: tokenMatch[1], isUnifiOs: true };
+    }
+    const legacyMatch = setCookie.match(/unifises=([^;]+)/);
+    if (legacyMatch) {
+      return { ok: true, cookie: legacyMatch[1], isUnifiOs: false };
     }
 
-    return { ok: true, cookie: match[1] };
+    // Some UniFi OS versions return x-csrf-token header instead
+    const csrfToken = res.headers.get("x-csrf-token");
+    if (csrfToken) {
+      return { ok: true, token: csrfToken, isUnifiOs: true };
+    }
+
+    return { ok: false, error: "Login succeeded but no auth cookie/token returned" };
   } catch (err) {
     clearTimeout(timeout);
     const msg = (err as Error).name === "AbortError"
@@ -473,6 +482,33 @@ async function unifiLegacyLogin(
       : (err as Error).message;
     return { ok: false, error: msg };
   }
+}
+
+/**
+ * Login to UniFi controller — tries UniFi OS endpoint first, then legacy.
+ */
+async function unifiLogin(
+  baseUrl: string, httpClient: Deno.HttpClient
+): Promise<{ ok: boolean; cookie?: string; token?: string; isUnifiOs?: boolean; error?: string }> {
+  // Try UniFi OS first: /api/auth/login
+  const osResult = await unifiTryLogin(`${baseUrl}/api/auth/login`, httpClient);
+  if (osResult.ok) {
+    console.log("UniFi login succeeded via UniFi OS endpoint (/api/auth/login)");
+    return osResult;
+  }
+
+  // If it was a 404 or route-not-found, try legacy /api/login
+  if (osResult.error?.includes("404") || osResult.error?.includes("not-found") || osResult.error?.includes("not found")) {
+    console.log("UniFi OS endpoint returned 404, trying legacy /api/login...");
+    const legacyResult = await unifiTryLogin(`${baseUrl}/api/login`, httpClient);
+    if (legacyResult.ok) {
+      console.log("UniFi login succeeded via legacy endpoint (/api/login)");
+      return legacyResult;
+    }
+    return { ok: false, error: `OS: ${osResult.error} | Legacy: ${legacyResult.error}` };
+  }
+
+  return osResult;
 }
 
 /**
