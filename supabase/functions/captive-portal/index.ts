@@ -1941,17 +1941,16 @@ Deno.serve(async (req: Request) => {
       try {
         const ac = new AbortController();
         const t = setTimeout(() => ac.abort(), UNIFI_TIMEOUT_MS);
-        const r = await fetch(`${ctrlUrl}/api/login`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ username: UNIFI_USERNAME, password: UNIFI_PASSWORD }),
-          signal: ac.signal,
-          client: httpClient,
-        } as RequestInit);
-        clearTimeout(t);
-        const txt = await r.text().catch(() => "");
-        const hasCookie = /unifises=/.test(r.headers.get("set-cookie") || "");
-        return jsonResponse({ reachable: true, status: r.status, login_ok: r.ok, has_cookie: hasCookie, preview: txt.slice(0, 200) });
+        // Try UniFi OS first, then legacy
+        const osLogin = await unifiTryLogin(`${ctrlUrl}/api/auth/login`, httpClient);
+        if (osLogin.ok) {
+          return jsonResponse({ reachable: true, type: "unifi_os", login_ok: true, has_token: !!osLogin.token, has_cookie: !!osLogin.cookie });
+        }
+        const legacyLogin = await unifiTryLogin(`${ctrlUrl}/api/login`, httpClient);
+        if (legacyLogin.ok) {
+          return jsonResponse({ reachable: true, type: "legacy", login_ok: true, has_cookie: !!legacyLogin.cookie });
+        }
+        return jsonResponse({ reachable: true, login_ok: false, os_error: osLogin.error, legacy_error: legacyLogin.error });
       } catch (err) {
         return jsonResponse({ reachable: false, error: (err as Error).message });
       } finally {
