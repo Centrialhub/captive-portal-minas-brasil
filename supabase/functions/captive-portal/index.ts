@@ -953,7 +953,7 @@ async function internalHousekeeping(db: ReturnType<typeof supabaseAdmin>): Promi
     .delete()
     .lt("started_at", sessionCutoff365)
     .eq("status", "authorized")
-    .select("id", { count: "exact", head: true });
+    .select("id");
 
   // 5. Truncate audit_logs older than 180 days
   const auditCutoff = new Date(now.getTime() - 180 * 86400000).toISOString();
