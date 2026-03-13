@@ -15,7 +15,7 @@ export default defineConfig(({ mode }) => ({
   preview: {
     host: "::",
     port: 3000,
-    allowedHosts: ["wifi-minasbrasil-wifi-minasbrasil.tqchy2.easypanel.host"],
+    allowedHosts: ["wifi-minasbrasil-wifi-minasbrasil.tqchy2.easypanel.host", "wifi.guedesepaixao.com.br"],
   },
   build: {
     target: "es2015",
