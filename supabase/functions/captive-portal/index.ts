@@ -935,7 +935,7 @@ async function internalHousekeeping(db: ReturnType<typeof supabaseAdmin>): Promi
     .from("rate_limits")
     .delete()
     .lt("updated_at", new Date(now.getTime() - 86400000).toISOString())
-    .select("key", { count: "exact", head: true });
+    .select("key");
 
   // 3. Delete old non-authorized sessions older than 180 days
   const sessionCutoff180 = new Date(now.getTime() - 180 * 86400000).toISOString();
