@@ -961,7 +961,7 @@ async function internalHousekeeping(db: ReturnType<typeof supabaseAdmin>): Promi
     .from("audit_logs")
     .delete()
     .lt("created_at", auditCutoff)
-    .select("id", { count: "exact", head: true });
+    .select("id");
 
   return {
     expired_verifications: expiredVerifications || 0,
