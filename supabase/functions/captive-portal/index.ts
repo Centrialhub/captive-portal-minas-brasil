@@ -923,7 +923,7 @@ async function internalHousekeeping(db: ReturnType<typeof supabaseAdmin>): Promi
 
   // 1. Delete expired verifications older than 30 days
   const verifCutoff = new Date(now.getTime() - 30 * 86400000).toISOString();
-  const { count: expiredVerifications } = await db
+  const { data: expiredVerifData } = await db
     .from("captive_verifications")
     .delete()
     .lt("expires_at", verifCutoff)
@@ -931,7 +931,7 @@ async function internalHousekeeping(db: ReturnType<typeof supabaseAdmin>): Promi
     .select("id");
 
   // 2. Clean old rate limits (older than 1 day)
-  const { count: oldRateLimits } = await db
+  const { data: oldRateLimitData } = await db
     .from("rate_limits")
     .delete()
     .lt("updated_at", new Date(now.getTime() - 86400000).toISOString())
@@ -939,7 +939,7 @@ async function internalHousekeeping(db: ReturnType<typeof supabaseAdmin>): Promi
 
   // 3. Delete old non-authorized sessions older than 180 days
   const sessionCutoff180 = new Date(now.getTime() - 180 * 86400000).toISOString();
-  const { count: oldSessions } = await db
+  const { data: oldSessionData } = await db
     .from("captive_sessions")
     .delete()
     .lt("started_at", sessionCutoff180)
@@ -948,7 +948,7 @@ async function internalHousekeeping(db: ReturnType<typeof supabaseAdmin>): Promi
 
   // 4. Delete authorized sessions older than 365 days
   const sessionCutoff365 = new Date(now.getTime() - 365 * 86400000).toISOString();
-  const { count: oldAuthorizedSessions } = await db
+  const { data: oldAuthSessionData } = await db
     .from("captive_sessions")
     .delete()
     .lt("started_at", sessionCutoff365)
@@ -957,17 +957,17 @@ async function internalHousekeeping(db: ReturnType<typeof supabaseAdmin>): Promi
 
   // 5. Truncate audit_logs older than 180 days
   const auditCutoff = new Date(now.getTime() - 180 * 86400000).toISOString();
-  const { count: oldAuditLogs } = await db
+  const { data: oldAuditData } = await db
     .from("audit_logs")
     .delete()
     .lt("created_at", auditCutoff)
     .select("id");
 
   return {
-    expired_verifications: expiredVerifications || 0,
-    old_rate_limits: oldRateLimits || 0,
-    old_sessions: (oldSessions || 0) + (oldAuthorizedSessions || 0),
-    old_audit_logs: oldAuditLogs || 0,
+    expired_verifications: expiredVerifData?.length || 0,
+    old_rate_limits: oldRateLimitData?.length || 0,
+    old_sessions: (oldSessionData?.length || 0) + (oldAuthSessionData?.length || 0),
+    old_audit_logs: oldAuditData?.length || 0,
   };
 }
 
