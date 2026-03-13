@@ -1850,6 +1850,33 @@ Deno.serve(async (req: Request) => {
     if (path === "/request-code" && req.method === "POST") return await handleRequestCode(req);
     if (path === "/verify-code" && req.method === "POST") return await handleVerifyCode(req);
 
+    // Temporary diagnostic — remove after testing
+    if (path === "/diag/unifi-ping" && req.method === "POST") {
+      const b = await safeParseJson(req);
+      const ctrlUrl = (b?.controller_url as string || "").replace(/\/+$/, "");
+      if (!ctrlUrl) return errorResponse("controller_url required");
+      const httpClient = createUnifiHttpClient();
+      try {
+        const ac = new AbortController();
+        const t = setTimeout(() => ac.abort(), UNIFI_TIMEOUT_MS);
+        const r = await fetch(`${ctrlUrl}/api/login`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username: UNIFI_USERNAME, password: UNIFI_PASSWORD }),
+          signal: ac.signal,
+          client: httpClient,
+        } as RequestInit);
+        clearTimeout(t);
+        const txt = await r.text().catch(() => "");
+        const hasCookie = /unifises=/.test(r.headers.get("set-cookie") || "");
+        return jsonResponse({ reachable: true, status: r.status, login_ok: r.ok, has_cookie: hasCookie, preview: txt.slice(0, 200) });
+      } catch (err) {
+        return jsonResponse({ reachable: false, error: (err as Error).message });
+      } finally {
+        httpClient.close();
+      }
+    }
+
     // Cron endpoint
     if (path === "/cron/housekeeping" && req.method === "POST") return await handleCronHousekeeping(req);
 
