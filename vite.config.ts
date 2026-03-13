@@ -8,6 +8,7 @@ export default defineConfig(({ mode }) => ({
   server: {
     host: "::",
     port: 8080,
+    allowedHosts: ["wifi-minasbrasil-wifi-minasbrasil.tqchy2.easypanel.host", "wifi.guedesepaixao.com.br"],
     hmr: {
       overlay: false,
     },
