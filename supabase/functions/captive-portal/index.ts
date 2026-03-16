@@ -1110,22 +1110,35 @@ async function handleVerifyCode(req: Request): Promise<Response> {
       } catch (err) {
         console.error("UniFi authorization error:", (err as Error).message);
       }
-    }
+    } else {
+      // Log why authorization was skipped
+      const reason = !storeId ? "store_id missing" : "client_mac missing";
+      console.warn(`[verify-code] UniFi authorization skipped: ${reason} (session=${sessionId})`);
 
-    if (!authorized) {
+      // Mark as "submitted" (verified but not authorized) instead of falsely "authorized"
       await db.from("captive_sessions")
-        .update({ status: "authorized", authorized_at: new Date().toISOString() })
+        .update({ status: "submitted", fail_reason: `SKIPPED:${reason}` })
         .eq("id", sessionId as string);
     }
   }
 
   const resolvedRedirectUrl = redirectUrl || session?.redirect_url || DEFAULT_REDIRECT_URL;
 
+  // Build appropriate message based on real authorization status
+  let message: string;
+  if (authorized) {
+    message = "Código verificado! Acesso liberado.";
+  } else if (!session?.client_mac) {
+    message = "Cadastro salvo! Para liberar o WiFi, reconecte à rede.";
+  } else {
+    message = "Cadastro salvo! Houve um problema na liberação automática. Tente reconectar ao WiFi.";
+  }
+
   return jsonResponse({
     ok: true,
-    authorized: true,
+    authorized,
     redirect_url: resolvedRedirectUrl,
-    message: "Código verificado! Acesso liberado.",
+    message,
   });
 }
 
