@@ -1,6 +1,12 @@
-import { getApiBase } from "./portal-utils";
+import { getApiBase, getQueryParams } from "./portal-utils";
 
 const API_BASE = getApiBase();
+
+/** Forward ?store= param from the landing URL to API calls */
+function getStoreParam(): string {
+  const store = new URLSearchParams(window.location.search).get("store");
+  return store ? `?store=${encodeURIComponent(store)}` : "";
+}
 
 async function resilientFetch(
   url: string,
@@ -29,7 +35,7 @@ async function resilientFetch(
 
 export const api = {
   async bootstrap() {
-    const res = await resilientFetch(`${API_BASE}/bootstrap`, { retries: 2 });
+    const res = await resilientFetch(`${API_BASE}/bootstrap${getStoreParam()}`, { retries: 2 });
     return res.json();
   },
 
@@ -39,7 +45,7 @@ export const api = {
     ssid?: string;
     redirect_url?: string;
   }) {
-    const res = await resilientFetch(`${API_BASE}/start`, {
+    const res = await resilientFetch(`${API_BASE}/start${getStoreParam()}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ...data, user_agent: navigator.userAgent }),
@@ -57,7 +63,7 @@ export const api = {
     client_mac?: string;
     consent_version: string;
   }) {
-    const res = await resilientFetch(`${API_BASE}/submit`, {
+    const res = await resilientFetch(`${API_BASE}/submit${getStoreParam()}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
@@ -66,7 +72,7 @@ export const api = {
   },
 
   async requestCode(data: { session_id: string; phone: string }) {
-    const res = await resilientFetch(`${API_BASE}/request-code`, {
+    const res = await resilientFetch(`${API_BASE}/request-code${getStoreParam()}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
@@ -75,7 +81,7 @@ export const api = {
   },
 
   async verifyCode(data: { session_id: string; code: string }) {
-    const res = await resilientFetch(`${API_BASE}/verify-code`, {
+    const res = await resilientFetch(`${API_BASE}/verify-code${getStoreParam()}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
