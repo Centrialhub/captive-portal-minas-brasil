@@ -705,7 +705,7 @@ async function authorizeClient(
 async function handleBootstrap(req: Request): Promise<Response> {
   const db = supabaseAdmin();
 
-  // Detect store from IP only — ignore any ?store= param
+  // Detect store: ?store=slug > IP mapping > single active store
   const detected = await detectStoreFromRequest(db, req);
 
   const { data: consent } = await db
