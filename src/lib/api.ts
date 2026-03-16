@@ -63,7 +63,7 @@ export const api = {
     client_mac?: string;
     consent_version: string;
   }) {
-    const res = await resilientFetch(`${API_BASE}/submit`, {
+    const res = await resilientFetch(`${API_BASE}/submit${getStoreParam()}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
