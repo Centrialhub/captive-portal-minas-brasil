@@ -1,6 +1,12 @@
-import { getApiBase } from "./portal-utils";
+import { getApiBase, getQueryParams } from "./portal-utils";
 
 const API_BASE = getApiBase();
+
+/** Forward ?store= param from the landing URL to API calls */
+function getStoreParam(): string {
+  const store = new URLSearchParams(window.location.search).get("store");
+  return store ? `?store=${encodeURIComponent(store)}` : "";
+}
 
 async function resilientFetch(
   url: string,
@@ -29,7 +35,7 @@ async function resilientFetch(
 
 export const api = {
   async bootstrap() {
-    const res = await resilientFetch(`${API_BASE}/bootstrap`, { retries: 2 });
+    const res = await resilientFetch(`${API_BASE}/bootstrap${getStoreParam()}`, { retries: 2 });
     return res.json();
   },
 

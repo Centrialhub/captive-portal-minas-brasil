@@ -810,7 +810,7 @@ async function handleSubmit(req: Request): Promise<Response> {
     if (!rlMac.allowed) return errorResponse("Muitas tentativas para este dispositivo.", 429);
   }
 
-  // Detect store from IP only — ignore store_slug from body
+  // Detect store: ?store=slug > IP mapping > single active store
   const detected = await detectStoreFromRequest(db, req);
   const storeId = detected.store_id;
   const storeSlug = detected.store_slug;
