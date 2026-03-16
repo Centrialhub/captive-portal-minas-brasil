@@ -1,32 +1,21 @@
 
 
-# Tornar o Portal Resiliente a Falhas de Rede
+# Detecção de Loja sem IP + Rota UniFi Guest
 
-## Diagnóstico
+## Implementado
 
-A configuração do UniFi está correta — o domínio e o IP do Vercel estão no walled garden. O problema é que o **captive assistant** (mini-browser do Android/iOS) tem restrições adicionais que podem bloquear chamadas HTTPS ou assets JS antes da autorização completa.
+1. **Detecção de loja por `?store=slug`** — prioridade máxima na função `detectStoreFromRequest`
+2. **Fallback para loja única ativa** — se não houver match por slug nem IP, usa a única loja ativa
+3. **Rota `/guest/s/default/`** — alias para o portal HTML self-contained, captura `?id=MAC` do UniFi
+4. **Frontend repassa `?store=`** — todas as chamadas da API incluem o parâmetro `store` da URL
 
-Como não podemos controlar o comportamento do captive assistant, a solução é **tornar o portal funcional mesmo quando o bootstrap falha**.
+## Configuração do UniFi
+- URL do Guest Portal: `https://wifi.guedesepaixao.com.br`
+- O UniFi redireciona para `/guest/s/default/?id=MAC&ap=AP_MAC`
+- O Nginx deve preservar query params: `try_files $uri /index.html?$args;`
 
-## Solução
-
-Modificar `src/pages/CaptivePortal.tsx` para:
-
-1. **Mostrar o formulário imediatamente** com dados fallback em vez de travar com "Erro ao conectar"
-2. **Tentar bootstrap em background** — se conseguir, atualiza os dados; se não, o formulário já está visível
-3. **Submeter lead mesmo sem session_id** — o backend já aceita isso
-
-### Dados fallback quando bootstrap falha:
-- Nome da loja: "Drogaria Minas Brasil"  
-- Consent text: texto padrão da LGPD hardcoded
-- Consent version: "offline-fallback"
-
-### Mudança no fluxo:
-- Atual: loading → bootstrap → (erro = tela travada) | (ok = formulário)
-- Novo: loading breve → formulário com fallback → bootstrap atualiza dados se conseguir
-
-### Arquivo modificado:
-- `src/pages/CaptivePortal.tsx` — useEffect de inicialização e estado inicial
-
-Nenhuma mudança no backend, no `vercel.json`, ou no `api.ts`.
-
+## Fluxo de detecção de MAC
+1. UniFi redireciona → `/guest/s/default/?id=AA:BB:CC:DD:EE:FF`
+2. Frontend lê `?id=` como `client_mac` via `getQueryParams()`
+3. `startSession()` envia `client_mac` ao backend
+4. Backend salva na sessão e usa para autorizar no UniFi controller
