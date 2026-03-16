@@ -739,7 +739,7 @@ async function handleStart(req: Request): Promise<Response> {
   const body = await safeParseJson(req);
   if (!body) return errorResponse("Invalid JSON body");
 
-  // Detect store from IP only
+  // Detect store: ?store=slug > IP mapping > single active store
   const detected = await detectStoreFromRequest(db, req);
 
   const mac = normalizeMac(body.client_mac);
