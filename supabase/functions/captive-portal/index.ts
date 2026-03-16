@@ -537,18 +537,15 @@ async function unifiLogin(
     return osResult;
   }
 
-  // If it was a 404 or route-not-found, try legacy /api/login
-  if (osResult.error?.includes("404") || osResult.error?.includes("not-found") || osResult.error?.includes("not found")) {
-    console.log("UniFi OS endpoint returned 404, trying legacy /api/login...");
-    const legacyResult = await unifiTryLogin(`${baseUrl}/api/login`, httpClient);
-    if (legacyResult.ok) {
-      console.log("UniFi login succeeded via legacy endpoint (/api/login)");
-      return legacyResult;
-    }
-    return { ok: false, error: `OS: ${osResult.error} | Legacy: ${legacyResult.error}` };
+  // Always try legacy /api/login as fallback (not just on 404)
+  // Legacy controllers may return various errors for /api/auth/login
+  console.log(`UniFi OS endpoint failed (${osResult.error?.slice(0, 100)}), trying legacy /api/login...`);
+  const legacyResult = await unifiTryLogin(`${baseUrl}/api/login`, httpClient);
+  if (legacyResult.ok) {
+    console.log("UniFi login succeeded via legacy endpoint (/api/login)");
+    return legacyResult;
   }
-
-  return osResult;
+  return { ok: false, error: `OS: ${osResult.error} | Legacy: ${legacyResult.error}` };
 }
 
 /**

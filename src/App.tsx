@@ -12,7 +12,7 @@ interface BootstrapData {
 const FALLBACK_BOOT: BootstrapData = {
   store: { slug: null, name: "Drogaria Minas Brasil" },
   consent: {
-    version: "offline-fallback",
+    version: "1.0",
     text: "Ao se conectar à rede Wi-Fi da Drogaria Minas Brasil, você concorda com a coleta e tratamento dos seus dados pessoais (nome, CPF, e-mail e telefone) para fins de autenticação, segurança da rede e comunicações promocionais. Seus dados serão tratados conforme a LGPD (Lei nº 13.709/2018). Você pode solicitar a exclusão dos seus dados a qualquer momento.",
   },
 };
@@ -126,7 +126,7 @@ export default function App() {
         session_id: sid,
         name, email, phone, cpf,
         client_mac: getQueryParams().client_mac,
-        consent_version: boot.consent?.version || "offline-fallback",
+        consent_version: boot.consent?.version || "1.0",
       });
       const result = await api.submitLead(payload);
 
