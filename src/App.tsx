@@ -126,7 +126,7 @@ export default function App() {
         session_id: sid,
         name, email, phone, cpf,
         client_mac: getQueryParams().client_mac,
-        consent_version: boot.consent?.version || "offline-fallback",
+        consent_version: boot.consent?.version || "1.0",
       });
       const result = await api.submitLead(payload);
 
