@@ -1,32 +1,32 @@
 
 
-# Tornar o Portal Resiliente a Falhas de Rede
+# Liberar Wi-Fi sem depender do IP da loja
 
-## Diagnóstico
+## Problema
+Hoje o sistema identifica a loja pelo IP público do cliente (`store_public_ips`). Se o IP for dinâmico, o mapeamento quebra e a sessão falha com `NO_STORE_CONFIGURED`, impedindo a autorização UniFi.
 
-A configuração do UniFi está correta — o domínio e o IP do Vercel estão no walled garden. O problema é que o **captive assistant** (mini-browser do Android/iOS) tem restrições adicionais que podem bloquear chamadas HTTPS ou assets JS antes da autorização completa.
+## Solução: Fallback para loja única ativa + parâmetro opcional na URL
 
-Como não podemos controlar o comportamento do captive assistant, a solução é **tornar o portal funcional mesmo quando o bootstrap falha**.
+Duas mudanças na função `detectStoreFromRequest`:
 
-## Solução
+1. **Aceitar `?store=slug` na URL de redirecionamento do UniFi** — se presente, buscar a loja diretamente pelo slug, sem depender de IP. A URL do Guest Portal no UniFi ficaria:
+   ```
+   https://wifi.guedesepaixao.com.br/?store=loja_teste&id=%m
+   ```
 
-Modificar `src/pages/CaptivePortal.tsx` para:
+2. **Fallback automático** — se não houver match por IP nem por `?store`, e existir **apenas uma loja ativa** no banco, usá-la automaticamente. Isso cobre o cenário atual (uma única loja) sem configuração extra.
 
-1. **Mostrar o formulário imediatamente** com dados fallback em vez de travar com "Erro ao conectar"
-2. **Tentar bootstrap em background** — se conseguir, atualiza os dados; se não, o formulário já está visível
-3. **Submeter lead mesmo sem session_id** — o backend já aceita isso
+## Mudanças técnicas
 
-### Dados fallback quando bootstrap falha:
-- Nome da loja: "Drogaria Minas Brasil"  
-- Consent text: texto padrão da LGPD hardcoded
-- Consent version: "offline-fallback"
+### `supabase/functions/captive-portal/index.ts`
+- Na função `detectStoreFromRequest`, adicionar:
+  - Antes do lookup por IP: verificar se existe query param `store` na request URL e buscar na tabela `stores` por slug
+  - Após o lookup por IP falhar: buscar se há exatamente 1 loja ativa em `stores` e usá-la como fallback
+- A ordem de prioridade fica: `?store=slug` > IP mapping > loja única ativa > fallback genérico (sem store_id)
 
-### Mudança no fluxo:
-- Atual: loading → bootstrap → (erro = tela travada) | (ok = formulário)
-- Novo: loading breve → formulário com fallback → bootstrap atualiza dados se conseguir
+### Nenhuma mudança no frontend
+O parâmetro `store` já é passado via URL do UniFi, não precisa de alteração no React.
 
-### Arquivo modificado:
-- `src/pages/CaptivePortal.tsx` — useEffect de inicialização e estado inicial
-
-Nenhuma mudança no backend, no `vercel.json`, ou no `api.ts`.
+### Nenhuma migração necessária
+Usa tabelas existentes (`stores`).
 
