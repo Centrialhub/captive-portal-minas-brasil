@@ -45,7 +45,7 @@ export const api = {
     ssid?: string;
     redirect_url?: string;
   }) {
-    const res = await resilientFetch(`${API_BASE}/start`, {
+    const res = await resilientFetch(`${API_BASE}/start${getStoreParam()}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ...data, user_agent: navigator.userAgent }),
