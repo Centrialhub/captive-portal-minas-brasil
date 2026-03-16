@@ -81,7 +81,7 @@ export const api = {
   },
 
   async verifyCode(data: { session_id: string; code: string }) {
-    const res = await resilientFetch(`${API_BASE}/verify-code`, {
+    const res = await resilientFetch(`${API_BASE}/verify-code${getStoreParam()}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
