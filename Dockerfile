@@ -1,14 +1,38 @@
-FROM node:20-alpine
-
+FROM node:20-alpine AS build
 WORKDIR /app
-
 COPY package*.json ./
 RUN npm install
-
 COPY . .
-
 RUN npm run build
 
-EXPOSE 3000
+FROM nginx:alpine
+COPY --from=build /app/dist /usr/share/nginx/html
 
-CMD ["npm", "run", "preview", "--", "--host", "0.0.0.0", "--port", "3000"]
+RUN printf 'server {\n\
+    listen 3000;\n\
+    root /usr/share/nginx/html;\n\
+    index index.html;\n\
+\n\
+    location /api/captive-portal/ {\n\
+        proxy_pass https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal/;\n\
+        proxy_set_header Host fqamejlyytrhovawgtwg.supabase.co;\n\
+        proxy_ssl_server_name on;\n\
+        proxy_ssl_protocols TLSv1.2 TLSv1.3;\n\
+    }\n\
+\n\
+    location /unifi-proxy/ {\n\
+        proxy_pass http://unifi-proxy:80/;\n\
+        proxy_ssl_verify off;\n\
+        proxy_set_header Host guedesepaixao.com.br;\n\
+        proxy_set_header X-Real-IP $remote_addr;\n\
+        proxy_connect_timeout 10s;\n\
+        proxy_read_timeout 30s;\n\
+    }\n\
+\n\
+    location / {\n\
+        try_files $uri /index.html?$args;\n\
+    }\n\
+}\n' > /etc/nginx/conf.d/default.conf
+
+EXPOSE 3000
+CMD ["nginx", "-g", "daemon off;"]

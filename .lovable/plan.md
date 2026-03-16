@@ -1,53 +1,49 @@
 
+# Captive Portal — Status do Sistema
 
-# Plano: Atualizar Dockerfile para Nginx com proxy integrado
+## ✅ Verificação completa realizada
 
-## Problema
+### Fluxo testado via curl (Edge Function)
+1. `POST /start` com MAC → sessão criada com `store_id` e `client_mac` ✅
+2. `POST /submit` → lead criado, OTP enviado via WhatsApp, verification com `store_id` ✅
+3. `POST /verify-code` → valida OTP, tenta autorizar no UniFi ✅
 
-O Dockerfile atual usa `vite preview` (servidor estático simples) na porta 3000. Ele **não tem capacidade de**:
-1. Fazer proxy de `/api/captive-portal/` para o Supabase Edge Function
-2. Fazer proxy de `/unifi-proxy/` para o container `unifi-proxy` (que acessa o UniFi Controller)
-3. Preservar query params (`?id=MAC`) do UniFi com `try_files ... ?$args`
+### Correções aplicadas
 
-Como o EasyPanel puxa direto do GitHub e usa o Dockerfile do repo, a solução é **substituir o Dockerfile** por um multi-stage build que gera os arquivos estáticos e serve com Nginx, incluindo todas as rotas de proxy necessárias.
+1. **Falsa autorização corrigida** — `/verify-code` retorna valor real de `authorized` (não mais `true` fixo)
+2. **Sessões sem MAC/store não marcadas como "authorized"** — ficam como "submitted" com `fail_reason`
+3. **Login UniFi resiliente** — sempre tenta legacy `/api/login` como fallback (não apenas em 404)
+4. **Consent fallback corrigido** — usa versão `1.0` (existente no DB) em vez de `offline-fallback` (que causava erro 400)
 
-## O que será feito
+### Fluxo completo: AP → Liberação
 
-### 1. Novo Dockerfile (substitui o atual)
+```
+1. Cliente conecta ao WiFi → UniFi redireciona para:
+   https://wifi.guedesepaixao.com.br/guest/s/default/?id=MAC&ap=AP_MAC
 
-Multi-stage build:
-- **Stage 1**: Node 20 — `npm install` + `npm run build` (gera `/app/dist`)
-- **Stage 2**: Nginx Alpine — serve os arquivos estáticos com config customizada
+2. Nginx serve index.html com ?id=MAC preservado (REQUER ?$args)
 
-Nginx config embutida no Dockerfile com 3 locations:
+3. Frontend lê ?id= como client_mac → POST /start (cria sessão com MAC)
 
-```text
-/ → try_files $uri /index.html?$args  (preserva ?id=MAC do UniFi)
+4. Formulário preenchido → POST /submit (cria lead, envia OTP WhatsApp)
 
-/api/captive-portal/ → proxy_pass https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal/
-  (com proxy_ssl_server_name on e Host header correto)
-
-/unifi-proxy/ → proxy_pass http://unifi-proxy:80/
-  (trailing slash remove o prefixo, acessa o container irmão no EasyPanel)
+5. Código OTP digitado → POST /verify-code:
+   a. Valida OTP
+   b. Busca client_mac e store_id da sessão
+   c. Busca unifi_controller_url da loja
+   d. Login no proxy: /api/auth/login (OS) → fallback /api/login (legacy)
+   e. Autoriza MAC: POST /api/s/{site}/cmd/stamgr com cmd=authorize-guest
+   f. Retorna authorized=true/false real
 ```
 
-Escuta na **porta 3000** (para manter compatibilidade com os domínios já configurados no EasyPanel que apontam para porta 3000).
+### Dependências do VPS (ações manuais)
 
-### 2. Nenhuma mudança no código fonte
-
-O `portal-utils.ts` já usa `/api/captive-portal` quando o host é `wifi.guedesepaixao.com.br` — perfeito, vai bater com o proxy do Nginx.
-
-### Após deploy no EasyPanel
-
-O fluxo completo ficará:
-
-```text
-wifi.guedesepaixao.com.br (EasyPanel Traefik → porta 3000)
-  │
-  ▼
-wifi-minasbrasil (Nginx:3000)
-  ├── /                         → index.html?$args (portal + MAC preservado)
-  ├── /api/captive-portal/*     → Supabase Edge Function
-  └── /unifi-proxy/*            → unifi-proxy:80/* → guedesepaixao.com.br:8443
-```
-
+1. **Nginx `?$args`**: `try_files $uri /index.html?$args;` — preserva `?id=MAC` do UniFi
+2. **Nginx proxy trailing slash**: 
+   ```nginx
+   location /unifi-proxy/ {
+       proxy_pass http://localhost:PORTA/;
+   }
+   ```
+3. **Teste do proxy**: `curl -k https://wifi.guedesepaixao.com.br/unifi-proxy/api/login -d '{"username":"...","password":"..."}'`
+4. **Walled Garden UniFi**: incluir domínio do portal, Supabase, OCSP/CRL, domínios de detecção Google/Apple
