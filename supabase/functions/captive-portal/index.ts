@@ -1963,7 +1963,11 @@ Deno.serve(async (req: Request) => {
 
   try {
     // Self-contained HTML portal (for captive assistant that can't reach Vercel)
-    if ((path === "/portal" || path === "/portal/") && req.method === "GET") return await handlePortalHtml(req, url);
+    // Also handle UniFi's /guest/s/default/ redirect path as an alias
+    if (
+      (path === "/portal" || path === "/portal/" || path.startsWith("/guest/s/")) &&
+      req.method === "GET"
+    ) return await handlePortalHtml(req, url);
 
     // Public portal endpoints
     if (path === "/bootstrap" && req.method === "GET") return await handleBootstrap(req);
