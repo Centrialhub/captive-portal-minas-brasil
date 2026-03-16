@@ -164,7 +164,7 @@
         var x = new XMLHttpRequest();
         x.open(method||'GET', url);
         if(body) x.setRequestHeader('Content-Type','application/json');
-        x.timeout = 10000;
+        x.timeout = 15000;
         x.onload = function(){
           try{var r=JSON.parse(x.responseText);cb(null,r);}
           catch(e){cb('Resposta inválida do servidor');}
