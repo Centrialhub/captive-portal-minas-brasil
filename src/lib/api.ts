@@ -12,7 +12,7 @@ async function resilientFetch(
   url: string,
   options?: RequestInit & { retries?: number; timeoutMs?: number },
 ): Promise<Response> {
-  const { retries = 0, timeoutMs = 8000, ...fetchOpts } = options || {};
+  const { retries = 0, timeoutMs = 15000, ...fetchOpts } = options || {};
   const delays = [500, 1500];
   let lastError: unknown;
 
