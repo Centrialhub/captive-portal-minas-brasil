@@ -72,7 +72,7 @@ export const api = {
   },
 
   async requestCode(data: { session_id: string; phone: string }) {
-    const res = await resilientFetch(`${API_BASE}/request-code`, {
+    const res = await resilientFetch(`${API_BASE}/request-code${getStoreParam()}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
