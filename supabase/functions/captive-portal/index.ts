@@ -599,6 +599,18 @@ async function unifiAuthorizeByMac(
 
         const resText = await res.text();
         if (res.ok) {
+          console.log(`UniFi authorize response from ${url}: ${resText.slice(0, 300)}`);
+          // UniFi returns 200 even for errors — check rc field
+          try {
+            const resJson = JSON.parse(resText);
+            if (resJson?.meta?.rc === "error") {
+              lastError = `UniFi rejected: ${resJson.meta.msg || "unknown error"}`;
+              console.warn(lastError);
+              continue; // try next URL if available
+            }
+          } catch {
+            // Not JSON — treat HTTP 200 as success
+          }
           console.log(`UniFi authorize succeeded via ${url}`);
           return { ok: true };
         }
