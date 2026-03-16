@@ -123,13 +123,50 @@ function safeParseJson(req: Request): Promise<Record<string, unknown> | null> {
   return req.json().catch(() => null);
 }
 
-// ========== Detect Store from IP ==========
+// ========== Detect Store (slug param > IP > single active fallback) ==========
 async function detectStoreFromRequest(
   db: ReturnType<typeof supabaseAdmin>,
   req: Request
 ): Promise<{ store_id: string | null; store_slug: string; redirect_url: string | null; store_name: string; store_city: string | null }> {
-  const ip = getPublicIp(req);
 
+  const fallback = {
+    store_id: null as string | null,
+    store_slug: "geral",
+    redirect_url: null as string | null,
+    store_name: "Wi-Fi Drogaria Minas Brasil",
+    store_city: null as string | null,
+  };
+
+  const storeResult = (s: { id: string; slug: string; name: string; city: string | null; post_auth_redirect_url: string | null }) => ({
+    store_id: s.id,
+    store_slug: s.slug,
+    redirect_url: s.post_auth_redirect_url || null,
+    store_name: s.name,
+    store_city: s.city,
+  });
+
+  // 1) Check ?store=slug query param (passed by UniFi redirect URL)
+  try {
+    const url = new URL(req.url);
+    const storeSlug = url.searchParams.get("store");
+    if (storeSlug && isValidSlug(storeSlug)) {
+      const { data: store } = await db
+        .from("stores")
+        .select("id, slug, name, city, is_active, post_auth_redirect_url")
+        .eq("slug", storeSlug)
+        .eq("is_active", true)
+        .maybeSingle();
+
+      if (store) {
+        console.log(`Store detected via ?store= param: ${store.slug}`);
+        return storeResult(store);
+      }
+      console.warn(`Store slug "${storeSlug}" from URL not found or inactive`);
+    }
+  } catch { /* ignore URL parse errors */ }
+
+  // 2) Check IP mapping (existing logic)
+  const ip = getPublicIp(req);
   if (ip) {
     const { data: ipMapping } = await db
       .from("store_public_ips")
@@ -146,24 +183,27 @@ async function detectStoreFromRequest(
         .maybeSingle();
 
       if (store?.is_active) {
-        return {
-          store_id: store.id,
-          store_slug: store.slug,
-          redirect_url: store.post_auth_redirect_url || null,
-          store_name: store.name,
-          store_city: store.city,
-        };
+        console.log(`Store detected via IP mapping: ${store.slug} (IP: ${ip})`);
+        return storeResult(store);
       }
     }
   }
 
-  return {
-    store_id: null,
-    store_slug: "geral",
-    redirect_url: null,
-    store_name: "Wi-Fi Drogaria Minas Brasil",
-    store_city: null,
-  };
+  // 3) Fallback: if exactly one active store exists, use it
+  const { data: activeStores } = await db
+    .from("stores")
+    .select("id, slug, name, city, post_auth_redirect_url")
+    .eq("is_active", true)
+    .limit(2);
+
+  if (activeStores && activeStores.length === 1) {
+    const store = activeStores[0];
+    console.log(`Store detected via single-active fallback: ${store.slug}`);
+    return storeResult(store);
+  }
+
+  console.warn(`No store detected (IP: ${ip || "unknown"}, active stores: ${activeStores?.length || 0})`);
+  return fallback;
 }
 
 // ========== Distributed Rate Limiting (Postgres) ==========
