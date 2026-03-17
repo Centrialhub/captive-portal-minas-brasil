@@ -1114,10 +1114,27 @@ async function handleVerifyCode(req: Request): Promise<Response> {
     }
 
     if (storeId && session.client_mac) {
-      try {
-        authorized = await authorizeClient(db, storeId, storeSlug, session.client_mac, sessionId as string, clientIp);
-      } catch (err) {
-        console.error("UniFi authorization error:", (err as Error).message);
+      // Check daily authorization limit (max 2 per MAC per day)
+      const todayStart = new Date();
+      todayStart.setUTCHours(0, 0, 0, 0);
+      const { count: dailyAuthCount } = await db
+        .from("captive_sessions")
+        .select("id", { count: "exact", head: true })
+        .eq("client_mac", session.client_mac)
+        .eq("status", "authorized")
+        .gte("authorized_at", todayStart.toISOString());
+
+      if ((dailyAuthCount ?? 0) >= 2) {
+        console.warn(`[verify-code] Daily auth limit reached for MAC ${session.client_mac} (count=${dailyAuthCount})`);
+        await db.from("captive_sessions")
+          .update({ status: "failed", fail_reason: "DAILY_LIMIT_REACHED" })
+          .eq("id", sessionId as string);
+      } else {
+        try {
+          authorized = await authorizeClient(db, storeId, storeSlug, session.client_mac, sessionId as string, clientIp);
+        } catch (err) {
+          console.error("UniFi authorization error:", (err as Error).message);
+        }
       }
     } else {
       // Log why authorization was skipped
