@@ -564,7 +564,7 @@ async function unifiAuthorizeByMac(
 
     // Step 2: Authorize guest
     const formattedMac = clientMac.replace(/(.{2})(?=.)/g, "$1:").toLowerCase();
-    const body = JSON.stringify({ cmd: "authorize-guest", mac: formattedMac, minutes: 1440 });
+    const body = JSON.stringify({ cmd: "authorize-guest", mac: formattedMac, minutes: 15 });
 
     // Build auth headers based on login type
     const headers: Record<string, string> = { "Content-Type": "application/json" };
