@@ -1150,10 +1150,16 @@ async function handleVerifyCode(req: Request): Promise<Response> {
 
   const resolvedRedirectUrl = redirectUrl || session?.redirect_url || DEFAULT_REDIRECT_URL;
 
-  // Build appropriate message based on real authorization status
+  // Check if daily limit was the reason for no authorization
+  const dailyLimitReached = !authorized && session?.client_mac && storeId
+    ? (await db.from("captive_sessions").select("fail_reason").eq("id", sessionId as string).maybeSingle())?.data?.fail_reason === "DAILY_LIMIT_REACHED"
+    : false;
+
   let message: string;
   if (authorized) {
     message = "Código verificado! Acesso liberado.";
+  } else if (dailyLimitReached) {
+    message = "Você atingiu o limite de 2 acessos por dia. Tente novamente amanhã.";
   } else if (!session?.client_mac) {
     message = "Cadastro salvo! Para liberar o WiFi, reconecte à rede.";
   } else {
