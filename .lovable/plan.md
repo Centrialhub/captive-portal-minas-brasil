@@ -1,49 +1,81 @@
 
-# Captive Portal — Status do Sistema
 
-## ✅ Verificação completa realizada
+# Implementar Loja Matriz com Credenciais por Loja
 
-### Fluxo testado via curl (Edge Function)
-1. `POST /start` com MAC → sessão criada com `store_id` e `client_mac` ✅
-2. `POST /submit` → lead criado, OTP enviado via WhatsApp, verification com `store_id` ✅
-3. `POST /verify-code` → valida OTP, tenta autorizar no UniFi ✅
+## Contexto
 
-### Correções aplicadas
+A Loja Matriz tem credenciais UniFi diferentes (`hotspot` / `Hotspot@123`) das atuais (globais via secrets). O sistema precisa suportar credenciais por loja.
 
-1. **Falsa autorização corrigida** — `/verify-code` retorna valor real de `authorized` (não mais `true` fixo)
-2. **Sessões sem MAC/store não marcadas como "authorized"** — ficam como "submitted" com `fail_reason`
-3. **Login UniFi resiliente** — sempre tenta legacy `/api/login` como fallback (não apenas em 404)
-4. **Consent fallback corrigido** — usa versão `1.0` (existente no DB) em vez de `offline-fallback` (que causava erro 400)
+- Controller URL: `http://rwificontroller.drogariaminasbrasil.com.br:8083/matriz/`
+- Cidade: Montes Claros
+- Site ID: `default`
+- Usuário: `hotspot` / Senha: `Hotspot@123`
 
-### Fluxo completo: AP → Liberação
+## Plano
 
-```
-1. Cliente conecta ao WiFi → UniFi redireciona para:
-   https://wifi.guedesepaixao.com.br/guest/s/default/?id=MAC&ap=AP_MAC
+### 1. Migração: adicionar colunas de credenciais na tabela `stores`
 
-2. Nginx serve index.html com ?id=MAC preservado (REQUER ?$args)
-
-3. Frontend lê ?id= como client_mac → POST /start (cria sessão com MAC)
-
-4. Formulário preenchido → POST /submit (cria lead, envia OTP WhatsApp)
-
-5. Código OTP digitado → POST /verify-code:
-   a. Valida OTP
-   b. Busca client_mac e store_id da sessão
-   c. Busca unifi_controller_url da loja
-   d. Login no proxy: /api/auth/login (OS) → fallback /api/login (legacy)
-   e. Autoriza MAC: POST /api/s/{site}/cmd/stamgr com cmd=authorize-guest
-   f. Retorna authorized=true/false real
+```sql
+ALTER TABLE stores
+  ADD COLUMN unifi_username text,
+  ADD COLUMN unifi_password text;
 ```
 
-### Dependências do VPS (ações manuais)
+Essas colunas são nullable — quando vazias, o sistema usa os secrets globais (`UNIFI_USERNAME` / `UNIFI_PASSWORD`) como fallback.
 
-1. **Nginx `?$args`**: `try_files $uri /index.html?$args;` — preserva `?id=MAC` do UniFi
-2. **Nginx proxy trailing slash**: 
-   ```nginx
-   location /unifi-proxy/ {
-       proxy_pass http://localhost:PORTA/;
-   }
-   ```
-3. **Teste do proxy**: `curl -k https://wifi.guedesepaixao.com.br/unifi-proxy/api/login -d '{"username":"...","password":"..."}'`
-4. **Walled Garden UniFi**: incluir domínio do portal, Supabase, OCSP/CRL, domínios de detecção Google/Apple
+### 2. Inserir a Loja Matriz
+
+```sql
+INSERT INTO stores (name, slug, city, unifi_controller_url, unifi_site_id, unifi_username, unifi_password, is_active)
+VALUES (
+  'Drogaria Minas Brasil - Matriz',
+  'matriz',
+  'Montes Claros',
+  'http://rwificontroller.drogariaminasbrasil.com.br:8083/matriz',
+  'default',
+  'hotspot',
+  'Hotspot@123',
+  true
+);
+```
+
+### 3. Atualizar Edge Function para credenciais por loja
+
+Modificar `supabase/functions/captive-portal/index.ts`:
+
+- A função `unifiTryLogin` passa a receber `username` e `password` como parâmetros em vez de usar as variáveis globais
+- A função `unifiLogin` e `unifiAuthorizeByMac` recebem os mesmos parâmetros
+- No fluxo de `/verify-code`, ao buscar a store, também buscar `unifi_username` e `unifi_password`
+- Se a store tiver credenciais próprias, usar elas; senão, fallback para os secrets globais
+
+Trecho principal da mudança:
+
+```typescript
+// Antes (global):
+body: JSON.stringify({ username: UNIFI_USERNAME, password: UNIFI_PASSWORD })
+
+// Depois (por loja com fallback):
+body: JSON.stringify({ username: storeUsername || UNIFI_USERNAME, password: storePassword || UNIFI_PASSWORD })
+```
+
+### 4. Atualizar query da store no verify-code
+
+Onde o sistema busca `unifi_controller_url` da loja, adicionar `unifi_username, unifi_password` no SELECT e passar para `unifiAuthorizeByMac`.
+
+### 5. Mascarar credenciais nas respostas admin
+
+Garantir que `unifi_username` e `unifi_password` sejam mascarados nas rotas admin (mesmo padrão já usado para `unifi_api_key_or_token`).
+
+## Resumo de mudanças
+
+| Arquivo | Mudança |
+|---|---|
+| Migration SQL | Adicionar `unifi_username`, `unifi_password` à tabela `stores` |
+| `captive-portal/index.ts` | Passar credenciais como parâmetro nas funções UniFi; buscar da store |
+| Insert SQL | Criar registro da Loja Matriz |
+
+## Configuração no UniFi da Matriz (ação manual)
+
+1. **Guest Portal**: ativar portal externo com URL `https://wifi.guedesepaixao.com.br/guest/s/default/?store=matriz`
+2. **Walled Garden**: adicionar `wifi.guedesepaixao.com.br`, `fqamejlyytrhovawgtwg.supabase.co`, domínios WhatsApp e detecção de conectividade
+
