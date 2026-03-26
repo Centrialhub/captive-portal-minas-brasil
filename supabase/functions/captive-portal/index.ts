@@ -478,15 +478,18 @@ function createUnifiHttpClient(): Deno.HttpClient {
  * Try login on a specific endpoint, return cookie or TOKEN header.
  */
 async function unifiTryLogin(
-  loginUrl: string, httpClient: Deno.HttpClient
+  loginUrl: string, httpClient: Deno.HttpClient,
+  username?: string, password?: string
 ): Promise<{ ok: boolean; cookie?: string; token?: string; error?: string; isUnifiOs?: boolean }> {
+  const effectiveUser = username || UNIFI_USERNAME;
+  const effectivePass = password || UNIFI_PASSWORD;
   const ac = new AbortController();
   const timeout = setTimeout(() => ac.abort(), UNIFI_TIMEOUT_MS);
   try {
     const res = await fetch(loginUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: UNIFI_USERNAME, password: UNIFI_PASSWORD }),
+      body: JSON.stringify({ username: effectiveUser, password: effectivePass }),
       signal: ac.signal,
       client: httpClient,
     } as RequestInit);
@@ -528,19 +531,19 @@ async function unifiTryLogin(
  * Login to UniFi controller — tries UniFi OS endpoint first, then legacy.
  */
 async function unifiLogin(
-  baseUrl: string, httpClient: Deno.HttpClient
+  baseUrl: string, httpClient: Deno.HttpClient,
+  username?: string, password?: string
 ): Promise<{ ok: boolean; cookie?: string; token?: string; isUnifiOs?: boolean; error?: string }> {
   // Try UniFi OS first: /api/auth/login
-  const osResult = await unifiTryLogin(`${baseUrl}/api/auth/login`, httpClient);
+  const osResult = await unifiTryLogin(`${baseUrl}/api/auth/login`, httpClient, username, password);
   if (osResult.ok) {
     console.log("UniFi login succeeded via UniFi OS endpoint (/api/auth/login)");
     return osResult;
   }
 
   // Always try legacy /api/login as fallback (not just on 404)
-  // Legacy controllers may return various errors for /api/auth/login
   console.log(`UniFi OS endpoint failed (${osResult.error?.slice(0, 100)}), trying legacy /api/login...`);
-  const legacyResult = await unifiTryLogin(`${baseUrl}/api/login`, httpClient);
+  const legacyResult = await unifiTryLogin(`${baseUrl}/api/login`, httpClient, username, password);
   if (legacyResult.ok) {
     console.log("UniFi login succeeded via legacy endpoint (/api/login)");
     return legacyResult;
@@ -552,14 +555,15 @@ async function unifiLogin(
  * Authorize a guest MAC via UniFi controller (supports both OS and legacy).
  */
 async function unifiAuthorizeByMac(
-  controllerUrl: string, siteId: string, clientMac: string
+  controllerUrl: string, siteId: string, clientMac: string,
+  username?: string, password?: string
 ): Promise<{ ok: boolean; error?: string }> {
   const baseUrl = controllerUrl.replace(/\/+$/, "");
   const httpClient = createUnifiHttpClient();
 
   try {
     // Step 1: Login (auto-detects OS vs legacy)
-    const login = await unifiLogin(baseUrl, httpClient);
+    const login = await unifiLogin(baseUrl, httpClient, username, password);
     if (!login.ok) return { ok: false, error: `UniFi login failed: ${login.error}` };
 
     // Step 2: Authorize guest
@@ -634,11 +638,12 @@ async function unifiAuthorizeByMac(
 }
 
 async function unifiAuthorizeWithRetry(
-  controllerUrl: string, siteId: string, mac: string
+  controllerUrl: string, siteId: string, mac: string,
+  username?: string, password?: string
 ): Promise<{ ok: boolean; error?: string; attempts: number }> {
   let lastError = "";
   for (let attempt = 0; attempt <= UNIFI_RETRY_COUNT; attempt++) {
-    const result = await unifiAuthorizeByMac(controllerUrl, siteId, mac);
+    const result = await unifiAuthorizeByMac(controllerUrl, siteId, mac, username, password);
     if (result.ok) return { ok: true, attempts: attempt + 1 };
     lastError = result.error || "Unknown error";
     if (attempt < UNIFI_RETRY_COUNT) await new Promise((r) => setTimeout(r, 1000));
@@ -657,7 +662,7 @@ async function authorizeClient(
 
   const { data: store } = await db
     .from("stores")
-    .select("unifi_controller_url, unifi_site_id")
+    .select("unifi_controller_url, unifi_site_id, unifi_username, unifi_password")
     .eq("id", storeId)
     .maybeSingle();
 
@@ -670,7 +675,11 @@ async function authorizeClient(
     return false;
   }
 
-  if (!UNIFI_USERNAME || !UNIFI_PASSWORD) {
+  // Per-store credentials with fallback to global secrets
+  const storeUser = store.unifi_username || UNIFI_USERNAME;
+  const storePass = store.unifi_password || UNIFI_PASSWORD;
+
+  if (!storeUser || !storePass) {
     await db.from("captive_sessions").update({ status: "failed", fail_reason: "UNIFI_CREDENTIALS_MISSING" }).eq("id", sessionId);
     await db.from("audit_logs").insert({
       store_id: storeId, entity: "session", entity_id: sessionId,
@@ -689,7 +698,7 @@ async function authorizeClient(
   }
 
   const siteId = store.unifi_site_id || "default";
-  const result = await unifiAuthorizeWithRetry(store.unifi_controller_url, siteId, clientMac);
+  const result = await unifiAuthorizeWithRetry(store.unifi_controller_url, siteId, clientMac, storeUser, storePass);
 
   if (result.ok) {
     await db.from("captive_sessions").update({ status: "authorized", authorized_at: new Date().toISOString() }).eq("id", sessionId);
@@ -1348,6 +1357,9 @@ async function handleAdminStores(req: Request): Promise<Response> {
       unifi_controller_url: sanitizeString(body.unifi_controller_url, 500) || null,
       unifi_api_key_or_token: typeof body.unifi_api_key_or_token === "string"
         ? body.unifi_api_key_or_token.trim().slice(0, 500) || null : null,
+      unifi_username: sanitizeString(body.unifi_username, 100) || null,
+      unifi_password: typeof body.unifi_password === "string"
+        ? body.unifi_password.trim().slice(0, 200) || null : null,
     }).select("id, slug, name").single();
     if (error) return errorResponse(error.message, 500);
     return jsonResponse(data, 201);
@@ -1369,6 +1381,11 @@ async function handleAdminStores(req: Request): Promise<Response> {
     if (body.unifi_api_key_or_token !== undefined) {
       updateData.unifi_api_key_or_token = typeof body.unifi_api_key_or_token === "string"
         ? body.unifi_api_key_or_token.trim().slice(0, 500) || null : null;
+    }
+    if (body.unifi_username !== undefined) updateData.unifi_username = sanitizeString(body.unifi_username, 100);
+    if (body.unifi_password !== undefined) {
+      updateData.unifi_password = typeof body.unifi_password === "string"
+        ? body.unifi_password.trim().slice(0, 200) || null : null;
     }
 
     if (Object.keys(updateData).length === 0) return errorResponse("Nenhum campo para atualizar");
