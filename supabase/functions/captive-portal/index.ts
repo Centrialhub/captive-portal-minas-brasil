@@ -1357,6 +1357,9 @@ async function handleAdminStores(req: Request): Promise<Response> {
       unifi_controller_url: sanitizeString(body.unifi_controller_url, 500) || null,
       unifi_api_key_or_token: typeof body.unifi_api_key_or_token === "string"
         ? body.unifi_api_key_or_token.trim().slice(0, 500) || null : null,
+      unifi_username: sanitizeString(body.unifi_username, 100) || null,
+      unifi_password: typeof body.unifi_password === "string"
+        ? body.unifi_password.trim().slice(0, 200) || null : null,
     }).select("id, slug, name").single();
     if (error) return errorResponse(error.message, 500);
     return jsonResponse(data, 201);
@@ -1378,6 +1381,11 @@ async function handleAdminStores(req: Request): Promise<Response> {
     if (body.unifi_api_key_or_token !== undefined) {
       updateData.unifi_api_key_or_token = typeof body.unifi_api_key_or_token === "string"
         ? body.unifi_api_key_or_token.trim().slice(0, 500) || null : null;
+    }
+    if (body.unifi_username !== undefined) updateData.unifi_username = sanitizeString(body.unifi_username, 100);
+    if (body.unifi_password !== undefined) {
+      updateData.unifi_password = typeof body.unifi_password === "string"
+        ? body.unifi_password.trim().slice(0, 200) || null : null;
     }
 
     if (Object.keys(updateData).length === 0) return errorResponse("Nenhum campo para atualizar");
