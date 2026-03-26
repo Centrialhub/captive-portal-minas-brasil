@@ -662,7 +662,7 @@ async function authorizeClient(
 
   const { data: store } = await db
     .from("stores")
-    .select("unifi_controller_url, unifi_site_id")
+    .select("unifi_controller_url, unifi_site_id, unifi_username, unifi_password")
     .eq("id", storeId)
     .maybeSingle();
 
@@ -675,7 +675,11 @@ async function authorizeClient(
     return false;
   }
 
-  if (!UNIFI_USERNAME || !UNIFI_PASSWORD) {
+  // Per-store credentials with fallback to global secrets
+  const storeUser = store.unifi_username || UNIFI_USERNAME;
+  const storePass = store.unifi_password || UNIFI_PASSWORD;
+
+  if (!storeUser || !storePass) {
     await db.from("captive_sessions").update({ status: "failed", fail_reason: "UNIFI_CREDENTIALS_MISSING" }).eq("id", sessionId);
     await db.from("audit_logs").insert({
       store_id: storeId, entity: "session", entity_id: sessionId,
@@ -694,7 +698,7 @@ async function authorizeClient(
   }
 
   const siteId = store.unifi_site_id || "default";
-  const result = await unifiAuthorizeWithRetry(store.unifi_controller_url, siteId, clientMac);
+  const result = await unifiAuthorizeWithRetry(store.unifi_controller_url, siteId, clientMac, storeUser, storePass);
 
   if (result.ok) {
     await db.from("captive_sessions").update({ status: "authorized", authorized_at: new Date().toISOString() }).eq("id", sessionId);
