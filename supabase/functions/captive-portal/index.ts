@@ -586,9 +586,11 @@ async function unifiAuthorizeByMac(
     }
 
     // Determine authorize URL — try OS path first if login was OS
+    // For controllers behind a reverse proxy, baseUrl includes the subpath
+    const origin = parsed.origin;
     const authUrls = login.isUnifiOs
       ? [
-          `${baseUrl}/proxy/network/api/s/${siteId}/cmd/stamgr`,
+          `${origin}/proxy/network/api/s/${siteId}/cmd/stamgr`,
           `${baseUrl}/api/s/${siteId}/cmd/stamgr`,
         ]
       : [`${baseUrl}/api/s/${siteId}/cmd/stamgr`];
