@@ -560,8 +560,11 @@ async function unifiAuthorizeByMac(
   controllerUrl: string, siteId: string, clientMac: string,
   username?: string, password?: string
 ): Promise<{ ok: boolean; error?: string }> {
-  // UniFi API calls must always go to the root origin (no subpaths)
-  const baseUrl = new URL(controllerUrl).origin;
+  // Use the full controller URL path (some controllers sit behind an Nginx
+  // reverse-proxy that uses a subpath like /matriz/ to route to the right instance).
+  const parsed = new URL(controllerUrl);
+  // Remove trailing slashes for clean concatenation
+  const baseUrl = (parsed.origin + parsed.pathname).replace(/\/+$/, "");
   const httpClient = createUnifiHttpClient();
 
   try {
