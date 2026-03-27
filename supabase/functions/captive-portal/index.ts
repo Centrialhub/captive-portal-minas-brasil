@@ -1158,10 +1158,11 @@ async function handleVerifyCode(req: Request): Promise<Response> {
     }
   }
 
+  const resolvedStoreId = session ? (session.store_id || verification.store_id) : null;
   const resolvedRedirectUrl = redirectUrl || session?.redirect_url || DEFAULT_REDIRECT_URL;
 
   // Check if daily limit was the reason for no authorization
-  const dailyLimitReached = !authorized && session?.client_mac && storeId
+  const dailyLimitReached = !authorized && session?.client_mac && resolvedStoreId
     ? (await db.from("captive_sessions").select("fail_reason").eq("id", sessionId as string).maybeSingle())?.data?.fail_reason === "DAILY_LIMIT_REACHED"
     : false;
 
