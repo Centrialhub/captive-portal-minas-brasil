@@ -536,15 +536,15 @@ async function unifiLogin(
   baseUrl: string, httpClient: Deno.HttpClient,
   username?: string, password?: string
 ): Promise<{ ok: boolean; cookie?: string; token?: string; isUnifiOs?: boolean; error?: string }> {
-  // Try UniFi OS first: /api/auth/login
+  // Try UniFi OS first: {baseUrl}/api/auth/login
   const osResult = await unifiTryLogin(`${baseUrl}/api/auth/login`, httpClient, username, password);
   if (osResult.ok) {
-    console.log("UniFi login succeeded via UniFi OS endpoint (/api/auth/login)");
+    console.log("UniFi login succeeded via UniFi OS endpoint");
     return osResult;
   }
 
-  // Always try legacy /api/login as fallback (not just on 404)
-  console.log(`UniFi OS endpoint failed (${osResult.error?.slice(0, 100)}), trying legacy /api/login...`);
+  // Always try legacy /api/login as fallback
+  console.log(`UniFi OS endpoint failed (${osResult.error?.slice(0, 100)}), trying legacy ${baseUrl}/api/login...`);
   const legacyResult = await unifiTryLogin(`${baseUrl}/api/login`, httpClient, username, password);
   if (legacyResult.ok) {
     console.log("UniFi login succeeded via legacy endpoint (/api/login)");
@@ -560,8 +560,11 @@ async function unifiAuthorizeByMac(
   controllerUrl: string, siteId: string, clientMac: string,
   username?: string, password?: string
 ): Promise<{ ok: boolean; error?: string }> {
-  // UniFi API calls must always go to the root origin (no subpaths)
-  const baseUrl = new URL(controllerUrl).origin;
+  // Use the full controller URL path (some controllers sit behind an Nginx
+  // reverse-proxy that uses a subpath like /matriz/ to route to the right instance).
+  const parsed = new URL(controllerUrl);
+  // Remove trailing slashes for clean concatenation
+  const baseUrl = (parsed.origin + parsed.pathname).replace(/\/+$/, "");
   const httpClient = createUnifiHttpClient();
 
   try {
@@ -583,9 +586,11 @@ async function unifiAuthorizeByMac(
     }
 
     // Determine authorize URL — try OS path first if login was OS
+    // For controllers behind a reverse proxy, baseUrl includes the subpath
+    const origin = parsed.origin;
     const authUrls = login.isUnifiOs
       ? [
-          `${baseUrl}/proxy/network/api/s/${siteId}/cmd/stamgr`,
+          `${origin}/proxy/network/api/s/${siteId}/cmd/stamgr`,
           `${baseUrl}/api/s/${siteId}/cmd/stamgr`,
         ]
       : [`${baseUrl}/api/s/${siteId}/cmd/stamgr`];
