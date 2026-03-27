@@ -600,6 +600,7 @@ async function unifiAuthorizeByMac(
           headers,
           body,
           signal: ac.signal,
+          redirect: "manual",
           client: httpClient,
         } as RequestInit);
         clearTimeout(timeout);
