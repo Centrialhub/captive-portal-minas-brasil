@@ -491,11 +491,13 @@ async function unifiTryLogin(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username: effectiveUser, password: effectivePass }),
       signal: ac.signal,
+      redirect: "manual",
       client: httpClient,
     } as RequestInit);
     clearTimeout(timeout);
 
-    if (!res.ok) {
+    // UniFi controllers often return 302/303 after successful login — treat 2xx and 3xx as potential success
+    if (res.status >= 400) {
       const text = await res.text().catch(() => "");
       return { ok: false, error: `Login HTTP ${res.status}: ${text.slice(0, 200)}` };
     }
