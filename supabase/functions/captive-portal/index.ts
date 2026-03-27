@@ -536,15 +536,15 @@ async function unifiLogin(
   baseUrl: string, httpClient: Deno.HttpClient,
   username?: string, password?: string
 ): Promise<{ ok: boolean; cookie?: string; token?: string; isUnifiOs?: boolean; error?: string }> {
-  // Try UniFi OS first: /api/auth/login
+  // Try UniFi OS first: {baseUrl}/api/auth/login
   const osResult = await unifiTryLogin(`${baseUrl}/api/auth/login`, httpClient, username, password);
   if (osResult.ok) {
-    console.log("UniFi login succeeded via UniFi OS endpoint (/api/auth/login)");
+    console.log("UniFi login succeeded via UniFi OS endpoint");
     return osResult;
   }
 
-  // Always try legacy /api/login as fallback (not just on 404)
-  console.log(`UniFi OS endpoint failed (${osResult.error?.slice(0, 100)}), trying legacy /api/login...`);
+  // Always try legacy /api/login as fallback
+  console.log(`UniFi OS endpoint failed (${osResult.error?.slice(0, 100)}), trying legacy ${baseUrl}/api/login...`);
   const legacyResult = await unifiTryLogin(`${baseUrl}/api/login`, httpClient, username, password);
   if (legacyResult.ok) {
     console.log("UniFi login succeeded via legacy endpoint (/api/login)");
