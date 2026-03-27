@@ -29,6 +29,26 @@ RUN printf 'server {\n\
         proxy_read_timeout 30s;\n\
     }\n\
 \n\
+    # Proxy reverso para o UniFi Controller (SSL terminado pelo EasyPanel)\n\
+    # Permite que o controller seja acessado via dominio com cert valido\n\
+    location /unifi/ {\n\
+        proxy_pass https://rwificontroller.drogariaminasbrasil.com.br:8083/;\n\
+        proxy_ssl_verify off;\n\
+        proxy_ssl_server_name on;\n\
+        proxy_set_header Host rwificontroller.drogariaminasbrasil.com.br;\n\
+        proxy_set_header X-Real-IP $remote_addr;\n\
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
+        proxy_set_header X-Forwarded-Proto https;\n\
+        proxy_set_header Referer "";\n\
+        proxy_connect_timeout 10s;\n\
+        proxy_read_timeout 30s;\n\
+        proxy_buffering off;\n\
+        # Necessario para WebSocket do UniFi\n\
+        proxy_http_version 1.1;\n\
+        proxy_set_header Upgrade $http_upgrade;\n\
+        proxy_set_header Connection "upgrade";\n\
+    }\n\
+\n\
     location / {\n\
         try_files $uri /index.html?$args;\n\
     }\n\
