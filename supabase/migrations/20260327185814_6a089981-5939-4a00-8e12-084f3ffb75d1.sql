@@ -1,0 +1,3 @@
+INSERT INTO store_public_ips (store_id, public_ip, is_active)
+VALUES ('8034f9b2-954b-4156-b531-a0e3c819dd87', '177.85.235.28', true)
+ON CONFLICT DO NOTHING;
