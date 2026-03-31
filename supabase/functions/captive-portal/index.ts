@@ -601,14 +601,15 @@ async function unifiAuthorizeByMac(
       const ac = new AbortController();
       const timeout = setTimeout(() => ac.abort(), UNIFI_TIMEOUT_MS);
       try {
-        const res = await fetch(url, {
+        const fetchOpts2: Record<string, unknown> = {
           method: "POST",
           headers,
           body,
           signal: ac.signal,
           redirect: "manual",
-          client: httpClient,
-        } as RequestInit);
+        };
+        if (httpClient) fetchOpts2.client = httpClient;
+        const res = await fetch(url, fetchOpts2 as RequestInit);
         clearTimeout(timeout);
 
         const resText = await res.text();
