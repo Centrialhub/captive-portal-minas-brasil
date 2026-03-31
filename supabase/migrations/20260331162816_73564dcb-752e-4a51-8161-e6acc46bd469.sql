@@ -1,0 +1,1 @@
+UPDATE stores SET is_active = false WHERE slug = 'loja_teste'
