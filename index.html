@@ -167,7 +167,7 @@
 
       // ── Fetch wrapper with timeout ──
       function apiFetch(path, method, body, cb){
-        var url = API + path;
+        var url = API + path + storeQS;
         var x = new XMLHttpRequest();
         x.open(method||'GET', url);
         if(body) x.setRequestHeader('Content-Type','application/json');
