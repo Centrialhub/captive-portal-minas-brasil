@@ -465,13 +465,11 @@ function normalizePem(pem: string): string {
 
 const UNIFI_CA_CERT = normalizePem(UNIFI_CA_CERT_RAW);
 
-/** Create a Deno HTTP client that tolerates self-signed certs */
-function createUnifiHttpClient(): Deno.HttpClient {
-  const opts: Deno.CreateHttpClientOptions = {};
-  if (UNIFI_CA_CERT) {
-    opts.caCerts = [UNIFI_CA_CERT];
-  }
-  return Deno.createHttpClient(opts);
+/** Create a Deno HTTP client that tolerates self-signed certs.
+ *  Returns null when no CA cert is configured — callers should use standard fetch. */
+function createUnifiHttpClient(): Deno.HttpClient | null {
+  if (!UNIFI_CA_CERT) return null;
+  return Deno.createHttpClient({ caCerts: [UNIFI_CA_CERT] });
 }
 
 /**
