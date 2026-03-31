@@ -54,7 +54,7 @@ RUN printf 'server {\n\
     # Quando o UniFi redireciona para https://31.97.170.23/guest/s/default/?ap=...&id=...\n\
     # este bloco faz 302 para https://wifi.guedesepaixao.com.br com todos os params\n\
     location /guest/s/default/ {\n\
-        return 302 https://wifi.guedesepaixao.com.br/guest/s/default/?store=matriz&$args;\n\
+        return 302 https://wifi.guedesepaixao.com.br/?store=matriz&$args;\n\
     }\n\
 \n\
     # SPA fallback - preserva query params\n\
