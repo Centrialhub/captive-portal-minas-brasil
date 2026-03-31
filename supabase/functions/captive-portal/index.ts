@@ -644,7 +644,7 @@ async function unifiAuthorizeByMac(
     }
     return { ok: false, error: lastError };
   } finally {
-    httpClient.close();
+    httpClient?.close();
   }
 }
 
