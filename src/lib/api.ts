@@ -4,7 +4,13 @@ const API_BASE = getApiBase();
 
 /** Forward ?store= param from the landing URL to API calls */
 function getStoreParam(): string {
-  const store = new URLSearchParams(window.location.search).get("store");
+  const params = new URLSearchParams(window.location.search);
+  let store = params.get("store");
+  // Fallback: if loaded from captive context (has id/mac param) without ?store=,
+  // default to "matriz" to avoid "No store detected" errors
+  if (!store && (params.get("id") || params.get("mac"))) {
+    store = "matriz";
+  }
   return store ? `?store=${encodeURIComponent(store)}` : "";
 }
 
