@@ -13,6 +13,7 @@ RUN printf 'server {\n\
     root /usr/share/nginx/html;\n\
     index index.html;\n\
 \n\
+    # Proxy para Edge Functions do Supabase\n\
     location /api/captive-portal/ {\n\
         proxy_pass https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal/;\n\
         proxy_set_header Host fqamejlyytrhovawgtwg.supabase.co;\n\
@@ -20,6 +21,7 @@ RUN printf 'server {\n\
         proxy_ssl_protocols TLSv1.2 TLSv1.3;\n\
     }\n\
 \n\
+    # Proxy para o container unifi-proxy (comunicacao interna)\n\
     location /unifi-proxy/ {\n\
         proxy_pass http://unifi-proxy:80/;\n\
         proxy_ssl_verify off;\n\
@@ -29,8 +31,8 @@ RUN printf 'server {\n\
         proxy_read_timeout 30s;\n\
     }\n\
 \n\
-    # Proxy reverso para o UniFi Controller (SSL terminado pelo EasyPanel)\n\
-    # Permite que o controller seja acessado via dominio com cert valido\n\
+    # Proxy reverso para o UniFi Controller\n\
+    # SSL terminado pelo EasyPanel, permite acesso via dominio com cert valido\n\
     location /unifi/ {\n\
         proxy_pass https://rwificontroller.drogariaminasbrasil.com.br:8083/;\n\
         proxy_ssl_verify off;\n\
@@ -43,18 +45,19 @@ RUN printf 'server {\n\
         proxy_connect_timeout 10s;\n\
         proxy_read_timeout 30s;\n\
         proxy_buffering off;\n\
-        # Necessario para WebSocket do UniFi\n\
         proxy_http_version 1.1;\n\
         proxy_set_header Upgrade $http_upgrade;\n\
         proxy_set_header Connection "upgrade";\n\
     }\n\
 \n\
-    # Redirect UniFi captive portal path to domain with valid SSL\n\
-    # Preserva todos os params do UniFi (ap, id, t, url, ssid)\n\
+    # Redirect do captive portal UniFi (IP) para dominio com SSL valido\n\
+    # Quando o UniFi redireciona para https://31.97.170.23/guest/s/default/?ap=...&id=...\n\
+    # este bloco faz 302 para https://wifi.guedesepaixao.com.br com todos os params\n\
     location /guest/s/default/ {\n\
         return 302 https://wifi.guedesepaixao.com.br/guest/s/default/?store=matriz&$args;\n\
     }\n\
 \n\
+    # SPA fallback - preserva query params\n\
     location / {\n\
         try_files $uri /index.html?$args;\n\
     }\n\
