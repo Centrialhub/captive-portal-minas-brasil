@@ -465,20 +465,18 @@ function normalizePem(pem: string): string {
 
 const UNIFI_CA_CERT = normalizePem(UNIFI_CA_CERT_RAW);
 
-/** Create a Deno HTTP client that tolerates self-signed certs */
-function createUnifiHttpClient(): Deno.HttpClient {
-  const opts: Deno.CreateHttpClientOptions = {};
-  if (UNIFI_CA_CERT) {
-    opts.caCerts = [UNIFI_CA_CERT];
-  }
-  return Deno.createHttpClient(opts);
+/** Create a Deno HTTP client that tolerates self-signed certs.
+ *  Returns null when no CA cert is configured — callers should use standard fetch. */
+function createUnifiHttpClient(): Deno.HttpClient | null {
+  if (!UNIFI_CA_CERT) return null;
+  return Deno.createHttpClient({ caCerts: [UNIFI_CA_CERT] });
 }
 
 /**
  * Try login on a specific endpoint, return cookie or TOKEN header.
  */
 async function unifiTryLogin(
-  loginUrl: string, httpClient: Deno.HttpClient,
+  loginUrl: string, httpClient: Deno.HttpClient | null,
   username?: string, password?: string
 ): Promise<{ ok: boolean; cookie?: string; token?: string; error?: string; isUnifiOs?: boolean }> {
   const effectiveUser = username || UNIFI_USERNAME;
@@ -486,15 +484,18 @@ async function unifiTryLogin(
   const ac = new AbortController();
   const timeout = setTimeout(() => ac.abort(), UNIFI_TIMEOUT_MS);
   try {
-    const res = await fetch(loginUrl, {
+    console.log(`[UniFi] Login attempt: ${loginUrl} (custom client: ${!!httpClient})`);
+    const fetchOpts: Record<string, unknown> = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username: effectiveUser, password: effectivePass }),
       signal: ac.signal,
       redirect: "manual",
-      client: httpClient,
-    } as RequestInit);
+    };
+    if (httpClient) fetchOpts.client = httpClient;
+    const res = await fetch(loginUrl, fetchOpts as RequestInit);
     clearTimeout(timeout);
+    console.log(`[UniFi] Login response from ${loginUrl}: HTTP ${res.status}`);
 
     // UniFi controllers often return 302/303 after successful login — treat 2xx and 3xx as potential success
     if (res.status >= 400) {
@@ -533,7 +534,7 @@ async function unifiTryLogin(
  * Login to UniFi controller — tries UniFi OS endpoint first, then legacy.
  */
 async function unifiLogin(
-  baseUrl: string, httpClient: Deno.HttpClient,
+  baseUrl: string, httpClient: Deno.HttpClient | null,
   username?: string, password?: string
 ): Promise<{ ok: boolean; cookie?: string; token?: string; isUnifiOs?: boolean; error?: string }> {
   // Try UniFi OS first: {baseUrl}/api/auth/login
@@ -600,14 +601,15 @@ async function unifiAuthorizeByMac(
       const ac = new AbortController();
       const timeout = setTimeout(() => ac.abort(), UNIFI_TIMEOUT_MS);
       try {
-        const res = await fetch(url, {
+        const fetchOpts2: Record<string, unknown> = {
           method: "POST",
           headers,
           body,
           signal: ac.signal,
           redirect: "manual",
-          client: httpClient,
-        } as RequestInit);
+        };
+        if (httpClient) fetchOpts2.client = httpClient;
+        const res = await fetch(url, fetchOpts2 as RequestInit);
         clearTimeout(timeout);
 
         const resText = await res.text();
@@ -642,7 +644,7 @@ async function unifiAuthorizeByMac(
     }
     return { ok: false, error: lastError };
   } finally {
-    httpClient.close();
+    httpClient?.close();
   }
 }
 
