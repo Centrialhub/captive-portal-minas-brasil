@@ -49,6 +49,12 @@ RUN printf 'server {\n\
         proxy_set_header Connection "upgrade";\n\
     }\n\
 \n\
+    # Redirect UniFi captive portal path to domain with valid SSL\n\
+    # Preserva todos os params do UniFi (ap, id, t, url, ssid)\n\
+    location /guest/s/default/ {\n\
+        return 302 https://wifi.guedesepaixao.com.br/guest/s/default/?store=matriz&$args;\n\
+    }\n\
+\n\
     location / {\n\
         try_files $uri /index.html?$args;\n\
     }\n\
