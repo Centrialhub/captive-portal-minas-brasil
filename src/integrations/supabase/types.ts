@@ -217,6 +217,8 @@ export type Database = {
       global_settings: {
         Row: {
           id: number
+          max_daily_accesses: number
+          session_duration_minutes: number
           updated_at: string
           whatsapp_webhook_enabled: boolean
           whatsapp_webhook_secret: string | null
@@ -224,6 +226,8 @@ export type Database = {
         }
         Insert: {
           id?: number
+          max_daily_accesses?: number
+          session_duration_minutes?: number
           updated_at?: string
           whatsapp_webhook_enabled?: boolean
           whatsapp_webhook_secret?: string | null
@@ -231,6 +235,8 @@ export type Database = {
         }
         Update: {
           id?: number
+          max_daily_accesses?: number
+          session_duration_minutes?: number
           updated_at?: string
           whatsapp_webhook_enabled?: boolean
           whatsapp_webhook_secret?: string | null
