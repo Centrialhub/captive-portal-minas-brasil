@@ -148,6 +148,13 @@
         redirect_url: qs.get('url')||''
       };
 
+      // ── Store param (fallback to 'matriz' when captive params present) ──
+      var storeSlug = qs.get('store');
+      if(!storeSlug && (params.client_mac || qs.get('id') || qs.get('mac'))){
+        storeSlug = 'matriz';
+      }
+      var storeQS = storeSlug ? '?store=' + encodeURIComponent(storeSlug) : '';
+
       // ── State ──
       var state = {
         session_id: null,
@@ -160,7 +167,7 @@
 
       // ── Fetch wrapper with timeout ──
       function apiFetch(path, method, body, cb){
-        var url = API + path;
+        var url = API + path + storeQS;
         var x = new XMLHttpRequest();
         x.open(method||'GET', url);
         if(body) x.setRequestHeader('Content-Type','application/json');
