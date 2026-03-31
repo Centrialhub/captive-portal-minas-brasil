@@ -1,0 +1,1 @@
+UPDATE stores SET unifi_controller_url = 'https://wifi.guedesepaixao.com.br/unifi' WHERE slug = 'matriz'
