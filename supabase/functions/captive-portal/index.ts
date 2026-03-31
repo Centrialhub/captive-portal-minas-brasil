@@ -476,7 +476,7 @@ function createUnifiHttpClient(): Deno.HttpClient | null {
  * Try login on a specific endpoint, return cookie or TOKEN header.
  */
 async function unifiTryLogin(
-  loginUrl: string, httpClient: Deno.HttpClient,
+  loginUrl: string, httpClient: Deno.HttpClient | null,
   username?: string, password?: string
 ): Promise<{ ok: boolean; cookie?: string; token?: string; error?: string; isUnifiOs?: boolean }> {
   const effectiveUser = username || UNIFI_USERNAME;
@@ -484,15 +484,18 @@ async function unifiTryLogin(
   const ac = new AbortController();
   const timeout = setTimeout(() => ac.abort(), UNIFI_TIMEOUT_MS);
   try {
-    const res = await fetch(loginUrl, {
+    console.log(`[UniFi] Login attempt: ${loginUrl} (custom client: ${!!httpClient})`);
+    const fetchOpts: Record<string, unknown> = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username: effectiveUser, password: effectivePass }),
       signal: ac.signal,
       redirect: "manual",
-      client: httpClient,
-    } as RequestInit);
+    };
+    if (httpClient) fetchOpts.client = httpClient;
+    const res = await fetch(loginUrl, fetchOpts as RequestInit);
     clearTimeout(timeout);
+    console.log(`[UniFi] Login response from ${loginUrl}: HTTP ${res.status}`);
 
     // UniFi controllers often return 302/303 after successful login — treat 2xx and 3xx as potential success
     if (res.status >= 400) {
