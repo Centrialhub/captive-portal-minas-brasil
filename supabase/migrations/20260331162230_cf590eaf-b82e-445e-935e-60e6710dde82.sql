@@ -1,0 +1,1 @@
+UPDATE stores SET unifi_controller_url = 'http://rwificontroller.drogariaminasbrasil.com.br:8083/matriz/' WHERE slug = 'matriz'
