@@ -162,8 +162,16 @@ export default function App() {
         setOtpCode("");
       } else {
         setSuccessMsg(result.message || "Conectado com sucesso!");
-        setRedirectUrl(result.redirect_url || redirectUrl);
+        const finalUrl = result.redirect_url || redirectUrl;
+        setRedirectUrl(finalUrl);
         setStep("success");
+
+        // CRITICAL: when backend says use_hotspot_redirect, navigate to the UniFi
+        // controller's /guest/s/<site>/ endpoint. The controller will authorize
+        // the MAC the AP actually sees (solves Android MAC randomization issue).
+        if (result.use_hotspot_redirect && finalUrl) {
+          setTimeout(() => { window.location.href = finalUrl; }, 1200);
+        }
       }
     } catch {
       setError("Erro ao verificar código.");

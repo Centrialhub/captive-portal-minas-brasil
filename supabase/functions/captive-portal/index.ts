@@ -1214,7 +1214,7 @@ async function handleVerifyCode(req: Request): Promise<Response> {
   // Authorize client via UniFi
   const { data: session } = await db
     .from("captive_sessions")
-    .select("client_mac, store_id, redirect_url")
+    .select("client_mac, ap_mac, ssid, store_id, redirect_url")
     .eq("id", sessionId as string)
     .maybeSingle();
 
@@ -1269,7 +1269,47 @@ async function handleVerifyCode(req: Request): Promise<Response> {
   }
 
   const resolvedStoreId = session ? (session.store_id || verification.store_id) : null;
-  const resolvedRedirectUrl = redirectUrl || session?.redirect_url || DEFAULT_REDIRECT_URL;
+
+  // Build UniFi Hotspot redirect URL — this is the KEY fix for MAC randomization issue.
+  // Instead of relying on API-based MAC authorization (which fails when Android randomizes
+  // the MAC between the captive webview and the actual Wi-Fi association), we redirect the
+  // browser to the controller's /guest/s/<site>/ endpoint. The controller then authorizes
+  // using the MAC the AP ACTUALLY SEES at that moment.
+  let unifiHotspotRedirect: string | null = null;
+  if (resolvedStoreId && session?.client_mac) {
+    const { data: store } = await db
+      .from("stores")
+      .select("unifi_controller_url, unifi_site_id")
+      .eq("id", resolvedStoreId)
+      .maybeSingle();
+    if (store?.unifi_controller_url) {
+      try {
+        const ctrlUrl = new URL(store.unifi_controller_url);
+        const siteId = store.unifi_site_id || "default";
+        // Format MAC with colons (UniFi expects aa:bb:cc:dd:ee:ff)
+        const macWithColons = session.client_mac.toLowerCase().replace(/(.{2})(?=.)/g, "$1:");
+        const params = new URLSearchParams({
+          id: macWithColons,
+          ap: (session as { ap_mac?: string }).ap_mac
+            ? ((session as { ap_mac?: string }).ap_mac as string).toLowerCase().replace(/(.{2})(?=.)/g, "$1:")
+            : "",
+          ssid: (session as { ssid?: string }).ssid || "",
+          t: String(Math.floor(Date.now() / 1000)),
+          url: redirectUrl || session?.redirect_url || DEFAULT_REDIRECT_URL,
+        });
+        // Strip empty values
+        for (const [k, v] of Array.from(params.entries())) {
+          if (!v) params.delete(k);
+        }
+        unifiHotspotRedirect = `${ctrlUrl.origin}/guest/s/${siteId}/?${params.toString()}`;
+        console.log(`[verify-code] UniFi Hotspot redirect built: ${unifiHotspotRedirect}`);
+      } catch (err) {
+        console.warn(`[verify-code] Failed to build UniFi Hotspot redirect: ${(err as Error).message}`);
+      }
+    }
+  }
+
+  const resolvedRedirectUrl = unifiHotspotRedirect || redirectUrl || session?.redirect_url || DEFAULT_REDIRECT_URL;
 
   // Check if daily limit was the reason for no authorization
   const dailyLimitReached = !authorized && session?.client_mac && resolvedStoreId
@@ -1277,7 +1317,10 @@ async function handleVerifyCode(req: Request): Promise<Response> {
     : false;
 
   let message: string;
-  if (authorized) {
+  if (unifiHotspotRedirect) {
+    // The actual Wi-Fi release happens on the redirect; the API auth is just a "best effort" hint.
+    message = "Cadastro confirmado! Redirecionando para liberar o WiFi...";
+  } else if (authorized) {
     message = "Código verificado! Acesso liberado.";
   } else if (dailyLimitReached) {
     message = "Você atingiu o limite de 2 acessos por dia. Tente novamente amanhã.";
@@ -1291,6 +1334,7 @@ async function handleVerifyCode(req: Request): Promise<Response> {
     ok: true,
     authorized,
     redirect_url: resolvedRedirectUrl,
+    use_hotspot_redirect: !!unifiHotspotRedirect,
     message,
   });
 }
