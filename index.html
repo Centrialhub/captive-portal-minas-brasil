@@ -314,6 +314,12 @@
 
           if(data.redirect_url) state.redirect_url = data.redirect_url;
           showSuccess(data.message||'Conectado com sucesso!');
+
+          if(data.use_hotspot_redirect && state.redirect_url){
+            setTimeout(function(){
+              window.location.href = state.redirect_url;
+            }, 1200);
+          }
         });
       });
 
@@ -362,6 +368,7 @@
         var link=$('fb-success-link');
         if(state.redirect_url){
           link.href=state.redirect_url;
+          link.target='_self';
           link.style.display='inline-block';
           link.classList.remove('hidden');
         } else {
