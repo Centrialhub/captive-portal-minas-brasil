@@ -561,14 +561,16 @@ async function unifiTryLogin(
       return { ok: false, error: `Login HTTP ${res.status}: ${text.slice(0, 200)}` };
     }
 
-    // UniFi OS returns a TOKEN cookie; legacy returns unifises
+    // UniFi OS returns a TOKEN cookie; legacy returns unifises (+ csrf_token)
     const tokenMatch = respSetCookie.match(/TOKEN=([^;]+)/);
     if (tokenMatch) {
       return { ok: true, token: tokenMatch[1], isUnifiOs: true };
     }
     const legacyMatch = respSetCookie.match(/unifises=([^;]+)/);
     if (legacyMatch) {
-      return { ok: true, cookie: legacyMatch[1], isUnifiOs: false };
+      // Legacy controllers also issue csrf_token alongside unifises — capture it for subsequent requests
+      const csrfMatch = respSetCookie.match(/csrf_token=([^;]+)/);
+      return { ok: true, cookie: legacyMatch[1], csrfToken: csrfMatch?.[1], isUnifiOs: false };
     }
 
     // Some UniFi OS versions return x-csrf-token header instead
