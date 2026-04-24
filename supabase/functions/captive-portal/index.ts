@@ -2114,7 +2114,7 @@ Deno.serve(async (req: Request) => {
       const storeSlug = (b?.store as string) || url.searchParams.get("store") || "matriz";
 
       // Load store credentials from DB
-      const { data: store, error: storeErr } = await supabase
+      const { data: store, error: storeErr } = await supabaseAdmin()
         .from("stores")
         .select("slug, unifi_controller_url, unifi_username, unifi_password, unifi_site_id")
         .eq("slug", storeSlug)
