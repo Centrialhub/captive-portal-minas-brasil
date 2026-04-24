@@ -478,7 +478,7 @@ function createUnifiHttpClient(): Deno.HttpClient | null {
 async function unifiTryLogin(
   loginUrl: string, httpClient: Deno.HttpClient | null,
   username?: string, password?: string
-): Promise<{ ok: boolean; cookie?: string; token?: string; error?: string; isUnifiOs?: boolean }> {
+): Promise<{ ok: boolean; cookie?: string; csrfToken?: string; token?: string; error?: string; isUnifiOs?: boolean }> {
   const effectiveUser = username || UNIFI_USERNAME;
   const effectivePass = password || UNIFI_PASSWORD;
   const ac = new AbortController();
@@ -561,14 +561,16 @@ async function unifiTryLogin(
       return { ok: false, error: `Login HTTP ${res.status}: ${text.slice(0, 200)}` };
     }
 
-    // UniFi OS returns a TOKEN cookie; legacy returns unifises
+    // UniFi OS returns a TOKEN cookie; legacy returns unifises (+ csrf_token)
     const tokenMatch = respSetCookie.match(/TOKEN=([^;]+)/);
     if (tokenMatch) {
       return { ok: true, token: tokenMatch[1], isUnifiOs: true };
     }
     const legacyMatch = respSetCookie.match(/unifises=([^;]+)/);
     if (legacyMatch) {
-      return { ok: true, cookie: legacyMatch[1], isUnifiOs: false };
+      // Legacy controllers also issue csrf_token alongside unifises — capture it for subsequent requests
+      const csrfMatch = respSetCookie.match(/csrf_token=([^;]+)/);
+      return { ok: true, cookie: legacyMatch[1], csrfToken: csrfMatch?.[1], isUnifiOs: false };
     }
 
     // Some UniFi OS versions return x-csrf-token header instead
@@ -592,7 +594,7 @@ async function unifiTryLogin(
 async function unifiLogin(
   baseUrl: string, httpClient: Deno.HttpClient | null,
   username?: string, password?: string
-): Promise<{ ok: boolean; cookie?: string; token?: string; isUnifiOs?: boolean; error?: string }> {
+): Promise<{ ok: boolean; cookie?: string; csrfToken?: string; token?: string; isUnifiOs?: boolean; error?: string }> {
   // Try UniFi OS first: {baseUrl}/api/auth/login
   const osResult = await unifiTryLogin(`${baseUrl}/api/auth/login`, httpClient, username, password);
   if (osResult.ok) {
@@ -639,7 +641,11 @@ async function unifiAuthorizeByMac(
       headers["Cookie"] = `TOKEN=${login.token}`;
       headers["X-CSRF-Token"] = login.token;
     } else if (login.cookie) {
-      headers["Cookie"] = `unifises=${login.cookie}`;
+      // Legacy: include both unifises and csrf_token cookies (controller validates both)
+      headers["Cookie"] = login.csrfToken
+        ? `unifises=${login.cookie}; csrf_token=${login.csrfToken}`
+        : `unifises=${login.cookie}`;
+      if (login.csrfToken) headers["X-Csrf-Token"] = login.csrfToken;
     }
 
     // Determine authorize URL — try OS path first if login was OS
@@ -2166,6 +2172,19 @@ Deno.serve(async (req: Request) => {
             out.login_ok = true;
             out.successful_endpoint = ep;
             out.endpoints_tried = results;
+
+            // Optional: also test authorize-guest if ?mac= provided
+            const testMac = url.searchParams.get("mac") || (b?.mac as string | undefined);
+            if (testMac) {
+              const siteId = url.searchParams.get("site_id") || (b?.site_id as string | undefined) || store.unifi_site_id || "default";
+              const authResult = await unifiAuthorizeByMac(ctrlUrl, siteId, testMac, user, pass);
+              out.authorize_test = {
+                mac: testMac,
+                site_id: siteId,
+                ok: authResult.ok,
+                error: authResult.error,
+              };
+            }
             return jsonResponse(out);
           }
         }
