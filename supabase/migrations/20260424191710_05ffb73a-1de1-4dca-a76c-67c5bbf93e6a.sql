@@ -1,0 +1,1 @@
+UPDATE stores SET unifi_site_id='matriz' WHERE slug='matriz';
