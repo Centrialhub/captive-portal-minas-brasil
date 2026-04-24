@@ -594,7 +594,7 @@ async function unifiTryLogin(
 async function unifiLogin(
   baseUrl: string, httpClient: Deno.HttpClient | null,
   username?: string, password?: string
-): Promise<{ ok: boolean; cookie?: string; token?: string; isUnifiOs?: boolean; error?: string }> {
+): Promise<{ ok: boolean; cookie?: string; csrfToken?: string; token?: string; isUnifiOs?: boolean; error?: string }> {
   // Try UniFi OS first: {baseUrl}/api/auth/login
   const osResult = await unifiTryLogin(`${baseUrl}/api/auth/login`, httpClient, username, password);
   if (osResult.ok) {
