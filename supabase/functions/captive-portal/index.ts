@@ -478,7 +478,7 @@ function createUnifiHttpClient(): Deno.HttpClient | null {
 async function unifiTryLogin(
   loginUrl: string, httpClient: Deno.HttpClient | null,
   username?: string, password?: string
-): Promise<{ ok: boolean; cookie?: string; token?: string; error?: string; isUnifiOs?: boolean }> {
+): Promise<{ ok: boolean; cookie?: string; csrfToken?: string; token?: string; error?: string; isUnifiOs?: boolean }> {
   const effectiveUser = username || UNIFI_USERNAME;
   const effectivePass = password || UNIFI_PASSWORD;
   const ac = new AbortController();
