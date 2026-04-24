@@ -2259,7 +2259,7 @@ Deno.serve(async (req: Request) => {
             os_name: c.os_name,
             dev_family: c.dev_family,
           }))
-          .sort((a, b) => (b.assoc_time as number || 0) - (a.assoc_time as number || 0));
+          .sort((a: { assoc_time?: number }, b: { assoc_time?: number }) => (b.assoc_time || 0) - (a.assoc_time || 0));
 
         return jsonResponse({
           store: storeSlug,
