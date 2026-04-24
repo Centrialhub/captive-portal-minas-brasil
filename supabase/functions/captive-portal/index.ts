@@ -483,41 +483,99 @@ async function unifiTryLogin(
   const effectivePass = password || UNIFI_PASSWORD;
   const ac = new AbortController();
   const timeout = setTimeout(() => ac.abort(), UNIFI_TIMEOUT_MS);
+
+  // Derive base URL (strip /api/login or /api/auth/login) for warm-up GET + Referer
+  const baseUrl = loginUrl.replace(/\/api\/(auth\/)?login$/, "");
+
+  // Common browser-like headers — some UniFi versions reject requests without these
+  const baseHeaders: Record<string, string> = {
+    "Content-Type": "application/json;charset=UTF-8",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "User-Agent": "Mozilla/5.0 (compatible; CaptivePortal/1.0)",
+    "Referer": `${baseUrl}/`,
+    "Origin": baseUrl,
+  };
+
   try {
-    console.log(`[UniFi] Login attempt: ${loginUrl} (custom client: ${!!httpClient})`);
+    // ---- Warm-up GET to capture initial session cookies (JSESSIONID/csrf_token) ----
+    let warmupCookies = "";
+    let warmupCsrf = "";
+    try {
+      const warmAc = new AbortController();
+      const warmTimer = setTimeout(() => warmAc.abort(), UNIFI_TIMEOUT_MS);
+      const warmOpts: Record<string, unknown> = {
+        method: "GET",
+        headers: { "User-Agent": baseHeaders["User-Agent"], "Accept": "*/*" },
+        signal: warmAc.signal,
+        redirect: "manual",
+      };
+      if (httpClient) warmOpts.client = httpClient;
+      const warmRes = await fetch(`${baseUrl}/`, warmOpts as RequestInit);
+      clearTimeout(warmTimer);
+      const warmSetCookie = warmRes.headers.get("set-cookie") || "";
+      warmupCsrf = warmRes.headers.get("x-csrf-token") || "";
+      // Extract cookie name=value pairs (drop attributes like Path, HttpOnly)
+      warmupCookies = warmSetCookie
+        .split(/,(?=[^;]+=)/)
+        .map(c => c.split(";")[0].trim())
+        .filter(Boolean)
+        .join("; ");
+      await warmRes.body?.cancel().catch(() => {});
+      console.log(`[UniFi] Warmup GET ${baseUrl}/: HTTP ${warmRes.status}, cookies="${warmupCookies.slice(0, 120)}", csrf="${warmupCsrf.slice(0, 40)}"`);
+    } catch (e) {
+      console.log(`[UniFi] Warmup GET failed (non-fatal): ${(e as Error).message}`);
+    }
+
+    // ---- POST login ----
+    const headers: Record<string, string> = { ...baseHeaders };
+    if (warmupCookies) headers["Cookie"] = warmupCookies;
+    if (warmupCsrf) headers["X-CSRF-Token"] = warmupCsrf;
+
+    const payload = {
+      username: effectiveUser,
+      password: effectivePass,
+      remember: false,
+      strict: true,
+    };
+
+    console.log(`[UniFi] Login attempt: ${loginUrl} (custom client: ${!!httpClient}, warm cookies: ${warmupCookies ? "yes" : "no"})`);
     const fetchOpts: Record<string, unknown> = {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: effectiveUser, password: effectivePass }),
+      headers,
+      body: JSON.stringify(payload),
       signal: ac.signal,
       redirect: "manual",
     };
     if (httpClient) fetchOpts.client = httpClient;
     const res = await fetch(loginUrl, fetchOpts as RequestInit);
     clearTimeout(timeout);
-    console.log(`[UniFi] Login response from ${loginUrl}: HTTP ${res.status}`);
+
+    const respSetCookie = res.headers.get("set-cookie") || "";
+    const respCsrf = res.headers.get("x-csrf-token") || "";
+    const respServer = res.headers.get("server") || "";
+    console.log(`[UniFi] Login response ${loginUrl}: HTTP ${res.status} | server="${respServer}" | set-cookie="${respSetCookie.slice(0, 200)}" | x-csrf-token="${respCsrf.slice(0, 40)}"`);
 
     // UniFi controllers often return 302/303 after successful login — treat 2xx and 3xx as potential success
     if (res.status >= 400) {
       const text = await res.text().catch(() => "");
+      console.log(`[UniFi] Login body (HTTP ${res.status}): ${text.slice(0, 500)}`);
       return { ok: false, error: `Login HTTP ${res.status}: ${text.slice(0, 200)}` };
     }
 
     // UniFi OS returns a TOKEN cookie; legacy returns unifises
-    const setCookie = res.headers.get("set-cookie") || "";
-    const tokenMatch = setCookie.match(/TOKEN=([^;]+)/);
+    const tokenMatch = respSetCookie.match(/TOKEN=([^;]+)/);
     if (tokenMatch) {
       return { ok: true, token: tokenMatch[1], isUnifiOs: true };
     }
-    const legacyMatch = setCookie.match(/unifises=([^;]+)/);
+    const legacyMatch = respSetCookie.match(/unifises=([^;]+)/);
     if (legacyMatch) {
       return { ok: true, cookie: legacyMatch[1], isUnifiOs: false };
     }
 
     // Some UniFi OS versions return x-csrf-token header instead
-    const csrfToken = res.headers.get("x-csrf-token");
-    if (csrfToken) {
-      return { ok: true, token: csrfToken, isUnifiOs: true };
+    if (respCsrf) {
+      return { ok: true, token: respCsrf, isUnifiOs: true };
     }
 
     return { ok: false, error: "Login succeeded but no auth cookie/token returned" };
@@ -1702,7 +1760,7 @@ async function handleTestUnifiReach(req: Request): Promise<Response> {
       : (err as Error).message;
     (results.tests as Record<string, unknown>).login = { error: msg };
   } finally {
-    httpClient.close();
+    httpClient?.close();
   }
 
   return jsonResponse(results);
@@ -2088,7 +2146,7 @@ Deno.serve(async (req: Request) => {
       } catch (err) {
         return jsonResponse({ reachable: false, error: (err as Error).message });
       } finally {
-        httpClient.close();
+        httpClient?.close();
       }
     }
 
