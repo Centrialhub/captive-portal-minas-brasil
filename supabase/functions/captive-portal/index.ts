@@ -2195,6 +2195,85 @@ Deno.serve(async (req: Request) => {
     if (path === "/verify-code" && req.method === "POST") return await handleVerifyCode(req);
 
     // Diagnostic: list clients the AP currently sees (to find real MAC behind randomization)
+    // GET /diag/list-aps?store=matriz — list all APs adopted by the controller with their WLANs
+    if (path === "/diag/list-aps" && req.method === "GET") {
+      const storeSlug = url.searchParams.get("store") || "matriz";
+      const { data: store } = await supabaseAdmin()
+        .from("stores")
+        .select("slug, unifi_controller_url, unifi_username, unifi_password, unifi_site_id")
+        .eq("slug", storeSlug)
+        .maybeSingle();
+      if (!store) return jsonResponse({ error: `store not found: ${storeSlug}` });
+
+      const ctrlUrl = (store.unifi_controller_url || "").replace(/\/+$/, "");
+      const user = store.unifi_username || UNIFI_USERNAME;
+      const pass = store.unifi_password || UNIFI_PASSWORD;
+      const siteId = store.unifi_site_id || "default";
+      const httpClient = createUnifiHttpClient();
+
+      try {
+        const parsed = new URL(ctrlUrl);
+        const baseUrl = (parsed.origin + parsed.pathname).replace(/\/+$/, "");
+        const login = await unifiLogin(baseUrl, httpClient, user, pass);
+        if (!login.ok) return jsonResponse({ error: `login failed: ${login.error}` });
+
+        const headers: Record<string, string> = {};
+        if (login.cookie) {
+          headers["Cookie"] = login.csrfToken
+            ? `unifises=${login.cookie}; csrf_token=${login.csrfToken}`
+            : `unifises=${login.cookie}`;
+        }
+        const opts: Record<string, unknown> = { method: "GET", headers, redirect: "manual" };
+        if (httpClient) opts.client = httpClient;
+
+        // Get devices (APs)
+        const rDev = await fetch(`${baseUrl}/api/s/${siteId}/stat/device`, opts as RequestInit);
+        const devList = await rDev.json().catch(() => null);
+        const aps = Array.isArray(devList?.data)
+          ? devList.data.filter((d: Record<string, unknown>) => d.type === "uap").map((d: Record<string, unknown>) => ({
+              mac: d.mac,
+              name: d.name,
+              model: d.model,
+              state: d.state, // 1=connected, 0=disconnected
+              adopted: d.adopted,
+              ip: d.ip,
+              num_sta: d.num_sta,
+              "user-num_sta": d["user-num_sta"],
+              "guest-num_sta": d["guest-num_sta"],
+              version: d.version,
+              uptime: d.uptime,
+            }))
+          : [];
+
+        // Get WLAN configs
+        const rWlan = await fetch(`${baseUrl}/api/s/${siteId}/rest/wlanconf`, opts as RequestInit);
+        const wlanList = await rWlan.json().catch(() => null);
+        const wlans = Array.isArray(wlanList?.data)
+          ? wlanList.data.map((w: Record<string, unknown>) => ({
+              name: w.name,
+              enabled: w.enabled,
+              is_guest: w.is_guest,
+              security: w.security,
+              wlangroup_id: w.wlangroup_id,
+              ap_group_ids: w.ap_group_ids,
+            }))
+          : [];
+
+        return jsonResponse({
+          store: storeSlug,
+          site_id: siteId,
+          aps_total: aps.length,
+          aps,
+          wlans_total: wlans.length,
+          wlans,
+        });
+      } catch (err) {
+        return jsonResponse({ error: (err as Error).message });
+      } finally {
+        httpClient?.close();
+      }
+    }
+
     // GET /diag/find-real-mac?store=matriz&ap=8C30666C99AC&ssid=Visitantes_Teste&minutes=15
     if (path === "/diag/find-real-mac" && req.method === "GET") {
       const storeSlug = url.searchParams.get("store") || "matriz";
