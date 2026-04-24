@@ -2146,7 +2146,7 @@ Deno.serve(async (req: Request) => {
       } catch (err) {
         return jsonResponse({ reachable: false, error: (err as Error).message });
       } finally {
-        httpClient.close();
+        httpClient?.close();
       }
     }
 
