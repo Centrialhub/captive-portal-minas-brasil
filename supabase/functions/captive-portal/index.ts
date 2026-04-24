@@ -641,7 +641,11 @@ async function unifiAuthorizeByMac(
       headers["Cookie"] = `TOKEN=${login.token}`;
       headers["X-CSRF-Token"] = login.token;
     } else if (login.cookie) {
-      headers["Cookie"] = `unifises=${login.cookie}`;
+      // Legacy: include both unifises and csrf_token cookies (controller validates both)
+      headers["Cookie"] = login.csrfToken
+        ? `unifises=${login.cookie}; csrf_token=${login.csrfToken}`
+        : `unifises=${login.cookie}`;
+      if (login.csrfToken) headers["X-Csrf-Token"] = login.csrfToken;
     }
 
     // Determine authorize URL — try OS path first if login was OS
