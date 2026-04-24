@@ -689,6 +689,40 @@ async function unifiAuthorizeByMac(
             // Not JSON — treat HTTP 200 as success
           }
           console.log(`UniFi authorize succeeded via ${url}`);
+
+          // Post-auth verification: query /stat/sta to see if MAC is actually visible to the controller
+          try {
+            const staUrl = url.replace("/cmd/stamgr", "/stat/sta");
+            const acV = new AbortController();
+            const tV = setTimeout(() => acV.abort(), 5000);
+            const resV = await fetch(staUrl, {
+              method: "GET",
+              headers: { "Cookie": headers["Cookie"] || "" },
+              signal: acV.signal,
+              ...(httpClient ? { client: httpClient } : {}),
+            } as RequestInit);
+            clearTimeout(tV);
+            if (resV.ok) {
+              const list = await resV.json().catch(() => null);
+              const targetMac = formattedMac.toLowerCase();
+              const found = Array.isArray(list?.data)
+                ? list.data.find((c: { mac?: string }) => (c.mac || "").toLowerCase() === targetMac)
+                : null;
+              if (found) {
+                console.log(`[verify-mac] Controller SEES MAC ${targetMac}: authorized=${found.authorized}, is_guest=${found.is_guest}, ip=${found.ip}, hostname=${found.hostname}, assoc_time=${found.assoc_time}, ap_mac=${found.ap_mac}, essid=${found.essid}`);
+              } else {
+                const sampleMacs = Array.isArray(list?.data)
+                  ? list.data.slice(0, 10).map((c: { mac?: string }) => c.mac).join(", ")
+                  : "<none>";
+                console.warn(`[verify-mac] Controller DOES NOT SEE MAC ${targetMac} in /stat/sta. Total clients=${list?.data?.length || 0}. Sample MACs: ${sampleMacs}`);
+              }
+            } else {
+              console.warn(`[verify-mac] /stat/sta returned HTTP ${resV.status}`);
+            }
+          } catch (vErr) {
+            console.warn(`[verify-mac] check failed: ${(vErr as Error).message}`);
+          }
+
           return { ok: true };
         }
         lastError = `HTTP ${res.status}: ${resText.slice(0, 200)}`;
