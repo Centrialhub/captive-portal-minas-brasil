@@ -1760,7 +1760,7 @@ async function handleTestUnifiReach(req: Request): Promise<Response> {
       : (err as Error).message;
     (results.tests as Record<string, unknown>).login = { error: msg };
   } finally {
-    httpClient.close();
+    httpClient?.close();
   }
 
   return jsonResponse(results);
