@@ -2166,6 +2166,19 @@ Deno.serve(async (req: Request) => {
             out.login_ok = true;
             out.successful_endpoint = ep;
             out.endpoints_tried = results;
+
+            // Optional: also test authorize-guest if ?mac= provided
+            const testMac = url.searchParams.get("mac") || (b?.mac as string | undefined);
+            if (testMac) {
+              const siteId = url.searchParams.get("site_id") || (b?.site_id as string | undefined) || store.unifi_site_id || "default";
+              const authResult = await unifiAuthorizeByMac(ctrlUrl, siteId, testMac, user, pass);
+              out.authorize_test = {
+                mac: testMac,
+                site_id: siteId,
+                ok: authResult.ok,
+                error: authResult.error,
+              };
+            }
             return jsonResponse(out);
           }
         }
