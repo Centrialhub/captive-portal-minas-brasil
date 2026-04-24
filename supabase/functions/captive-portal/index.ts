@@ -2108,43 +2108,75 @@ Deno.serve(async (req: Request) => {
     if (path === "/request-code" && req.method === "POST") return await handleRequestCode(req);
     if (path === "/verify-code" && req.method === "POST") return await handleVerifyCode(req);
 
-    // Temporary diagnostic — remove after testing
-    if (path === "/diag/unifi-ping" && req.method === "POST") {
-      const b = await safeParseJson(req);
-      const ctrlUrl = (b?.controller_url as string || "").replace(/\/+$/, "");
-      if (!ctrlUrl) return errorResponse("controller_url required");
+    // Temporary diagnostic — accepts GET (uses ?store=) or POST (body overrides)
+    if (path === "/diag/unifi-ping" && (req.method === "GET" || req.method === "POST")) {
+      const b = req.method === "POST" ? await safeParseJson(req) : null;
+      const storeSlug = (b?.store as string) || url.searchParams.get("store") || "matriz";
+
+      // Load store credentials from DB
+      const { data: store, error: storeErr } = await supabaseAdmin()
+        .from("stores")
+        .select("slug, unifi_controller_url, unifi_username, unifi_password, unifi_site_id")
+        .eq("slug", storeSlug)
+        .maybeSingle();
+      if (storeErr || !store) {
+        return jsonResponse({ error: `store not found: ${storeSlug}`, db_error: storeErr?.message });
+      }
+
+      const ctrlUrl = ((b?.controller_url as string) || store.unifi_controller_url || "").replace(/\/+$/, "");
+      const user = (b?.username as string) || store.unifi_username || UNIFI_USERNAME;
+      const pass = (b?.password as string) || store.unifi_password || UNIFI_PASSWORD;
+
+      if (!ctrlUrl) return jsonResponse({ error: "controller_url not configured" });
+      if (!user || !pass) return jsonResponse({ error: "username/password not configured", has_user: !!user, has_pass: !!pass });
+
       const httpClient = createUnifiHttpClient();
+      const out: Record<string, unknown> = {
+        store: store.slug,
+        controller_url: ctrlUrl,
+        username_used: user,
+        password_len: pass.length,
+      };
+
       try {
-        // First do a simple GET to see what the controller returns
-        const ac = new AbortController();
-        const t = setTimeout(() => ac.abort(), UNIFI_TIMEOUT_MS);
-        let rootInfo = "";
+        // Probe root
         try {
-          const rootRes = await fetch(ctrlUrl, { signal: ac.signal, client: httpClient } as RequestInit);
+          const ac = new AbortController();
+          const t = setTimeout(() => ac.abort(), UNIFI_TIMEOUT_MS);
+          const opts: Record<string, unknown> = { method: "GET", signal: ac.signal, redirect: "manual" };
+          if (httpClient) opts.client = httpClient;
+          const r = await fetch(`${ctrlUrl}/`, opts as RequestInit);
           clearTimeout(t);
-          rootInfo = `GET / → ${rootRes.status}, headers: ${JSON.stringify(Object.fromEntries([...rootRes.headers.entries()].slice(0, 10)))}`;
+          const body = (await r.text().catch(() => "")).slice(0, 200);
+          out.root_probe = { status: r.status, server: r.headers.get("server"), set_cookie: (r.headers.get("set-cookie") || "").slice(0, 200), body_preview: body };
         } catch (e) {
-          clearTimeout(t);
-          rootInfo = `GET / error: ${(e as Error).message}`;
+          out.root_probe = { error: (e as Error).message };
         }
 
         // Try all known login endpoints
-        const endpoints = [
-          "/api/auth/login",           // UniFi OS
-          "/api/login",                // Legacy standalone
-          "/proxy/network/api/login",  // UDM Network app
-        ];
-        const results: Record<string, string> = {};
+        const endpoints = ["/api/auth/login", "/api/login", "/proxy/network/api/login"];
+        const results: Record<string, unknown> = {};
         for (const ep of endpoints) {
-          const login = await unifiTryLogin(`${ctrlUrl}${ep}`, httpClient);
+          const login = await unifiTryLogin(`${ctrlUrl}${ep}`, httpClient, user, pass);
+          results[ep] = {
+            ok: login.ok,
+            error: login.error,
+            has_token: !!login.token,
+            has_cookie: !!login.cookie,
+          };
           if (login.ok) {
-            return jsonResponse({ reachable: true, type: ep, login_ok: true, has_token: !!login.token, has_cookie: !!login.cookie, root: rootInfo });
+            out.login_ok = true;
+            out.successful_endpoint = ep;
+            out.endpoints_tried = results;
+            return jsonResponse(out);
           }
-          results[ep] = login.error || "unknown error";
         }
-        return jsonResponse({ reachable: true, login_ok: false, endpoints_tried: results, root: rootInfo });
+        out.login_ok = false;
+        out.endpoints_tried = results;
+        return jsonResponse(out);
       } catch (err) {
-        return jsonResponse({ reachable: false, error: (err as Error).message });
+        out.fatal_error = (err as Error).message;
+        return jsonResponse(out);
       } finally {
         httpClient?.close();
       }
