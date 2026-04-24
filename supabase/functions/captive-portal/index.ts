@@ -870,6 +870,10 @@ async function handleStart(req: Request): Promise<Response> {
   const mac = normalizeMac(body.client_mac);
   const apMac = normalizeMac(body.ap_mac);
 
+  // Diagnostic: log raw vs normalized MAC and full URL params for tracing portal flow
+  const reqUrl = new URL(req.url);
+  console.log(`[start] raw_client_mac="${body.client_mac}" normalized="${mac}" raw_ap_mac="${body.ap_mac}" ssid="${body.ssid}" ua="${(req.headers.get("user-agent") || "").slice(0, 80)}" all_params=${JSON.stringify(Object.fromEntries(reqUrl.searchParams))}`);
+
   const { data: session, error } = await db
     .from("captive_sessions")
     .insert({
