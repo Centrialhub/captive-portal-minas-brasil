@@ -1214,7 +1214,7 @@ async function handleVerifyCode(req: Request): Promise<Response> {
   // Authorize client via UniFi
   const { data: session } = await db
     .from("captive_sessions")
-    .select("client_mac, store_id, redirect_url")
+    .select("client_mac, ap_mac, ssid, store_id, redirect_url")
     .eq("id", sessionId as string)
     .maybeSingle();
 
