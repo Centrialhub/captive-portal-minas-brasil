@@ -487,14 +487,12 @@ async function unifiTryLogin(
   // Derive base URL (strip /api/login or /api/auth/login) for warm-up GET + Referer
   const baseUrl = loginUrl.replace(/\/api\/(auth\/)?login$/, "");
 
-  // Common browser-like headers — some UniFi versions reject requests without these
+  // Minimal headers — UniFi legacy controllers reject Origin/Referer as CSRF (returns 403).
+  // Tested manually: payload {username,password} with Content-Type only → HTTP 200.
   const baseHeaders: Record<string, string> = {
-    "Content-Type": "application/json;charset=UTF-8",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
+    "Content-Type": "application/json",
+    "Accept": "application/json",
     "User-Agent": "Mozilla/5.0 (compatible; CaptivePortal/1.0)",
-    "Referer": `${baseUrl}/`,
-    "Origin": baseUrl,
   };
 
   try {
