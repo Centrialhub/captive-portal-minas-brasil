@@ -2194,6 +2194,89 @@ Deno.serve(async (req: Request) => {
     if (path === "/request-code" && req.method === "POST") return await handleRequestCode(req);
     if (path === "/verify-code" && req.method === "POST") return await handleVerifyCode(req);
 
+    // Diagnostic: list clients the AP currently sees (to find real MAC behind randomization)
+    // GET /diag/find-real-mac?store=matriz&ap=8C30666C99AC&ssid=Visitantes_Teste&minutes=15
+    if (path === "/diag/find-real-mac" && req.method === "GET") {
+      const storeSlug = url.searchParams.get("store") || "matriz";
+      const apFilter = (url.searchParams.get("ap") || "").toLowerCase().replace(/[^a-f0-9]/g, "");
+      const ssidFilter = url.searchParams.get("ssid") || "";
+      const minutes = parseInt(url.searchParams.get("minutes") || "15", 10);
+      const sinceTs = Math.floor(Date.now() / 1000) - minutes * 60;
+
+      const { data: store } = await supabaseAdmin()
+        .from("stores")
+        .select("slug, unifi_controller_url, unifi_username, unifi_password, unifi_site_id")
+        .eq("slug", storeSlug)
+        .maybeSingle();
+      if (!store) return jsonResponse({ error: `store not found: ${storeSlug}` });
+
+      const ctrlUrl = (store.unifi_controller_url || "").replace(/\/+$/, "");
+      const user = store.unifi_username || UNIFI_USERNAME;
+      const pass = store.unifi_password || UNIFI_PASSWORD;
+      const siteId = store.unifi_site_id || "default";
+      const httpClient = createUnifiHttpClient();
+
+      try {
+        const parsed = new URL(ctrlUrl);
+        const baseUrl = (parsed.origin + parsed.pathname).replace(/\/+$/, "");
+        const login = await unifiLogin(baseUrl, httpClient, user, pass);
+        if (!login.ok) return jsonResponse({ error: `login failed: ${login.error}` });
+
+        const headers: Record<string, string> = {};
+        if (login.cookie) {
+          headers["Cookie"] = login.csrfToken
+            ? `unifises=${login.cookie}; csrf_token=${login.csrfToken}`
+            : `unifises=${login.cookie}`;
+        }
+
+        const staUrl = `${baseUrl}/api/s/${siteId}/stat/sta`;
+        const opts: Record<string, unknown> = { method: "GET", headers, redirect: "manual" };
+        if (httpClient) opts.client = httpClient;
+        const r = await fetch(staUrl, opts as RequestInit);
+        const list = await r.json().catch(() => null);
+        const all = Array.isArray(list?.data) ? list.data : [];
+
+        // Filter by AP and SSID, then by recent assoc_time
+        const matches = all
+          .filter((c: Record<string, unknown>) => {
+            const apOk = !apFilter || ((c.ap_mac as string) || "").toLowerCase().replace(/[^a-f0-9]/g, "") === apFilter;
+            const ssidOk = !ssidFilter || (c.essid as string) === ssidFilter;
+            const recent = !c.assoc_time || (c.assoc_time as number) >= sinceTs;
+            return apOk && ssidOk && recent;
+          })
+          .map((c: Record<string, unknown>) => ({
+            mac: c.mac,
+            ip: c.ip,
+            hostname: c.hostname,
+            authorized: c.authorized,
+            is_guest: c.is_guest,
+            essid: c.essid,
+            ap_mac: c.ap_mac,
+            assoc_time: c.assoc_time,
+            assoc_time_iso: c.assoc_time ? new Date((c.assoc_time as number) * 1000).toISOString() : null,
+            oui: c.oui,
+            user_agent: c["user-agent"] || null,
+            os_name: c.os_name,
+            dev_family: c.dev_family,
+          }))
+          .sort((a, b) => (b.assoc_time as number || 0) - (a.assoc_time as number || 0));
+
+        return jsonResponse({
+          store: storeSlug,
+          ap_filter: apFilter,
+          ssid_filter: ssidFilter,
+          window_minutes: minutes,
+          total_clients_on_controller: all.length,
+          matching_clients: matches.length,
+          clients: matches,
+        });
+      } catch (err) {
+        return jsonResponse({ error: (err as Error).message });
+      } finally {
+        httpClient?.close();
+      }
+    }
+
     // Temporary diagnostic — accepts GET (uses ?store=) or POST (body overrides)
     if (path === "/diag/unifi-ping" && (req.method === "GET" || req.method === "POST")) {
       const b = req.method === "POST" ? await safeParseJson(req) : null;
