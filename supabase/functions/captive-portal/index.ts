@@ -2356,6 +2356,116 @@ Deno.serve(async (req: Request) => {
       }
     }
 
+    // GET /diag/find-ssid?store=matriz&ssid=MINASBRASIL_CLIENTES&mac=xx:xx
+    // Lists all sites on the controller, searches for the SSID in each,
+    // and (optionally) tries to authorize the MAC on the site that owns the SSID.
+    if (path === "/diag/find-ssid" && req.method === "GET") {
+      const storeSlug = url.searchParams.get("store") || "matriz";
+      const targetSsid = url.searchParams.get("ssid") || "MINASBRASIL_CLIENTES";
+      const testMac = url.searchParams.get("mac") || undefined;
+
+      const { data: store } = await supabaseAdmin()
+        .from("stores")
+        .select("slug, unifi_controller_url, unifi_username, unifi_password")
+        .eq("slug", storeSlug)
+        .maybeSingle();
+      if (!store) return jsonResponse({ error: `store not found: ${storeSlug}` });
+
+      const ctrlUrl = (store.unifi_controller_url || "").replace(/\/+$/, "");
+      const user = store.unifi_username || UNIFI_USERNAME;
+      const pass = store.unifi_password || UNIFI_PASSWORD;
+      const httpClient = createUnifiHttpClient();
+
+      try {
+        const parsed = new URL(ctrlUrl);
+        const baseUrl = (parsed.origin + parsed.pathname).replace(/\/+$/, "");
+        const login = await unifiLogin(baseUrl, httpClient, user, pass);
+        if (!login.ok) return jsonResponse({ error: `login failed: ${login.error}` });
+
+        const headers: Record<string, string> = {};
+        if (login.cookie) {
+          headers["Cookie"] = login.csrfToken
+            ? `unifises=${login.cookie}; csrf_token=${login.csrfToken}`
+            : `unifises=${login.cookie}`;
+        }
+        const opts: Record<string, unknown> = { method: "GET", headers, redirect: "manual" };
+        if (httpClient) opts.client = httpClient;
+
+        // 1. List all sites
+        const sitesRes = await fetch(`${baseUrl}/api/self/sites`, opts as RequestInit);
+        const sitesJson = await sitesRes.json().catch(() => null);
+        const sites = Array.isArray(sitesJson?.data) ? sitesJson.data : [];
+
+        // 2. For each site: list WLANs and clients with the target SSID
+        const findings: Array<Record<string, unknown>> = [];
+        for (const s of sites) {
+          const siteName = (s as Record<string, unknown>).name as string;
+          const siteDesc = (s as Record<string, unknown>).desc as string;
+          const entry: Record<string, unknown> = { site_name: siteName, site_desc: siteDesc };
+
+          // Check WLANs
+          try {
+            const wlanRes = await fetch(`${baseUrl}/api/s/${siteName}/rest/wlanconf`, opts as RequestInit);
+            const wlanJson = await wlanRes.json().catch(() => null);
+            const wlans = Array.isArray(wlanJson?.data) ? wlanJson.data : [];
+            const matchingWlans = wlans
+              .filter((w: Record<string, unknown>) => (w.name as string) === targetSsid)
+              .map((w: Record<string, unknown>) => ({
+                name: w.name,
+                enabled: w.enabled,
+                security: w.security,
+                is_guest: w.is_guest,
+                ap_group_ids: w.ap_group_ids,
+              }));
+            entry.wlans_matching = matchingWlans;
+          } catch (e) {
+            entry.wlans_error = (e as Error).message;
+          }
+
+          // Check live clients on this SSID
+          try {
+            const staRes = await fetch(`${baseUrl}/api/s/${siteName}/stat/sta`, opts as RequestInit);
+            const staJson = await staRes.json().catch(() => null);
+            const stas = Array.isArray(staJson?.data) ? staJson.data : [];
+            const matchingStas = stas.filter(
+              (c: Record<string, unknown>) => (c.essid as string) === targetSsid
+            );
+            entry.client_count_total = stas.length;
+            entry.client_count_on_ssid = matchingStas.length;
+            entry.sample_macs_on_ssid = matchingStas
+              .slice(0, 5)
+              .map((c: Record<string, unknown>) => ({
+                mac: c.mac,
+                authorized: c.authorized,
+                ap_mac: c.ap_mac,
+              }));
+          } catch (e) {
+            entry.sta_error = (e as Error).message;
+          }
+
+          // 3. If user passed a mac AND this site has clients on the target SSID, try authorize
+          if (testMac && (entry.client_count_on_ssid as number) > 0) {
+            const authResult = await unifiAuthorizeByMac(ctrlUrl, siteName, testMac, user, pass);
+            entry.authorize_test = { mac: testMac, ok: authResult.ok, error: authResult.error };
+          }
+
+          findings.push(entry);
+        }
+
+        return jsonResponse({
+          store: storeSlug,
+          target_ssid: targetSsid,
+          test_mac: testMac,
+          total_sites: sites.length,
+          findings,
+        });
+      } catch (err) {
+        return jsonResponse({ error: (err as Error).message });
+      } finally {
+        httpClient?.close();
+      }
+    }
+
     // Temporary diagnostic — accepts GET (uses ?store=) or POST (body overrides)
     if (path === "/diag/unifi-ping" && (req.method === "GET" || req.method === "POST")) {
       const b = req.method === "POST" ? await safeParseJson(req) : null;
