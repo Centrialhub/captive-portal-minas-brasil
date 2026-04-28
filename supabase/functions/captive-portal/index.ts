@@ -714,6 +714,7 @@ async function unifiAuthorizeByMac(
               clearTimeout(tV);
 
               if (!resV.ok) {
+                await resV.text().catch(() => "");
                 verifyError = `/stat/sta returned HTTP ${resV.status}`;
                 console.warn(`[verify-mac] ${verifyError}`);
               } else {
