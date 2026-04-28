@@ -1332,7 +1332,12 @@ async function handleVerifyCode(req: Request): Promise<Response> {
           if (!v) params.delete(k);
         }
         unifiHotspotRedirect = `${ctrlUrl.origin}/guest/s/${siteId}/?${params.toString()}`;
-        console.log(`[verify-code] UniFi Hotspot redirect built: ${unifiHotspotRedirect}`);
+        if (authorized) {
+          console.log(`[verify-code] UniFi Hotspot redirect built: ${unifiHotspotRedirect}`);
+        } else {
+          console.warn(`[verify-code] Hotspot redirect suppressed because UniFi authorization was not confirmed (session=${sessionId})`);
+          unifiHotspotRedirect = null;
+        }
       } catch (err) {
         console.warn(`[verify-code] Failed to build UniFi Hotspot redirect: ${(err as Error).message}`);
       }
@@ -1347,11 +1352,8 @@ async function handleVerifyCode(req: Request): Promise<Response> {
     : false;
 
   let message: string;
-  if (unifiHotspotRedirect) {
-    // The actual Wi-Fi release happens on the redirect; the API auth is just a "best effort" hint.
-    message = "Cadastro confirmado! Redirecionando para liberar o WiFi...";
-  } else if (authorized) {
-    message = "Código verificado! Acesso liberado.";
+  if (authorized) {
+    message = "Conectado! Acesso liberado com sucesso.";
   } else if (dailyLimitReached) {
     message = "Você atingiu o limite de 2 acessos por dia. Tente novamente amanhã.";
   } else if (!session?.client_mac) {
@@ -1364,7 +1366,7 @@ async function handleVerifyCode(req: Request): Promise<Response> {
     ok: true,
     authorized,
     redirect_url: resolvedRedirectUrl,
-    use_hotspot_redirect: !!unifiHotspotRedirect,
+    use_hotspot_redirect: authorized && !!unifiHotspotRedirect,
     message,
   });
 }
