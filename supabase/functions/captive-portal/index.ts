@@ -2164,7 +2164,8 @@ var oe=document.getElementById('otp-error');hideErr(oe);
 req('POST','/verify-code',{session_id:sessionId,code:code},function(err,r){
 if(err){showErr(oe,err);btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';return;}
 if(r.error){showErr(oe,r.error);btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';document.querySelectorAll('.otp-input').forEach(function(i){i.value='';});document.querySelector('.otp-input').focus();return;}
-redirectUrl=r.redirect_url||redirectUrl;showSuccess(r.message||'C\\u00f3digo verificado!',true);
+if(!r.authorized){showErr(oe,r.message||'C\\u00f3digo verificado, mas o UniFi ainda n\\u00e3o confirmou a libera\\u00e7\\u00e3o. Tente novamente.');btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';document.querySelectorAll('.otp-input').forEach(function(i){i.value='';});document.querySelector('.otp-input').focus();return;}
+redirectUrl=r.redirect_url||redirectUrl;showSuccess(r.message||'Conectado com sucesso!',true);
 });
 });
 document.getElementById('resend-btn').addEventListener('click',function(){
