@@ -677,50 +677,81 @@ async function unifiAuthorizeByMac(
         const resText = await res.text();
         if (res.ok) {
           console.log(`UniFi authorize response from ${url}: ${resText.slice(0, 300)}`);
-          // UniFi returns 200 even for errors — check rc field
+          // UniFi can return HTTP 200 for logical failures. Only meta.rc === "ok" is accepted.
+          let resJson: { meta?: { rc?: string; msg?: string } } | null = null;
           try {
-            const resJson = JSON.parse(resText);
-            if (resJson?.meta?.rc === "error") {
-              lastError = `UniFi rejected: ${resJson.meta.msg || "unknown error"}`;
-              console.warn(lastError);
-              continue; // try next URL if available
-            }
+            resJson = JSON.parse(resText);
           } catch {
-            // Not JSON — treat HTTP 200 as success
+            lastError = `UniFi returned HTTP 200 but response was not JSON: ${resText.slice(0, 120)}`;
+            console.warn(lastError);
+            continue;
           }
-          console.log(`UniFi authorize succeeded via ${url}`);
 
-          // Post-auth verification: query /stat/sta to see if MAC is actually visible to the controller
-          try {
-            const staUrl = url.replace("/cmd/stamgr", "/stat/sta");
+          if (resJson?.meta?.rc !== "ok") {
+            lastError = `UniFi did not confirm authorization: rc=${resJson?.meta?.rc || "missing"}, msg=${resJson?.meta?.msg || "none"}`;
+            console.warn(lastError);
+            continue;
+          }
+
+          console.log(`UniFi authorize command accepted via ${url}; verifying actual client state...`);
+
+          // Post-auth verification is mandatory: do not mark connected until /stat/sta confirms it.
+          const staUrl = url.replace("/cmd/stamgr", "/stat/sta");
+          const targetMac = formattedMac.toLowerCase();
+          let confirmed = false;
+          let verifyError = "controller did not confirm authorized client";
+
+          for (let verifyAttempt = 1; verifyAttempt <= 5; verifyAttempt++) {
             const acV = new AbortController();
             const tV = setTimeout(() => acV.abort(), 5000);
-            const resV = await fetch(staUrl, {
-              method: "GET",
-              headers: { "Cookie": headers["Cookie"] || "" },
-              signal: acV.signal,
-              ...(httpClient ? { client: httpClient } : {}),
-            } as RequestInit);
-            clearTimeout(tV);
-            if (resV.ok) {
-              const list = await resV.json().catch(() => null);
-              const targetMac = formattedMac.toLowerCase();
-              const found = Array.isArray(list?.data)
-                ? list.data.find((c: { mac?: string }) => (c.mac || "").toLowerCase() === targetMac)
-                : null;
-              if (found) {
-                console.log(`[verify-mac] Controller SEES MAC ${targetMac}: authorized=${found.authorized}, is_guest=${found.is_guest}, ip=${found.ip}, hostname=${found.hostname}, assoc_time=${found.assoc_time}, ap_mac=${found.ap_mac}, essid=${found.essid}`);
+            try {
+              const resV = await fetch(staUrl, {
+                method: "GET",
+                headers: { "Cookie": headers["Cookie"] || "" },
+                signal: acV.signal,
+                ...(httpClient ? { client: httpClient } : {}),
+              } as RequestInit);
+              clearTimeout(tV);
+
+              if (!resV.ok) {
+                await resV.text().catch(() => "");
+                verifyError = `/stat/sta returned HTTP ${resV.status}`;
+                console.warn(`[verify-mac] ${verifyError}`);
               } else {
+                const list = await resV.json().catch(() => null);
+                const found = Array.isArray(list?.data)
+                  ? list.data.find((c: { mac?: string }) => (c.mac || "").toLowerCase() === targetMac)
+                  : null;
+
+                if (found?.authorized === true) {
+                  confirmed = true;
+                  console.log(`[verify-mac] Controller CONFIRMED MAC ${targetMac}: authorized=${found.authorized}, is_guest=${found.is_guest}, ip=${found.ip}, hostname=${found.hostname}, assoc_time=${found.assoc_time}, ap_mac=${found.ap_mac}, essid=${found.essid}`);
+                  break;
+                }
+
                 const sampleMacs = Array.isArray(list?.data)
                   ? list.data.slice(0, 10).map((c: { mac?: string }) => c.mac).join(", ")
                   : "<none>";
-                console.warn(`[verify-mac] Controller DOES NOT SEE MAC ${targetMac} in /stat/sta. Total clients=${list?.data?.length || 0}. Sample MACs: ${sampleMacs}`);
+                verifyError = found
+                  ? `MAC ${targetMac} found but authorized=${String(found.authorized)}`
+                  : `MAC ${targetMac} not found in /stat/sta. Total clients=${list?.data?.length || 0}. Sample MACs: ${sampleMacs}`;
+                console.warn(`[verify-mac] attempt ${verifyAttempt}/5: ${verifyError}`);
               }
-            } else {
-              console.warn(`[verify-mac] /stat/sta returned HTTP ${resV.status}`);
+            } catch (vErr) {
+              clearTimeout(tV);
+              verifyError = (vErr as Error).name === "AbortError"
+                ? "/stat/sta verification timeout"
+                : (vErr as Error).message;
+              console.warn(`[verify-mac] attempt ${verifyAttempt}/5 failed: ${verifyError}`);
             }
-          } catch (vErr) {
-            console.warn(`[verify-mac] check failed: ${(vErr as Error).message}`);
+
+            if (!confirmed && verifyAttempt < 5) await new Promise((r) => setTimeout(r, 1000));
+          }
+
+          if (!confirmed) {
+            lastError = `UNIFI_200_BUT_NOT_CONFIRMED: ${verifyError}`;
+            console.warn(lastError);
+            continue;
           }
 
           return { ok: true };
@@ -1205,12 +1236,9 @@ async function handleVerifyCode(req: Request): Promise<Response> {
     return errorResponse(`Código incorreto. ${remaining} tentativa(s) restante(s).`);
   }
 
-  // Code is correct!
-  await db.from("captive_verifications").update({
-    status: "verified",
-    verified_at: new Date().toISOString(),
-  }).eq("id", verification.id);
-
+  // Code is correct; only mark the verification as completed after UniFi confirms access.
+  // This lets the same valid OTP be retried when the controller returns HTTP 200
+  // but does not actually confirm the client as authorized.
   // Authorize client via UniFi
   const { data: session } = await db
     .from("captive_sessions")
@@ -1302,7 +1330,12 @@ async function handleVerifyCode(req: Request): Promise<Response> {
           if (!v) params.delete(k);
         }
         unifiHotspotRedirect = `${ctrlUrl.origin}/guest/s/${siteId}/?${params.toString()}`;
-        console.log(`[verify-code] UniFi Hotspot redirect built: ${unifiHotspotRedirect}`);
+        if (authorized) {
+          console.log(`[verify-code] UniFi Hotspot redirect built: ${unifiHotspotRedirect}`);
+        } else {
+          console.warn(`[verify-code] Hotspot redirect suppressed because UniFi authorization was not confirmed (session=${sessionId})`);
+          unifiHotspotRedirect = null;
+        }
       } catch (err) {
         console.warn(`[verify-code] Failed to build UniFi Hotspot redirect: ${(err as Error).message}`);
       }
@@ -1317,11 +1350,12 @@ async function handleVerifyCode(req: Request): Promise<Response> {
     : false;
 
   let message: string;
-  if (unifiHotspotRedirect) {
-    // The actual Wi-Fi release happens on the redirect; the API auth is just a "best effort" hint.
-    message = "Cadastro confirmado! Redirecionando para liberar o WiFi...";
-  } else if (authorized) {
-    message = "Código verificado! Acesso liberado.";
+  if (authorized) {
+    await db.from("captive_verifications").update({
+      status: "verified",
+      verified_at: new Date().toISOString(),
+    }).eq("id", verification.id);
+    message = "Conectado! Acesso liberado com sucesso.";
   } else if (dailyLimitReached) {
     message = "Você atingiu o limite de 2 acessos por dia. Tente novamente amanhã.";
   } else if (!session?.client_mac) {
@@ -1334,7 +1368,7 @@ async function handleVerifyCode(req: Request): Promise<Response> {
     ok: true,
     authorized,
     redirect_url: resolvedRedirectUrl,
-    use_hotspot_redirect: !!unifiHotspotRedirect,
+    use_hotspot_redirect: authorized && !!unifiHotspotRedirect,
     message,
   });
 }
@@ -2132,7 +2166,8 @@ var oe=document.getElementById('otp-error');hideErr(oe);
 req('POST','/verify-code',{session_id:sessionId,code:code},function(err,r){
 if(err){showErr(oe,err);btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';return;}
 if(r.error){showErr(oe,r.error);btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';document.querySelectorAll('.otp-input').forEach(function(i){i.value='';});document.querySelector('.otp-input').focus();return;}
-redirectUrl=r.redirect_url||redirectUrl;showSuccess(r.message||'C\\u00f3digo verificado!',true);
+if(!r.authorized){showErr(oe,r.message||'C\\u00f3digo verificado, mas o UniFi ainda n\\u00e3o confirmou a libera\\u00e7\\u00e3o. Tente novamente.');btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';document.querySelectorAll('.otp-input').forEach(function(i){i.value='';});document.querySelector('.otp-input').focus();return;}
+redirectUrl=r.redirect_url||redirectUrl;showSuccess(r.message||'Conectado com sucesso!',true);
 });
 });
 document.getElementById('resend-btn').addEventListener('click',function(){

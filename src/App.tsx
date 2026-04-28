@@ -160,7 +160,7 @@ export default function App() {
       if (result.error) {
         setError(result.error);
         setOtpCode("");
-      } else {
+      } else if (result.authorized) {
         setSuccessMsg(result.message || "Conectado com sucesso!");
         const finalUrl = result.redirect_url || redirectUrl;
         setRedirectUrl(finalUrl);
@@ -172,6 +172,9 @@ export default function App() {
         if (result.use_hotspot_redirect && finalUrl) {
           setTimeout(() => { window.location.href = finalUrl; }, 1200);
         }
+      } else {
+        setError(result.message || "Código verificado, mas o UniFi ainda não confirmou a liberação. Tente novamente.");
+        setOtpCode("");
       }
     } catch {
       setError("Erro ao verificar código.");
