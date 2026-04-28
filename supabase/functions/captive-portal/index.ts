@@ -1477,6 +1477,7 @@ async function handleVerifyCode(req: Request): Promise<Response> {
     .maybeSingle();
 
   let authorized = false;
+  let authUserMessage: string | undefined;
   let redirectUrl: string | null = null;
 
   if (session) {
