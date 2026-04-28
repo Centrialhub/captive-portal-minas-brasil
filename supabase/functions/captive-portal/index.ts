@@ -1509,7 +1509,12 @@ async function handleVerifyCode(req: Request): Promise<Response> {
           .eq("id", sessionId as string);
       } else {
         try {
-          authorized = await authorizeClient(db, storeId, storeSlug, session.client_mac, sessionId as string, clientIp);
+          const authResult = await authorizeClient(
+            db, storeId, storeSlug, session.client_mac, sessionId as string, clientIp,
+            { apMac: (session as { ap_mac?: string | null }).ap_mac || null, ssid: (session as { ssid?: string | null }).ssid || null },
+          );
+          authorized = authResult.ok;
+          if (!authResult.ok && authResult.userMessage) authUserMessage = authResult.userMessage;
         } catch (err) {
           console.error("UniFi authorization error:", (err as Error).message);
         }
