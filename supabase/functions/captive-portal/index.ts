@@ -1235,12 +1235,9 @@ async function handleVerifyCode(req: Request): Promise<Response> {
     return errorResponse(`Código incorreto. ${remaining} tentativa(s) restante(s).`);
   }
 
-  // Code is correct!
-  await db.from("captive_verifications").update({
-    status: "verified",
-    verified_at: new Date().toISOString(),
-  }).eq("id", verification.id);
-
+  // Code is correct; only mark the verification as completed after UniFi confirms access.
+  // This lets the same valid OTP be retried when the controller returns HTTP 200
+  // but does not actually confirm the client as authorized.
   // Authorize client via UniFi
   const { data: session } = await db
     .from("captive_sessions")
@@ -1353,6 +1350,10 @@ async function handleVerifyCode(req: Request): Promise<Response> {
 
   let message: string;
   if (authorized) {
+    await db.from("captive_verifications").update({
+      status: "verified",
+      verified_at: new Date().toISOString(),
+    }).eq("id", verification.id);
     message = "Conectado! Acesso liberado com sucesso.";
   } else if (dailyLimitReached) {
     message = "Você atingiu o limite de 2 acessos por dia. Tente novamente amanhã.";
