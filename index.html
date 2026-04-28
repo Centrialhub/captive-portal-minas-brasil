@@ -312,10 +312,15 @@
           if(err){showErr('fb-otp-err',err);codeInp.value='';btn.disabled=true;return;}
           if(data.error){showErr('fb-otp-err',data.error);codeInp.value='';btn.disabled=true;return;}
 
+          if(!data.authorized){
+            showErr('fb-otp-err', data.message||'Código verificado, mas o UniFi ainda não confirmou a liberação. Tente novamente.');
+            codeInp.value='';btn.disabled=true;return;
+          }
+
           if(data.redirect_url) state.redirect_url = data.redirect_url;
           showSuccess(data.message||'Conectado com sucesso!');
 
-          if(data.use_hotspot_redirect && state.redirect_url){
+          if(data.authorized && data.use_hotspot_redirect && state.redirect_url){
             setTimeout(function(){
               window.location.href = state.redirect_url;
             }, 1200);
