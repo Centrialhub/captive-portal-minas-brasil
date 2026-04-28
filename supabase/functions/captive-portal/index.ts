@@ -677,50 +677,80 @@ async function unifiAuthorizeByMac(
         const resText = await res.text();
         if (res.ok) {
           console.log(`UniFi authorize response from ${url}: ${resText.slice(0, 300)}`);
-          // UniFi returns 200 even for errors — check rc field
+          // UniFi can return HTTP 200 for logical failures. Only meta.rc === "ok" is accepted.
+          let resJson: { meta?: { rc?: string; msg?: string } } | null = null;
           try {
-            const resJson = JSON.parse(resText);
-            if (resJson?.meta?.rc === "error") {
-              lastError = `UniFi rejected: ${resJson.meta.msg || "unknown error"}`;
-              console.warn(lastError);
-              continue; // try next URL if available
-            }
+            resJson = JSON.parse(resText);
           } catch {
-            // Not JSON — treat HTTP 200 as success
+            lastError = `UniFi returned HTTP 200 but response was not JSON: ${resText.slice(0, 120)}`;
+            console.warn(lastError);
+            continue;
           }
-          console.log(`UniFi authorize succeeded via ${url}`);
 
-          // Post-auth verification: query /stat/sta to see if MAC is actually visible to the controller
-          try {
-            const staUrl = url.replace("/cmd/stamgr", "/stat/sta");
+          if (resJson?.meta?.rc !== "ok") {
+            lastError = `UniFi did not confirm authorization: rc=${resJson?.meta?.rc || "missing"}, msg=${resJson?.meta?.msg || "none"}`;
+            console.warn(lastError);
+            continue;
+          }
+
+          console.log(`UniFi authorize command accepted via ${url}; verifying actual client state...`);
+
+          // Post-auth verification is mandatory: do not mark connected until /stat/sta confirms it.
+          const staUrl = url.replace("/cmd/stamgr", "/stat/sta");
+          const targetMac = formattedMac.toLowerCase();
+          let confirmed = false;
+          let verifyError = "controller did not confirm authorized client";
+
+          for (let verifyAttempt = 1; verifyAttempt <= 5; verifyAttempt++) {
             const acV = new AbortController();
             const tV = setTimeout(() => acV.abort(), 5000);
-            const resV = await fetch(staUrl, {
-              method: "GET",
-              headers: { "Cookie": headers["Cookie"] || "" },
-              signal: acV.signal,
-              ...(httpClient ? { client: httpClient } : {}),
-            } as RequestInit);
-            clearTimeout(tV);
-            if (resV.ok) {
-              const list = await resV.json().catch(() => null);
-              const targetMac = formattedMac.toLowerCase();
-              const found = Array.isArray(list?.data)
-                ? list.data.find((c: { mac?: string }) => (c.mac || "").toLowerCase() === targetMac)
-                : null;
-              if (found) {
-                console.log(`[verify-mac] Controller SEES MAC ${targetMac}: authorized=${found.authorized}, is_guest=${found.is_guest}, ip=${found.ip}, hostname=${found.hostname}, assoc_time=${found.assoc_time}, ap_mac=${found.ap_mac}, essid=${found.essid}`);
+            try {
+              const resV = await fetch(staUrl, {
+                method: "GET",
+                headers: { "Cookie": headers["Cookie"] || "" },
+                signal: acV.signal,
+                ...(httpClient ? { client: httpClient } : {}),
+              } as RequestInit);
+              clearTimeout(tV);
+
+              if (!resV.ok) {
+                verifyError = `/stat/sta returned HTTP ${resV.status}`;
+                console.warn(`[verify-mac] ${verifyError}`);
               } else {
+                const list = await resV.json().catch(() => null);
+                const found = Array.isArray(list?.data)
+                  ? list.data.find((c: { mac?: string }) => (c.mac || "").toLowerCase() === targetMac)
+                  : null;
+
+                if (found?.authorized === true) {
+                  confirmed = true;
+                  console.log(`[verify-mac] Controller CONFIRMED MAC ${targetMac}: authorized=${found.authorized}, is_guest=${found.is_guest}, ip=${found.ip}, hostname=${found.hostname}, assoc_time=${found.assoc_time}, ap_mac=${found.ap_mac}, essid=${found.essid}`);
+                  break;
+                }
+
                 const sampleMacs = Array.isArray(list?.data)
                   ? list.data.slice(0, 10).map((c: { mac?: string }) => c.mac).join(", ")
                   : "<none>";
-                console.warn(`[verify-mac] Controller DOES NOT SEE MAC ${targetMac} in /stat/sta. Total clients=${list?.data?.length || 0}. Sample MACs: ${sampleMacs}`);
+                verifyError = found
+                  ? `MAC ${targetMac} found but authorized=${String(found.authorized)}`
+                  : `MAC ${targetMac} not found in /stat/sta. Total clients=${list?.data?.length || 0}. Sample MACs: ${sampleMacs}`;
+                console.warn(`[verify-mac] attempt ${verifyAttempt}/5: ${verifyError}`);
               }
-            } else {
-              console.warn(`[verify-mac] /stat/sta returned HTTP ${resV.status}`);
+            } catch (vErr) {
+              clearTimeout(tV);
+              verifyError = (vErr as Error).name === "AbortError"
+                ? "/stat/sta verification timeout"
+                : (vErr as Error).message;
+              console.warn(`[verify-mac] attempt ${verifyAttempt}/5 failed: ${verifyError}`);
             }
-          } catch (vErr) {
-            console.warn(`[verify-mac] check failed: ${(vErr as Error).message}`);
+
+            if (!confirmed && verifyAttempt < 5) await new Promise((r) => setTimeout(r, 1000));
+          }
+
+          if (!confirmed) {
+            lastError = `UNIFI_200_BUT_NOT_CONFIRMED: ${verifyError}`;
+            console.warn(lastError);
+            continue;
           }
 
           return { ok: true };
