@@ -1596,6 +1596,8 @@ async function handleVerifyCode(req: Request): Promise<Response> {
     message = "Você atingiu o limite de 2 acessos por dia. Tente novamente amanhã.";
   } else if (!session?.client_mac) {
     message = "Cadastro salvo! Para liberar o WiFi, reconecte à rede.";
+  } else if (authUserMessage) {
+    message = authUserMessage;
   } else {
     message = "Cadastro salvo! Houve um problema na liberação automática. Tente reconectar ao WiFi.";
   }
