@@ -115,7 +115,7 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
       retries: 2,
-      timeoutMs: 25000,
+      timeoutMs: 40000,
     });
     return safeJson(res, "submit");
   },
