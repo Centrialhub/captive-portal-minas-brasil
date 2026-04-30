@@ -278,6 +278,8 @@
             }
             if(err){
               showErr('fb-form-err', err);
+              subBtn.textContent='Conectar ao Wi-Fi';
+              subBtn.disabled=!chk.checked;
               return;
             }
             subBtn.textContent='Conectar ao Wi-Fi';
