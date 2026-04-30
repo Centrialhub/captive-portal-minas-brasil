@@ -1197,7 +1197,7 @@ async function handleSubmit(req: Request): Promise<Response> {
   const consentVersion = sanitizeString(body.consent_version, 20);
   if (!consentVersion) return errorResponse("Consentimento é obrigatório");
 
-  const sessionId = body.session_id;
+  let sessionId = body.session_id as string | undefined;
   if (sessionId && !isValidUUID(sessionId)) return errorResponse("session_id inválido");
 
   const clientMac = normalizeMac(body.client_mac);
@@ -1215,6 +1215,30 @@ async function handleSubmit(req: Request): Promise<Response> {
   const storeId = detected.store_id;
   const storeSlug = detected.store_slug;
   const redirectUrl = detected.redirect_url;
+
+  // Captive assistants can lose the initial /start response. If /submit arrives
+  // without a session, create one here so the OTP table (session_id NOT NULL)
+  // and the rest of the flow can still proceed.
+  if (!sessionId) {
+    const { data: recoveredSession, error: sessionError } = await db
+      .from("captive_sessions")
+      .insert({
+        store_id: storeId,
+        client_mac: clientMac,
+        client_ip: clientIpStr,
+        user_agent: req.headers.get("user-agent")?.slice(0, 500),
+        redirect_url: sanitizeString(body.redirect_url, 2000),
+        status: "started",
+      })
+      .select("id")
+      .single();
+    if (sessionError || !recoveredSession?.id) {
+      console.error("[submit] Recovery session insert error:", sessionError?.message);
+      return errorResponse("Erro ao iniciar sessão. Tente novamente.", 500);
+    }
+    sessionId = recoveredSession.id;
+    console.log(`[submit] recovered missing session=${sessionId}`);
+  }
 
   // Validate consent
   const { data: consent } = await db.from("consent_versions").select("version, text").eq("version", consentVersion).maybeSingle();
@@ -1364,6 +1388,7 @@ async function handleSubmit(req: Request): Promise<Response> {
 
   return jsonResponse({
     ok: true,
+    session_id: sessionId,
     authorized: false,
     redirect_url: redirectUrl || DEFAULT_REDIRECT_URL,
     requires_verification: true,
@@ -2526,7 +2551,10 @@ Deno.serve(async (req: Request) => {
   }
 
   const url = new URL(req.url);
-  const path = url.pathname.replace(/^\/captive-portal/, "");
+  const routeFallback = url.searchParams.get("route");
+  const path = routeFallback && routeFallback.startsWith("/")
+    ? routeFallback
+    : url.pathname.replace(/^\/captive-portal/, "");
 
   try {
     // Self-contained HTML portal (for captive assistant that can't reach Vercel)

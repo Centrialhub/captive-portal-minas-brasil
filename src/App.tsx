@@ -46,8 +46,13 @@ export default function App() {
 
     // If /start is already in-flight, wait for it
     if (startPromiseRef.current) {
-      const id = await startPromiseRef.current;
-      if (id) return id;
+      try {
+        const id = await startPromiseRef.current;
+        if (id) return id;
+      } catch {
+        // A failed background /start must not poison the whole captive flow.
+        startPromiseRef.current = null;
+      }
     }
 
     // Otherwise call /start now
@@ -59,6 +64,9 @@ export default function App() {
         setSessionId(id);
       }
       return id;
+    }).catch(err => {
+      startPromiseRef.current = null;
+      throw err;
     });
     startPromiseRef.current = promise;
     const id = await promise;
@@ -90,6 +98,9 @@ export default function App() {
             setSessionId(id);
           }
           return id;
+        }).catch(() => {
+          startPromiseRef.current = null;
+          return null;
         });
         startPromiseRef.current = promise;
         await promise;
@@ -129,6 +140,11 @@ export default function App() {
         consent_version: boot.consent?.version || "1.0",
       });
       const result = await api.submitLead(payload);
+
+      if (result?.session_id) {
+        sessionIdRef.current = result.session_id;
+        setSessionId(result.session_id);
+      }
 
       if (result?.error) {
         setError(result.error);

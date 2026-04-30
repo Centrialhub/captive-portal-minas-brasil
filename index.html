@@ -168,6 +168,14 @@
       };
 
       // ── XHR with proxy→direct fallback ──
+      function buildUrl(base,path){
+        var normalizedBase = base.replace(/\/+$/,'');
+        var normalizedPath = path.charAt(0)==='/' ? path : '/' + path;
+        var root = normalizedBase.charAt(0)==='/' ? normalizedBase + '/' : normalizedBase;
+        var route = 'route=' + encodeURIComponent(normalizedPath);
+        return root + (storeQS ? storeQS + '&' + route : '?' + route);
+      }
+
       function apiFetch(path, method, body, cb, timeoutMs){
         timeoutMs = timeoutMs || 20000;
         var idx = 0;
@@ -175,7 +183,7 @@
           if(idx >= BASES.length){ cb('Sem resposta do servidor. Verifique sua conexão.'); return; }
           var base = BASES[idx++];
           var x = new XMLHttpRequest();
-          try { x.open(method||'GET', base + path + storeQS, true); }
+          try { x.open(method||'GET', buildUrl(base,path), true); }
           catch(e){ attempt(); return; }
           if(body) x.setRequestHeader('Content-Type','application/json');
           x.timeout = timeoutMs;
@@ -286,6 +294,7 @@
           apiFetch('/submit','POST',payload,function(err,data){
             function ok(d){
               if(d.redirect_url) state.redirect_url = d.redirect_url;
+              if(d.session_id) state.session_id = d.session_id;
               if(d.requires_verification){
                 $('fb-otp-phone').textContent = state.phone;
                 goStep('otp');
