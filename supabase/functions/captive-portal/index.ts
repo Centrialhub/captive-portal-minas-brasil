@@ -2543,9 +2543,13 @@ Deno.serve(async (req: Request) => {
 
   try {
     // Self-contained HTML portal (for captive assistant that can't reach Vercel)
-    // Also handle UniFi's /guest/s/default/ redirect path as an alias
+    // Also handle UniFi/connectivity-check paths as aliases so a captive
+    // browser can open even when the external proxy/SPA is not reachable.
     if (
-      (path === "/portal" || path === "/portal/" || path.startsWith("/guest/s/")) &&
+      (path === "/" || path === "" || path === "/portal" || path === "/portal/" ||
+        path.startsWith("/guest/s/") || path === "/generate_204" || path === "/gen_204" ||
+        path === "/hotspot-detect.html" || path === "/library/test/success.html" ||
+        path === "/connecttest.txt" || path === "/ncsi.txt") &&
       req.method === "GET"
     ) return await handlePortalHtml(req, url);
 
