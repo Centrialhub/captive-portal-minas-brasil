@@ -133,11 +133,13 @@
       function showErr(id,msg){var e=$(id);e.textContent=msg;e.classList.add('show')}
       function hideErr(id){$(id).classList.remove('show')}
 
-      // ── API Base ──
+      // ── API Bases (proxy first, direct Supabase fallback) ──
       var host = location.hostname;
-      var API = (host==='wifi.guedesepaixao.com.br'||host.indexOf('.vercel.app')!==-1)
+      var PROXY = (host==='wifi.guedesepaixao.com.br'||host.indexOf('.vercel.app')!==-1)
         ? '/api/captive-portal'
-        : 'https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal';
+        : null;
+      var DIRECT = 'https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal';
+      var BASES = PROXY ? [PROXY, DIRECT] : [DIRECT];
 
       // ── Query Params ──
       var qs = new URLSearchParams(location.search);
@@ -165,20 +167,30 @@
         cooldownTimer: null
       };
 
-      // ── Fetch wrapper with timeout ──
-      function apiFetch(path, method, body, cb){
-        var url = API + path + storeQS;
-        var x = new XMLHttpRequest();
-        x.open(method||'GET', url);
-        if(body) x.setRequestHeader('Content-Type','application/json');
-        x.timeout = 15000;
-        x.onload = function(){
-          try{var r=JSON.parse(x.responseText);cb(null,r);}
-          catch(e){cb('Resposta inválida do servidor');}
-        };
-        x.onerror = function(){cb('Erro de conexão. Verifique sua rede.');};
-        x.ontimeout = function(){cb('Tempo esgotado. Tente novamente.');};
-        x.send(body?JSON.stringify(body):null);
+      // ── XHR with proxy→direct fallback ──
+      function apiFetch(path, method, body, cb, timeoutMs){
+        timeoutMs = timeoutMs || 20000;
+        var idx = 0;
+        function attempt(){
+          if(idx >= BASES.length){ cb('Sem resposta do servidor. Verifique sua conexão.'); return; }
+          var base = BASES[idx++];
+          var x = new XMLHttpRequest();
+          try { x.open(method||'GET', base + path + storeQS, true); }
+          catch(e){ attempt(); return; }
+          if(body) x.setRequestHeader('Content-Type','application/json');
+          x.timeout = timeoutMs;
+          x.onload = function(){
+            var s = x.status;
+            if((s===0||s===502||s===503||s===504) && idx<BASES.length){ attempt(); return; }
+            try{ var r = x.responseText ? JSON.parse(x.responseText) : {}; cb(null,r); }
+            catch(e){ cb('Resposta inválida do servidor (' + s + ').'); }
+          };
+          x.onerror = function(){ if(idx<BASES.length) attempt(); else cb('Erro de conexão. Verifique sua rede.'); };
+          x.ontimeout = function(){ if(idx<BASES.length) attempt(); else cb('Tempo esgotado. Tente novamente.'); };
+          try { x.send(body?JSON.stringify(body):null); }
+          catch(e){ if(idx<BASES.length) attempt(); else cb('Não foi possível enviar a requisição.'); }
+        }
+        attempt();
       }
 
       // ── Switch step ──
@@ -272,22 +284,31 @@
           };
 
           apiFetch('/submit','POST',payload,function(err,data){
+            function ok(d){
+              if(d.redirect_url) state.redirect_url = d.redirect_url;
+              if(d.requires_verification){
+                $('fb-otp-phone').textContent = state.phone;
+                goStep('otp');
+                startCooldown(60);
+              } else {
+                showSuccess(d.message||'Cadastro realizado! Você já pode navegar.');
+              }
+            }
+            if(err){
+              // Recovery: maybe backend already saved it, check session-status.
+              apiFetch('/session-status','POST',{session_id:sid},function(e2,st){
+                subBtn.textContent='Conectar ao Wi-Fi';
+                subBtn.disabled=!chk.checked;
+                if(!e2 && st && st.requires_verification){ ok(st); return; }
+                showErr('fb-form-err', err);
+              }, 8000);
+              return;
+            }
             subBtn.textContent='Conectar ao Wi-Fi';
             subBtn.disabled=!chk.checked;
-
-            if(err){showErr('fb-form-err',err);return;}
             if(data.error){showErr('fb-form-err',data.error);return;}
-
-            if(data.redirect_url) state.redirect_url = data.redirect_url;
-
-            if(data.requires_verification){
-              $('fb-otp-phone').textContent = state.phone;
-              goStep('otp');
-              startCooldown(60);
-            } else {
-              showSuccess(data.message||'Cadastro realizado! Você já pode navegar.');
-            }
-          });
+            ok(data);
+          }, 25000);
         });
       });
 
@@ -325,7 +346,7 @@
               window.location.href = state.redirect_url;
             }, 1200);
           }
-        });
+        }, 30000);
       });
 
       // ── OTP: resend ──
@@ -339,7 +360,7 @@
           if(err){showErr('fb-otp-err',err);btn.disabled=false;btn.textContent='Reenviar código';return;}
           if(data.error){showErr('fb-otp-err',data.error);btn.disabled=false;btn.textContent='Reenviar código';return;}
           startCooldown(60);
-        });
+        }, 15000);
       });
 
       // ── Cooldown ──
