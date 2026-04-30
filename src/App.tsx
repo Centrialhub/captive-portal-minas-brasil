@@ -129,12 +129,10 @@ export default function App() {
     setSubmitting(true);
     setError("");
 
-    let sid: string | null = null;
+    let sid: string | null = sessionIdRef.current || sessionId;
     try {
-      sid = await ensureSession();
-
       const payload = buildSubmitPayload({
-        session_id: sid,
+        session_id: sid || undefined,
         name, email, phone, cpf,
         client_mac: getQueryParams().client_mac,
         consent_version: boot.consent?.version || "1.0",
