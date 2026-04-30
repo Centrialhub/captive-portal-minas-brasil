@@ -17,8 +17,24 @@ RUN printf 'server {\n\
     location /api/captive-portal/ {\n\
         proxy_pass https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal/;\n\
         proxy_set_header Host fqamejlyytrhovawgtwg.supabase.co;\n\
+        proxy_set_header X-Real-IP $remote_addr;\n\
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
+        proxy_set_header X-Forwarded-Proto https;\n\
         proxy_ssl_server_name on;\n\
         proxy_ssl_protocols TLSv1.2 TLSv1.3;\n\
+        proxy_http_version 1.1;\n\
+        # Allow long edge function calls (verify-code can take ~20s)\n\
+        proxy_connect_timeout 30s;\n\
+        proxy_send_timeout 60s;\n\
+        proxy_read_timeout 60s;\n\
+        proxy_buffering off;\n\
+        proxy_request_buffering off;\n\
+        client_max_body_size 1m;\n\
+        # Always send CORS headers, even on upstream errors\n\
+        add_header Access-Control-Allow-Origin "*" always;\n\
+        add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;\n\
+        add_header Access-Control-Allow-Headers "authorization, x-client-info, apikey, content-type" always;\n\
+        if ($request_method = OPTIONS) { return 204; }\n\
     }\n\
 \n\
     # Proxy para o container unifi-proxy (comunicacao interna)\n\

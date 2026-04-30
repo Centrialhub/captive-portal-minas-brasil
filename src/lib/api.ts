@@ -1,6 +1,8 @@
 import { getApiBase, getQueryParams } from "./portal-utils";
 
 const API_BASE = getApiBase();
+const SUPABASE_DIRECT = "https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal";
+const USES_PROXY = API_BASE !== SUPABASE_DIRECT;
 
 /** Forward ?store= param from the landing URL to API calls */
 function getStoreParam(): string {
@@ -15,33 +17,45 @@ function getStoreParam(): string {
 }
 
 async function resilientFetch(
-  url: string,
+  path: string,
   options?: RequestInit & { retries?: number; timeoutMs?: number },
 ): Promise<Response> {
   const { retries = 0, timeoutMs = 15000, ...fetchOpts } = options || {};
   const delays = [500, 1500, 3000];
   let lastError: unknown;
+  // Try proxy first (if applicable), then fall back to direct Supabase URL
+  // when the proxy throws a network error (TypeError = Failed to fetch).
+  const bases = USES_PROXY ? [API_BASE, SUPABASE_DIRECT] : [API_BASE];
 
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
-      const res = await fetch(url, { ...fetchOpts, signal: controller.signal });
-      clearTimeout(timer);
-      // Retry on transient gateway errors (502/503/504) when retries remain
-      if ((res.status === 502 || res.status === 503 || res.status === 504) && attempt < retries) {
-        lastError = new Error(`HTTP ${res.status}`);
-        await new Promise(r => setTimeout(r, delays[attempt] || 3000));
-        continue;
-      }
-      return res;
-    } catch (err) {
-      lastError = err;
-      console.warn(`[api] fetch attempt ${attempt + 1} failed:`, (err as Error)?.message || err);
-      if (attempt < retries) {
-        await new Promise(r => setTimeout(r, delays[attempt] || 3000));
+  for (const base of bases) {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        const res = await fetch(`${base}${path}`, { ...fetchOpts, signal: controller.signal });
+        clearTimeout(timer);
+        // Retry on transient gateway errors (502/503/504) when retries remain
+        if ((res.status === 502 || res.status === 503 || res.status === 504) && attempt < retries) {
+          lastError = new Error(`HTTP ${res.status}`);
+          await new Promise(r => setTimeout(r, delays[attempt] || 3000));
+          continue;
+        }
+        return res;
+      } catch (err) {
+        lastError = err;
+        const msg = (err as Error)?.message || String(err);
+        console.warn(`[api] fetch attempt ${attempt + 1} on ${base} failed:`, msg);
+        if (attempt < retries) {
+          await new Promise(r => setTimeout(r, delays[attempt] || 3000));
+        }
       }
     }
+    // If we exhausted retries on proxy with a network error, fall back to direct
+    if (lastError && (lastError as Error)?.name === "TypeError") {
+      console.warn(`[api] falling back from ${base} to direct Supabase`);
+      continue;
+    }
+    break;
   }
   throw lastError;
 }
@@ -67,7 +81,7 @@ async function safeJson(res: Response, label: string): Promise<any> {
 
 export const api = {
   async bootstrap() {
-    const res = await resilientFetch(`${API_BASE}/bootstrap${getStoreParam()}`, { retries: 2 });
+    const res = await resilientFetch(`/bootstrap${getStoreParam()}`, { retries: 2 });
     return safeJson(res, "bootstrap");
   },
 
@@ -77,7 +91,7 @@ export const api = {
     ssid?: string;
     redirect_url?: string;
   }) {
-    const res = await resilientFetch(`${API_BASE}/start${getStoreParam()}`, {
+    const res = await resilientFetch(`/start${getStoreParam()}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ...data, user_agent: navigator.userAgent }),
@@ -96,7 +110,7 @@ export const api = {
     consent_version: string;
   }) {
     // Submit is critical and must be resilient — captive networks are flaky.
-    const res = await resilientFetch(`${API_BASE}/submit${getStoreParam()}`, {
+    const res = await resilientFetch(`/submit${getStoreParam()}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
@@ -107,7 +121,7 @@ export const api = {
   },
 
   async requestCode(data: { session_id: string; phone: string }) {
-    const res = await resilientFetch(`${API_BASE}/request-code${getStoreParam()}`, {
+    const res = await resilientFetch(`/request-code${getStoreParam()}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
@@ -118,7 +132,7 @@ export const api = {
   },
 
   async verifyCode(data: { session_id: string; code: string }) {
-    const res = await resilientFetch(`${API_BASE}/verify-code${getStoreParam()}`, {
+    const res = await resilientFetch(`/verify-code${getStoreParam()}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
