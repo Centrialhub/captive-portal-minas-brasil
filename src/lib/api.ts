@@ -68,7 +68,7 @@ async function safeJson(res: Response, label: string): Promise<any> {
 export const api = {
   async bootstrap() {
     const res = await resilientFetch(`${API_BASE}/bootstrap${getStoreParam()}`, { retries: 2 });
-    return res.json();
+    return safeJson(res, "bootstrap");
   },
 
   async startSession(data: {
@@ -83,7 +83,7 @@ export const api = {
       body: JSON.stringify({ ...data, user_agent: navigator.userAgent }),
       retries: 2,
     });
-    return res.json();
+    return safeJson(res, "start");
   },
 
   async submitLead(data: {
@@ -95,12 +95,15 @@ export const api = {
     client_mac?: string;
     consent_version: string;
   }) {
+    // Submit is critical and must be resilient — captive networks are flaky.
     const res = await resilientFetch(`${API_BASE}/submit${getStoreParam()}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
+      retries: 2,
+      timeoutMs: 25000,
     });
-    return res.json();
+    return safeJson(res, "submit");
   },
 
   async requestCode(data: { session_id: string; phone: string }) {
@@ -108,8 +111,10 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
+      retries: 2,
+      timeoutMs: 20000,
     });
-    return res.json();
+    return safeJson(res, "request-code");
   },
 
   async verifyCode(data: { session_id: string; code: string }) {
@@ -117,7 +122,10 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
+      retries: 1,
+      timeoutMs: 30000, // verify-code can take up to ~20s due to UniFi polling
     });
-    return res.json();
+    return safeJson(res, "verify-code");
   },
 };
+
