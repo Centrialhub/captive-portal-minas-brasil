@@ -1171,6 +1171,7 @@ async function handleStart(req: Request): Promise<Response> {
 }
 
 async function handleSubmit(req: Request): Promise<Response> {
+  const t0 = Date.now();
   const clientIp = getPublicIp(req);
   const clientIpStr = clientIp || "unknown";
   const db = supabaseAdmin();
@@ -1201,6 +1202,8 @@ async function handleSubmit(req: Request): Promise<Response> {
 
   const clientMac = normalizeMac(body.client_mac);
 
+  console.log(`[submit] start session=${sessionId || "none"} mac=${clientMac || "none"} ip=${clientIpStr}`);
+
   // Rate limit by MAC too
   if (clientMac) {
     const rlMac = await checkRateLimitDb(db, `submit:mac:${clientMac}`, 60, 5, 120);
@@ -1217,7 +1220,32 @@ async function handleSubmit(req: Request): Promise<Response> {
   const { data: consent } = await db.from("consent_versions").select("version, text").eq("version", consentVersion).maybeSingle();
   if (!consent) return errorResponse("Versão de consentimento inválida");
 
-  // Dedup check
+  // Idempotent recovery: if this session already has a pending verification,
+  // return it instead of treating the retry as a duplicate. This handles the
+  // case where the network aborted the previous response after the lead was saved.
+  if (sessionId) {
+    const { data: existingVer } = await db
+      .from("captive_verifications")
+      .select("id, status, expires_at")
+      .eq("session_id", sessionId as string)
+      .eq("status", "pending")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (existingVer && new Date(existingVer.expires_at) > new Date()) {
+      console.log(`[submit] recovered existing pending verification for session=${sessionId} (${Date.now() - t0}ms)`);
+      return jsonResponse({
+        ok: true,
+        authorized: false,
+        redirect_url: redirectUrl || DEFAULT_REDIRECT_URL,
+        requires_verification: true,
+        message: "Código de verificação já enviado para seu WhatsApp.",
+        recovered: true,
+      });
+    }
+  }
+
+  // Dedup check (only when no recoverable verification was found above)
   const dedupKey = `${storeId || "none"}:${clientMac || clientIpStr}`;
   if (isDuplicate(dedupKey)) return errorResponse("Cadastro duplicado detectado. Aguarde alguns segundos.", 429);
 
@@ -1227,14 +1255,6 @@ async function handleSubmit(req: Request): Promise<Response> {
         Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("")
       )
     : null;
-
-  // GeoIP enrichment
-  let geoData: GeoIpData & { source: string } = { city: null, region: null, country: null, isp: null, asn: null, source: "none" };
-  if (clientIp) {
-    try { geoData = await enrichGeoIp(db, clientIp); } catch (e) {
-      console.warn("GeoIP enrichment failed:", (e as Error).message);
-    }
-  }
 
   // Create lead (idempotent: check if already exists for this session)
   let leadId: string;
@@ -1252,12 +1272,10 @@ async function handleSubmit(req: Request): Promise<Response> {
         email: email || null, phone: phone || null, cpf: cpf || null, client_mac: clientMac,
         consented_at: new Date().toISOString(), consent_version: consentVersion,
         consent_text_hash: consentTextHash, source: "captive_portal",
-        origin_ip: clientIp, origin_city: geoData.city, origin_region: geoData.region,
-        origin_country: geoData.country, origin_isp: geoData.isp, origin_asn: geoData.asn,
-        origin_source: geoData.source,
+        origin_ip: clientIp,
       }).select("id").single();
       if (leadError) {
-        console.error("Lead insert error:", leadError.message);
+        console.error("[submit] Lead insert error:", leadError.message);
         return errorResponse("Erro ao salvar cadastro. Tente novamente.", 500);
       }
       leadId = lead.id;
@@ -1268,22 +1286,13 @@ async function handleSubmit(req: Request): Promise<Response> {
       email: email || null, phone: phone || null, cpf: cpf || null, client_mac: clientMac,
       consented_at: new Date().toISOString(), consent_version: consentVersion,
       consent_text_hash: consentTextHash, source: "captive_portal",
-      origin_ip: clientIp, origin_city: geoData.city, origin_region: geoData.region,
-      origin_country: geoData.country, origin_isp: geoData.isp, origin_asn: geoData.asn,
-      origin_source: geoData.source,
+      origin_ip: clientIp,
     }).select("id").single();
     if (leadError) {
-      console.error("Lead insert error:", leadError.message);
+      console.error("[submit] Lead insert error:", leadError.message);
       return errorResponse("Erro ao salvar cadastro. Tente novamente.", 500);
     }
     leadId = lead.id;
-  }
-
-  // Increment cluster
-  if (clientIp) {
-    incrementClusterLeadCount(db, clientIp).catch((e) =>
-      console.warn("incrementClusterLeadCount failed:", (e as Error).message)
-    );
   }
 
   // Update session
@@ -1317,39 +1326,94 @@ async function handleSubmit(req: Request): Promise<Response> {
   });
 
   if (verError) {
-    console.error("Verification insert error:", verError.message);
+    console.error("[submit] Verification insert error:", verError.message);
   }
 
-  // Send WhatsApp code in background — do NOT block the HTTP response.
-  // The captive portal network is flaky and the WhatsApp webhook can take >25s,
-  // which causes the browser to abort with "signal is aborted without reason".
-  // If sending fails, the user can hit "Resend code".
+  // Run non-essential work in background so /submit responds fast.
   const storeName = detected.store_name || "Drogaria Minas Brasil";
-  const whatsappPromise = sendWhatsAppCode(db, storeId, phone, otpCode, storeName, sessionId as string | null, clientIp, expiresAt)
-    .then((r) => {
-      if (!r.sent) console.warn("WhatsApp code not sent (bg):", r.error);
-    })
-    .catch((e) => console.warn("WhatsApp send threw (bg):", (e as Error)?.message));
-  // Fire-and-forget; Deno edge runtime keeps the promise alive briefly.
+  const bgWork = (async () => {
+    try {
+      if (clientIp) {
+        const geo = await enrichGeoIp(db, clientIp).catch(() => null);
+        if (geo) {
+          await db.from("leads").update({
+            origin_city: geo.city, origin_region: geo.region, origin_country: geo.country,
+            origin_isp: geo.isp, origin_asn: geo.asn, origin_source: geo.source,
+          }).eq("id", leadId);
+        }
+        await incrementClusterLeadCount(db, clientIp).catch(() => {});
+      }
+      await db.from("audit_logs").insert({
+        store_id: storeId, entity: "lead", entity_id: leadId,
+        action: "create",
+        meta: { session_id: sessionId, mac: clientMac, ip: clientIpStr, store_slug: storeSlug },
+      }).then(() => {}, () => {});
+      const r = await sendWhatsAppCode(db, storeId, phone, otpCode, storeName, sessionId as string | null, clientIp, expiresAt);
+      if (!r.sent) console.warn("[submit] WhatsApp not sent (bg):", r.error);
+    } catch (e) {
+      console.warn("[submit] background work failed:", (e as Error)?.message);
+    }
+  })();
   // @ts-ignore EdgeRuntime is available at runtime
   if (typeof EdgeRuntime !== "undefined" && EdgeRuntime?.waitUntil) {
     // @ts-ignore
-    EdgeRuntime.waitUntil(whatsappPromise);
+    EdgeRuntime.waitUntil(bgWork);
   }
 
-  await db.from("audit_logs").insert({
-    store_id: storeId, entity: "lead", entity_id: leadId,
-    action: "create", meta: { session_id: sessionId, mac: clientMac, ip: clientIpStr, store_slug: storeSlug, origin_city: geoData.city, whatsapp_sent: "pending" },
-  });
-
-  const resolvedRedirectUrl = redirectUrl || DEFAULT_REDIRECT_URL;
+  console.log(`[submit] done session=${sessionId || "none"} (${Date.now() - t0}ms)`);
 
   return jsonResponse({
     ok: true,
     authorized: false,
-    redirect_url: resolvedRedirectUrl,
+    redirect_url: redirectUrl || DEFAULT_REDIRECT_URL,
     requires_verification: true,
     message: "Código de verificação sendo enviado para seu WhatsApp.",
+  });
+}
+
+// ========== Session Status (recovery endpoint) ==========
+async function handleSessionStatus(req: Request): Promise<Response> {
+  const db = supabaseAdmin();
+  const body = await safeParseJson(req);
+  if (!body) return errorResponse("Invalid JSON body");
+  const sessionId = body.session_id;
+  if (!isValidUUID(sessionId)) return errorResponse("session_id inválido");
+
+  const { data: session } = await db
+    .from("captive_sessions")
+    .select("id, status, redirect_url, store_id")
+    .eq("id", sessionId as string)
+    .maybeSingle();
+  if (!session) return jsonResponse({ ok: true, exists: false });
+
+  const { data: ver } = await db
+    .from("captive_verifications")
+    .select("id, phone, status, expires_at")
+    .eq("session_id", sessionId as string)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  let redirectUrl: string | null = session.redirect_url || null;
+  if (!redirectUrl && session.store_id) {
+    const { data: store } = await db.from("stores").select("post_auth_redirect_url").eq("id", session.store_id).maybeSingle();
+    redirectUrl = store?.post_auth_redirect_url || null;
+  }
+
+  const phoneMasked = ver?.phone
+    ? ver.phone.replace(/^(\d{2})\d+(\d{2})$/, "$1******$2")
+    : null;
+
+  const requiresVerification = !!(ver && ver.status === "pending" && new Date(ver.expires_at) > new Date());
+
+  return jsonResponse({
+    ok: true,
+    exists: true,
+    submitted: session.status === "submitted" || session.status === "authorized",
+    authorized: session.status === "authorized",
+    requires_verification: requiresVerification,
+    phone_masked: phoneMasked,
+    redirect_url: redirectUrl || DEFAULT_REDIRECT_URL,
   });
 }
 
