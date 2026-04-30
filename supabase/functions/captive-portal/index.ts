@@ -1337,6 +1337,7 @@ async function handleSubmit(req: Request): Promise<Response> {
 
   if (verError) {
     console.error("[submit] Verification insert error:", verError.message);
+    return errorResponse("Erro ao gerar código de verificação. Tente novamente.", 500);
   }
 
   // Run non-essential work in background so /submit responds fast.
