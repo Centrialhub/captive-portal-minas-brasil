@@ -2437,7 +2437,8 @@ details p{padding:0 12px 12px;font-size:11px;color:#888;line-height:1.5}
 </div>
 <script>
 (function(){
-var API='${API_BASE}';
+var API='';
+var FALLBACK_API='${API_BASE}';
 var clientMac='${clientMac}';
 var sessionId=null;
 var consentVersion='offline-fallback';
@@ -2449,11 +2450,15 @@ var submitBtn=document.getElementById('submit-btn');
 var errorDiv=document.getElementById('error-msg');
 consentCheck.addEventListener('change',function(){submitBtn.disabled=!consentCheck.checked;});
 function req(method,path,body,cb,timeout){
-var x=new XMLHttpRequest();x.open(method,API+path,true);
+var bases=[API,FALLBACK_API],i=0;
+function go(){
+var x=new XMLHttpRequest();x.open(method,bases[i]+path,true);
 x.setRequestHeader('Content-Type','application/json');x.timeout=timeout||15000;
-x.onload=function(){try{cb(null,JSON.parse(x.responseText));}catch(e){cb('Erro ao processar.');}};
-x.onerror=x.ontimeout=function(){cb('Erro de conex\\u00e3o.');};
+x.onload=function(){if((x.status===0||x.status===502||x.status===503||x.status===504)&&i<bases.length-1){i++;go();return;}try{cb(null,JSON.parse(x.responseText));}catch(e){cb('Erro ao processar.');}};
+x.onerror=x.ontimeout=function(){if(i<bases.length-1){i++;go();return;}cb('Erro de conex\\u00e3o.');};
 x.send(body?JSON.stringify(body):null);
+}
+go();
 }
 req('GET','/bootstrap',null,function(e,d){
 if(d&&d.store&&d.store.name){document.getElementById('store-info').textContent=d.store.city?d.store.name+' \\u2014 '+d.store.city:d.store.name;}
@@ -2543,9 +2548,13 @@ Deno.serve(async (req: Request) => {
 
   try {
     // Self-contained HTML portal (for captive assistant that can't reach Vercel)
-    // Also handle UniFi's /guest/s/default/ redirect path as an alias
+    // Also handle UniFi/connectivity-check paths as aliases so a captive
+    // browser can open even when the external proxy/SPA is not reachable.
     if (
-      (path === "/portal" || path === "/portal/" || path.startsWith("/guest/s/")) &&
+      (path === "/" || path === "" || path === "/portal" || path === "/portal/" ||
+        path.startsWith("/guest/s/") || path === "/generate_204" || path === "/gen_204" ||
+        path === "/hotspot-detect.html" || path === "/library/test/success.html" ||
+        path === "/connecttest.txt" || path === "/ncsi.txt") &&
       req.method === "GET"
     ) return await handlePortalHtml(req, url);
 

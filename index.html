@@ -133,6 +133,11 @@
       function showErr(id,msg){var e=$(id);e.textContent=msg;e.classList.add('show')}
       function hideErr(id){$(id).classList.remove('show')}
 
+      setTimeout(function(){
+        var loading = $('fb-loading');
+        if(loading && !loading.classList.contains('hidden')) goStep('form');
+      }, 1200);
+
       // ── API Bases (proxy first, direct Supabase fallback) ──
       var host = location.hostname;
       var PROXY = (host==='wifi.guedesepaixao.com.br'||host.indexOf('.vercel.app')!==-1)
@@ -142,7 +147,16 @@
       var BASES = (PROXY && host!=='wifi.guedesepaixao.com.br') ? [PROXY, DIRECT] : (PROXY ? [PROXY] : [DIRECT]);
 
       // ── Query Params ──
-      var qs = new URLSearchParams(location.search);
+      function query(){
+        var out={}, s=(location.search||'').replace(/^\?/,'').split('&');
+        for(var i=0;i<s.length;i++){
+          if(!s[i]) continue;
+          var p=s[i].split('='), k=decodeURIComponent((p[0]||'').replace(/\+/g,' '));
+          out[k]=decodeURIComponent((p.slice(1).join('=')||'').replace(/\+/g,' '));
+        }
+        return { get:function(k){ return out[k] || null; } };
+      }
+      var qs = query();
       var params = {
         client_mac: qs.get('id')||qs.get('mac')||'',
         ap_mac: qs.get('ap')||'',
@@ -246,15 +260,17 @@
         subBtn.disabled=true;
         subBtn.textContent='Enviando...';
 
-        var fd=new FormData($('fb-frm'));
-        state.phone = fd.get('phone')||'';
+        var formEl = $('fb-frm');
+        var fd = window.FormData ? new FormData(formEl) : null;
+        function field(n){ return fd ? (fd.get(n)||'') : ((formEl.elements[n]&&formEl.elements[n].value)||''); }
+        state.phone = field('phone');
 
           var payload = {
             session_id: state.session_id || (state.session_id = uuid()),
-            name: fd.get('name'),
-            email: fd.get('email')||'',
+            name: field('name'),
+            email: field('email'),
             phone: state.phone,
-            cpf: fd.get('cpf'),
+            cpf: field('cpf'),
             consent_version: state.consent_version,
             client_mac: params.client_mac,
             ap_mac: params.ap_mac,
