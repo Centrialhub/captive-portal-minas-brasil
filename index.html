@@ -171,7 +171,7 @@
       function buildUrl(base,path){
         var normalizedBase = base.replace(/\/+$/,'');
         var normalizedPath = path.charAt(0)==='/' ? path : '/' + path;
-        var root = normalizedBase.charAt(0)==='/' ? normalizedBase + '/' : normalizedBase;
+        var root = normalizedBase + '/';
         var route = 'route=' + encodeURIComponent(normalizedPath);
         return root + (storeQS ? storeQS + '&' + route : '?' + route);
       }
@@ -245,25 +245,6 @@
       });
 
       // ── Form: submit ──
-      // Ensure session_id exists before calling /submit
-      function ensureSession(cb){
-        if(state.session_id) return cb(null, state.session_id);
-        var startBody = {user_agent:navigator.userAgent};
-        if(params.client_mac) startBody.client_mac = params.client_mac;
-        if(params.ap_mac) startBody.ap_mac = params.ap_mac;
-        if(params.ssid) startBody.ssid = params.ssid;
-        if(params.redirect_url) startBody.redirect_url = params.redirect_url;
-
-        apiFetch('/start','POST',startBody,function(err,data){
-          if(err) return cb(err);
-          if(data && data.session_id){
-            state.session_id = data.session_id;
-            return cb(null, data.session_id);
-          }
-          cb('Não foi possível criar sessão. Tente novamente.');
-        });
-      }
-
       $('fb-frm').addEventListener('submit',function(e){
         e.preventDefault();
         hideErr('fb-form-err');
@@ -273,16 +254,8 @@
         var fd=new FormData($('fb-frm'));
         state.phone = fd.get('phone')||'';
 
-        ensureSession(function(sessErr, sid){
-          if(sessErr){
-            showErr('fb-form-err', sessErr);
-            subBtn.textContent='Conectar ao Wi-Fi';
-            subBtn.disabled=!chk.checked;
-            return;
-          }
-
           var payload = {
-            session_id: sid,
+            session_id: state.session_id || undefined,
             name: fd.get('name'),
             email: fd.get('email')||'',
             phone: state.phone,
@@ -304,13 +277,9 @@
               }
             }
             if(err){
-              // Recovery: maybe backend already saved it, check session-status.
-              apiFetch('/session-status','POST',{session_id:sid},function(e2,st){
-                subBtn.textContent='Conectar ao Wi-Fi';
-                subBtn.disabled=!chk.checked;
-                if(!e2 && st && st.requires_verification){ ok(st); return; }
-                showErr('fb-form-err', err);
-              }, 8000);
+              showErr('fb-form-err', err);
+              subBtn.textContent='Conectar ao Wi-Fi';
+              subBtn.disabled=!chk.checked;
               return;
             }
             subBtn.textContent='Conectar ao Wi-Fi';
@@ -318,7 +287,6 @@
             if(data.error){showErr('fb-form-err',data.error);return;}
             ok(data);
           }, 25000);
-        });
       });
 
       // ── OTP: code input ──

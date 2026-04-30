@@ -13,6 +13,12 @@ RUN printf 'server {\n\
     root /usr/share/nginx/html;\n\
     index index.html;\n\
 \n\
+    location = /health {\n\
+        access_log off;\n\
+        default_type text/plain;\n\
+        return 200 "ok";\n\
+    }\n\
+\n\
     # Proxy para Edge Functions do Supabase\n\
     location /api/captive-portal/ {\n\
         proxy_pass https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal/;\n\

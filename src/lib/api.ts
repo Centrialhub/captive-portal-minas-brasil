@@ -23,7 +23,7 @@ function buildUrl(base: string, path: string): string {
   // Edge Function base and drop nested paths. Keep the call alive by encoding
   // the route as a query fallback that the proxy still forwards to Supabase.
   const fallbackRoute = `route=${encodeURIComponent(normalizedPath)}`;
-  const root = normalizedBase.startsWith("/") ? `${normalizedBase}/` : normalizedBase;
+  const root = `${normalizedBase}/`;
   return `${root}${qs ? `${qs}&${fallbackRoute}` : `?${fallbackRoute}`}`;
 }
 

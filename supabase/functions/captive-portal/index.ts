@@ -1176,10 +1176,6 @@ async function handleSubmit(req: Request): Promise<Response> {
   const clientIpStr = clientIp || "unknown";
   const db = supabaseAdmin();
 
-  // Distributed rate limits
-  const rlIp = await checkRateLimitDb(db, `submit:ip:${clientIpStr}`, 60, 5, 120);
-  if (!rlIp.allowed) return errorResponse("Muitas tentativas. Aguarde um minuto.", 429);
-
   const body = await safeParseJson(req);
   if (!body) return errorResponse("Invalid JSON body");
 
@@ -1203,12 +1199,6 @@ async function handleSubmit(req: Request): Promise<Response> {
   const clientMac = normalizeMac(body.client_mac);
 
   console.log(`[submit] start session=${sessionId || "none"} mac=${clientMac || "none"} ip=${clientIpStr}`);
-
-  // Rate limit by MAC too
-  if (clientMac) {
-    const rlMac = await checkRateLimitDb(db, `submit:mac:${clientMac}`, 60, 5, 120);
-    if (!rlMac.allowed) return errorResponse("Muitas tentativas para este dispositivo.", 429);
-  }
 
   // Detect store: ?store=slug > IP mapping > single active store
   const detected = await detectStoreFromRequest(db, req);
@@ -1268,10 +1258,6 @@ async function handleSubmit(req: Request): Promise<Response> {
       });
     }
   }
-
-  // Dedup check (only when no recoverable verification was found above)
-  const dedupKey = `${storeId || "none"}:${clientMac || clientIpStr}`;
-  if (isDuplicate(dedupKey)) return errorResponse("Cadastro duplicado detectado. Aguarde alguns segundos.", 429);
 
   // Consent text hash
   const consentTextHash = consent.text
@@ -1351,6 +1337,7 @@ async function handleSubmit(req: Request): Promise<Response> {
 
   if (verError) {
     console.error("[submit] Verification insert error:", verError.message);
+    return errorResponse("Erro ao gerar código de verificação. Tente novamente.", 500);
   }
 
   // Run non-essential work in background so /submit responds fast.
