@@ -406,6 +406,9 @@ async function sendWhatsAppCode(
     return { sent: false, error: "Webhook WhatsApp não configurado." };
   }
 
+  // Internal hard timeout so the webhook can never hang the function.
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 8000);
   try {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (config.secret) {
@@ -425,15 +428,19 @@ async function sendWhatsAppCode(
         expires_at: expiresAt,
         type: "otp_verification",
       }),
+      signal: ac.signal,
     });
+    clearTimeout(timer);
     if (!res.ok) {
       console.error("WhatsApp webhook HTTP error:", res.status);
       return { sent: false, error: `Webhook retornou HTTP ${res.status}` };
     }
     return { sent: true };
   } catch (e) {
-    console.error("WhatsApp webhook error:", (e as Error).message);
-    return { sent: false, error: "Erro de rede ao enviar código." };
+    clearTimeout(timer);
+    const isAbort = (e as Error).name === "AbortError";
+    console.error("WhatsApp webhook error:", isAbort ? "timeout (8s)" : (e as Error).message);
+    return { sent: false, error: isAbort ? "Timeout ao enviar código." : "Erro de rede ao enviar código." };
   }
 }
 
