@@ -143,7 +143,8 @@ export default function App() {
       }
     } catch (err) {
       console.error("[portal] submit error:", err);
-      setError("Erro ao enviar cadastro. Tente novamente.");
+      const msg = (err as Error)?.message || "";
+      setError(msg ? `Erro ao enviar cadastro: ${msg}` : "Erro ao enviar cadastro. Tente novamente.");
     }
     setSubmitting(false);
   };
