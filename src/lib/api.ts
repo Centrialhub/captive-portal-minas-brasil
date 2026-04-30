@@ -19,15 +19,12 @@ function buildUrl(base: string, path: string): string {
   const normalizedBase = base.replace(/\/+$/, "");
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
 
-  if (/\/api\/captive-portal$/.test(normalizedBase)) {
-    return `${normalizedBase}${normalizedPath}${qs}`;
-  }
-
   // Some external Nginx proxy builds only expose /api/captive-portal as the
   // Edge Function base and drop nested paths. Keep the call alive by encoding
   // the route as a query fallback that the proxy still forwards to Supabase.
   const fallbackRoute = `route=${encodeURIComponent(normalizedPath)}`;
-  return `${normalizedBase}${qs ? `${qs}&${fallbackRoute}` : `?${fallbackRoute}`}`;
+  const root = normalizedBase.startsWith("/") ? `${normalizedBase}/` : normalizedBase;
+  return `${root}${qs ? `${qs}&${fallbackRoute}` : `?${fallbackRoute}`}`;
 }
 
 export class ApiError extends Error {
