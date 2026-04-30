@@ -3,6 +3,7 @@ import { getApiBase } from "./portal-utils";
 const API_BASE = getApiBase();
 const SUPABASE_DIRECT = "https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal";
 const USES_PROXY = API_BASE !== SUPABASE_DIRECT;
+const IS_UNIFI_PORTAL_HOST = typeof window !== "undefined" && window.location.hostname === "wifi.guedesepaixao.com.br";
 
 /** Forward ?store= param from the landing URL to API calls */
 function getStoreParam(): string {
@@ -62,7 +63,7 @@ interface XhrOptions {
  */
 function xhrRequest<T = any>(path: string, opts: XhrOptions = {}): Promise<T> {
   const { method = "GET", body, timeoutMs = 20000 } = opts;
-  const bases = USES_PROXY ? [API_BASE, SUPABASE_DIRECT] : [API_BASE];
+  const bases = USES_PROXY && !IS_UNIFI_PORTAL_HOST ? [API_BASE, SUPABASE_DIRECT] : [API_BASE];
 
   return new Promise((resolve, reject) => {
     let attempt = 0;
