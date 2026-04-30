@@ -1313,19 +1313,26 @@ async function handleSubmit(req: Request): Promise<Response> {
     console.error("Verification insert error:", verError.message);
   }
 
-  // Send WhatsApp code via DB config
+  // Send WhatsApp code in background — do NOT block the HTTP response.
+  // The captive portal network is flaky and the WhatsApp webhook can take >25s,
+  // which causes the browser to abort with "signal is aborted without reason".
+  // If sending fails, the user can hit "Resend code".
   const storeName = detected.store_name || "Drogaria Minas Brasil";
-  const whatsappResult = await sendWhatsAppCode(db, storeId, phone, otpCode, storeName, sessionId as string | null, clientIp, expiresAt);
-
-  if (!whatsappResult.sent) {
-    console.warn("WhatsApp code not sent:", whatsappResult.error);
-    // Don't fail the flow — lead is saved, verification is pending
-    // but warn the user
+  const whatsappPromise = sendWhatsAppCode(db, storeId, phone, otpCode, storeName, sessionId as string | null, clientIp, expiresAt)
+    .then((r) => {
+      if (!r.sent) console.warn("WhatsApp code not sent (bg):", r.error);
+    })
+    .catch((e) => console.warn("WhatsApp send threw (bg):", (e as Error)?.message));
+  // Fire-and-forget; Deno edge runtime keeps the promise alive briefly.
+  // @ts-ignore EdgeRuntime is available at runtime
+  if (typeof EdgeRuntime !== "undefined" && EdgeRuntime?.waitUntil) {
+    // @ts-ignore
+    EdgeRuntime.waitUntil(whatsappPromise);
   }
 
   await db.from("audit_logs").insert({
     store_id: storeId, entity: "lead", entity_id: leadId,
-    action: "create", meta: { session_id: sessionId, mac: clientMac, ip: clientIpStr, store_slug: storeSlug, origin_city: geoData.city, whatsapp_sent: whatsappResult.sent },
+    action: "create", meta: { session_id: sessionId, mac: clientMac, ip: clientIpStr, store_slug: storeSlug, origin_city: geoData.city, whatsapp_sent: "pending" },
   });
 
   const resolvedRedirectUrl = redirectUrl || DEFAULT_REDIRECT_URL;
@@ -1335,9 +1342,7 @@ async function handleSubmit(req: Request): Promise<Response> {
     authorized: false,
     redirect_url: resolvedRedirectUrl,
     requires_verification: true,
-    message: whatsappResult.sent
-      ? "Código de verificação enviado para seu WhatsApp."
-      : "Cadastro salvo. " + (whatsappResult.error || "Código não pôde ser enviado."),
+    message: "Código de verificação sendo enviado para seu WhatsApp.",
   });
 }
 
