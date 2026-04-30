@@ -160,7 +160,7 @@
       // ── State ──
       var state = {
         session_id: null,
-        consent_version: 'offline-fallback',
+        consent_version: '1.0',
         redirect_url: params.redirect_url||null,
         phone: '',
         cooldown: 0,
@@ -229,18 +229,6 @@
               state.consent_version = data.consent.version || state.consent_version;
               if(data.consent.text) $('fb-consent-text').textContent = data.consent.text;
             }
-          }
-        });
-
-        var startBody = {user_agent:navigator.userAgent};
-        if(params.client_mac) startBody.client_mac = params.client_mac;
-        if(params.ap_mac) startBody.ap_mac = params.ap_mac;
-        if(params.ssid) startBody.ssid = params.ssid;
-        if(params.redirect_url) startBody.redirect_url = params.redirect_url;
-
-        apiFetch('/start','POST',startBody,function(err,data){
-          if(!err && data && data.session_id){
-            state.session_id = data.session_id;
           }
         });
       }
