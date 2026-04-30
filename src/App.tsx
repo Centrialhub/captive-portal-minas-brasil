@@ -118,9 +118,9 @@ export default function App() {
     setSubmitting(true);
     setError("");
 
+    let sid: string | null = null;
     try {
-      // Guarantee session_id before submit
-      const sid = await ensureSession();
+      sid = await ensureSession();
 
       const payload = buildSubmitPayload({
         session_id: sid,
@@ -130,21 +130,41 @@ export default function App() {
       });
       const result = await api.submitLead(payload);
 
-      if (result.error) {
+      if (result?.error) {
         setError(result.error);
-      } else if (result.requires_verification) {
+      } else if (result?.requires_verification) {
         setRedirectUrl(result.redirect_url || null);
         setStep("otp");
         startCooldown(60);
-      } else {
+      } else if (result?.ok) {
         setSuccessMsg(result.message || "Cadastro realizado! Você já pode navegar.");
         setRedirectUrl(result.redirect_url || null);
         setStep("success");
+      } else {
+        setError("Resposta inesperada do servidor. Tente novamente.");
       }
     } catch (err) {
       console.error("[portal] submit error:", err);
-      const msg = (err as Error)?.message || "";
-      setError(msg ? `Erro ao enviar cadastro: ${msg}` : "Erro ao enviar cadastro. Tente novamente.");
+      // Recovery: if submit failed at the network layer but the backend
+      // may have processed the request, check session status.
+      if (sid) {
+        try {
+          const status = await api.sessionStatus(sid);
+          if (status?.requires_verification) {
+            setRedirectUrl(status.redirect_url || null);
+            setStep("otp");
+            startCooldown(60);
+            setSubmitting(false);
+            return;
+          }
+        } catch { /* ignore */ }
+      }
+      const e2 = err as { kind?: string; message?: string };
+      const friendly =
+        e2?.kind === "timeout" ? "Tempo esgotado. Verifique o sinal e tente novamente." :
+        e2?.kind === "network" ? "Falha de conexão. Verifique sua rede e tente novamente." :
+        e2?.message || "Erro ao enviar cadastro. Tente novamente.";
+      setError(friendly);
     }
     setSubmitting(false);
   };
