@@ -139,7 +139,7 @@
         ? '/api/captive-portal'
         : null;
       var DIRECT = 'https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal';
-      var BASES = PROXY ? [PROXY, DIRECT] : [DIRECT];
+      var BASES = (PROXY && host!=='wifi.guedesepaixao.com.br') ? [PROXY, DIRECT] : (PROXY ? [PROXY] : [DIRECT]);
 
       // ── Query Params ──
       var qs = new URLSearchParams(location.search);
