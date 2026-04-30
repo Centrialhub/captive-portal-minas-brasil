@@ -1,4 +1,4 @@
-import { getApiBase, getQueryParams } from "./portal-utils";
+import { getApiBase } from "./portal-utils";
 
 const API_BASE = getApiBase();
 const SUPABASE_DIRECT = "https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal";
@@ -8,99 +8,125 @@ const USES_PROXY = API_BASE !== SUPABASE_DIRECT;
 function getStoreParam(): string {
   const params = new URLSearchParams(window.location.search);
   let store = params.get("store");
-  // Fallback: if loaded from captive context (has id/mac param) without ?store=,
-  // default to "matriz" to avoid "No store detected" errors
   if (!store && (params.get("id") || params.get("mac"))) {
     store = "matriz";
   }
   return store ? `?store=${encodeURIComponent(store)}` : "";
 }
 
-async function resilientFetch(
-  path: string,
-  options?: RequestInit & { retries?: number; timeoutMs?: number },
-): Promise<Response> {
-  const { retries = 0, timeoutMs = 15000, ...fetchOpts } = options || {};
-  const delays = [500, 1500, 3000];
-  let lastError: unknown;
-  // Try proxy first (if applicable), then fall back to direct Supabase URL
-  // when the proxy throws a network error (TypeError = Failed to fetch).
-  const bases = USES_PROXY ? [API_BASE, SUPABASE_DIRECT] : [API_BASE];
-
-  for (const base of bases) {
-    for (let attempt = 0; attempt <= retries; attempt++) {
-      try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeoutMs);
-        const res = await fetch(`${base}${path}`, { ...fetchOpts, signal: controller.signal });
-        clearTimeout(timer);
-        // Retry on transient gateway errors (502/503/504) when retries remain
-        if ((res.status === 502 || res.status === 503 || res.status === 504) && attempt < retries) {
-          lastError = new Error(`HTTP ${res.status}`);
-          await new Promise(r => setTimeout(r, delays[attempt] || 3000));
-          continue;
-        }
-        return res;
-      } catch (err) {
-        lastError = err;
-        const msg = (err as Error)?.message || String(err);
-        console.warn(`[api] fetch attempt ${attempt + 1} on ${base} failed:`, msg);
-        if (attempt < retries) {
-          await new Promise(r => setTimeout(r, delays[attempt] || 3000));
-        }
-      }
-    }
-    // If we exhausted retries on proxy with a network error, fall back to direct
-    if (lastError && (lastError as Error)?.name === "TypeError") {
-      console.warn(`[api] falling back from ${base} to direct Supabase`);
-      continue;
-    }
-    break;
+export class ApiError extends Error {
+  kind: "timeout" | "network" | "http" | "parse";
+  status?: number;
+  constructor(kind: "timeout" | "network" | "http" | "parse", message: string, status?: number) {
+    super(message);
+    this.kind = kind;
+    this.status = status;
   }
-  throw lastError;
 }
 
-/** Parse a Response as JSON; if the body isn't JSON, throw a useful error including status + snippet. */
-async function safeJson(res: Response, label: string): Promise<any> {
-  const ct = res.headers.get("content-type") || "";
-  const text = await res.text();
-  if (ct.includes("application/json")) {
-    try { return JSON.parse(text); } catch { /* fall through */ }
-  }
-  // Non-JSON response (HTML error page, empty body, captive portal interception, etc.)
-  const snippet = text.slice(0, 120).replace(/\s+/g, " ").trim();
-  console.error(`[api:${label}] non-JSON response`, { status: res.status, contentType: ct, snippet });
-  throw new Error(
-    res.status >= 500
-      ? `Servidor indisponível (${res.status}). Tente novamente em instantes.`
-      : res.status === 0 || !res.status
-        ? "Sem resposta do servidor. Verifique sua conexão."
-        : `Resposta inesperada do servidor (${res.status}).`,
-  );
+interface XhrOptions {
+  method?: string;
+  body?: unknown;
+  timeoutMs?: number;
+}
+
+/**
+ * XHR-based request — much more reliable than fetch in captive portal browsers
+ * (iOS / Android Captive Network Assistants frequently abort fetch).
+ * Tries the proxy first (when applicable), then falls back to direct Supabase.
+ */
+function xhrRequest<T = any>(path: string, opts: XhrOptions = {}): Promise<T> {
+  const { method = "GET", body, timeoutMs = 20000 } = opts;
+  const bases = USES_PROXY ? [API_BASE, SUPABASE_DIRECT] : [API_BASE];
+  const qs = getStoreParam();
+
+  return new Promise((resolve, reject) => {
+    let attempt = 0;
+
+    const tryBase = () => {
+      if (attempt >= bases.length) {
+        reject(new ApiError("network", "Sem resposta do servidor. Verifique sua conexão."));
+        return;
+      }
+      const base = bases[attempt++];
+      const url = `${base}${path}${qs}`;
+      const xhr = new XMLHttpRequest();
+      try {
+        xhr.open(method, url, true);
+      } catch (e) {
+        tryBase();
+        return;
+      }
+      xhr.timeout = timeoutMs;
+      if (body !== undefined) {
+        xhr.setRequestHeader("Content-Type", "application/json");
+      }
+      xhr.onload = () => {
+        const status = xhr.status;
+        const text = xhr.responseText || "";
+        // Retry on transient gateway errors via fallback base
+        if ((status === 0 || status === 502 || status === 503 || status === 504) && attempt < bases.length) {
+          console.warn(`[api] ${path} HTTP ${status} on ${base}, falling back`);
+          tryBase();
+          return;
+        }
+        let parsed: any = null;
+        try { parsed = text ? JSON.parse(text) : {}; } catch { /* not JSON */ }
+        if (parsed && typeof parsed === "object") {
+          // Even when API returns {error: "..."}, surface as resolved value
+          // so callers can show a friendly message instead of a generic failure.
+          resolve(parsed as T);
+          return;
+        }
+        if (status >= 500) {
+          reject(new ApiError("http", `Servidor indisponível (${status}).`, status));
+        } else if (status === 0) {
+          reject(new ApiError("network", "Sem resposta do servidor."));
+        } else {
+          reject(new ApiError("parse", `Resposta inesperada do servidor (${status}).`, status));
+        }
+      };
+      xhr.onerror = () => {
+        console.warn(`[api] ${path} network error on ${base}`);
+        if (attempt < bases.length) tryBase();
+        else reject(new ApiError("network", "Erro de conexão. Verifique sua rede."));
+      };
+      xhr.ontimeout = () => {
+        console.warn(`[api] ${path} timeout on ${base}`);
+        if (attempt < bases.length) tryBase();
+        else reject(new ApiError("timeout", "Tempo esgotado. Tente novamente."));
+      };
+      try {
+        xhr.send(body !== undefined ? JSON.stringify(body) : null);
+      } catch (e) {
+        if (attempt < bases.length) tryBase();
+        else reject(new ApiError("network", "Não foi possível enviar a requisição."));
+      }
+    };
+
+    tryBase();
+  });
 }
 
 export const api = {
-  async bootstrap() {
-    const res = await resilientFetch(`/bootstrap${getStoreParam()}`, { retries: 2 });
-    return safeJson(res, "bootstrap");
+  bootstrap() {
+    return xhrRequest<any>("/bootstrap", { method: "GET", timeoutMs: 10000 });
   },
 
-  async startSession(data: {
+  startSession(data: {
     client_mac?: string;
     ap_mac?: string;
     ssid?: string;
     redirect_url?: string;
   }) {
-    const res = await resilientFetch(`/start${getStoreParam()}`, {
+    return xhrRequest<any>("/start", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...data, user_agent: navigator.userAgent }),
-      retries: 2,
+      body: { ...data, user_agent: navigator.userAgent },
+      timeoutMs: 12000,
     });
-    return safeJson(res, "start");
   },
 
-  async submitLead(data: {
+  submitLead(data: {
     session_id?: string;
     name: string;
     email?: string;
@@ -109,37 +135,34 @@ export const api = {
     client_mac?: string;
     consent_version: string;
   }) {
-    // Submit is critical and must be resilient — captive networks are flaky.
-    const res = await resilientFetch(`/submit${getStoreParam()}`, {
+    return xhrRequest<any>("/submit", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(data),
-      retries: 2,
-      timeoutMs: 40000,
+      body: data,
+      timeoutMs: 25000,
     });
-    return safeJson(res, "submit");
   },
 
-  async requestCode(data: { session_id: string; phone: string }) {
-    const res = await resilientFetch(`/request-code${getStoreParam()}`, {
+  sessionStatus(session_id: string) {
+    return xhrRequest<any>("/session-status", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(data),
-      retries: 2,
-      timeoutMs: 20000,
+      body: { session_id },
+      timeoutMs: 8000,
     });
-    return safeJson(res, "request-code");
   },
 
-  async verifyCode(data: { session_id: string; code: string }) {
-    const res = await resilientFetch(`/verify-code${getStoreParam()}`, {
+  requestCode(data: { session_id: string; phone: string }) {
+    return xhrRequest<any>("/request-code", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(data),
-      retries: 1,
-      timeoutMs: 30000, // verify-code can take up to ~20s due to UniFi polling
+      body: data,
+      timeoutMs: 15000,
     });
-    return safeJson(res, "verify-code");
+  },
+
+  verifyCode(data: { session_id: string; code: string }) {
+    return xhrRequest<any>("/verify-code", {
+      method: "POST",
+      body: data,
+      timeoutMs: 30000,
+    });
   },
 };
-
