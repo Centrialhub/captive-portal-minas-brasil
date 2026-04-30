@@ -54,7 +54,6 @@ interface XhrOptions {
 function xhrRequest<T = any>(path: string, opts: XhrOptions = {}): Promise<T> {
   const { method = "GET", body, timeoutMs = 20000 } = opts;
   const bases = USES_PROXY ? [API_BASE, SUPABASE_DIRECT] : [API_BASE];
-  const qs = getStoreParam();
 
   return new Promise((resolve, reject) => {
     let attempt = 0;
