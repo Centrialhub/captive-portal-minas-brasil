@@ -360,7 +360,7 @@
           if(err){showErr('fb-otp-err',err);btn.disabled=false;btn.textContent='Reenviar código';return;}
           if(data.error){showErr('fb-otp-err',data.error);btn.disabled=false;btn.textContent='Reenviar código';return;}
           startCooldown(60);
-        });
+        }, 15000);
       });
 
       // ── Cooldown ──
