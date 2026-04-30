@@ -166,7 +166,7 @@ export const api = {
     return xhrRequest<any>("/submit", {
       method: "POST",
       body: data,
-      timeoutMs: 25000,
+      timeoutMs: 35000,
     });
   },
 
