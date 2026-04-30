@@ -14,6 +14,22 @@ function getStoreParam(): string {
   return store ? `?store=${encodeURIComponent(store)}` : "";
 }
 
+function buildUrl(base: string, path: string): string {
+  const qs = getStoreParam();
+  const normalizedBase = base.replace(/\/+$/, "");
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+
+  if (/\/api\/captive-portal$/.test(normalizedBase)) {
+    return `${normalizedBase}${normalizedPath}${qs}`;
+  }
+
+  // Some external Nginx proxy builds only expose /api/captive-portal as the
+  // Edge Function base and drop nested paths. Keep the call alive by encoding
+  // the route as a query fallback that the proxy still forwards to Supabase.
+  const fallbackRoute = `route=${encodeURIComponent(normalizedPath)}`;
+  return `${normalizedBase}${qs ? `${qs}&${fallbackRoute}` : `?${fallbackRoute}`}`;
+}
+
 export class ApiError extends Error {
   kind: "timeout" | "network" | "http" | "parse";
   status?: number;
@@ -49,7 +65,7 @@ function xhrRequest<T = any>(path: string, opts: XhrOptions = {}): Promise<T> {
         return;
       }
       const base = bases[attempt++];
-      const url = `${base}${path}${qs}`;
+      const url = buildUrl(base, path);
       const xhr = new XMLHttpRequest();
       try {
         xhr.open(method, url, true);
