@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { api } from "./lib/api";
+import { api, createClientSessionId } from "./lib/api";
 import { getQueryParams, buildSubmitPayload, type PortalStep } from "./lib/portal-utils";
 import logoMinasBrasil from "./assets/logo-minas-brasil.png";
 import "./index.css";
@@ -129,13 +129,22 @@ export default function App() {
     setSubmitting(true);
     setError("");
 
-    let sid: string | null = sessionIdRef.current || sessionId;
+    const params = getQueryParams();
+    let sid: string | null = sessionIdRef.current || sessionId || createClientSessionId();
+    sessionIdRef.current = sid;
+    setSessionId(sid);
     try {
       const payload = buildSubmitPayload({
-        session_id: sid || undefined,
+        session_id: sid,
         name, email, phone, cpf,
-        client_mac: getQueryParams().client_mac,
+        client_mac: params.client_mac,
         consent_version: boot.consent?.version || "1.0",
+      });
+      Object.assign(payload, {
+        ap_mac: params.ap_mac,
+        ssid: params.ssid,
+        redirect_url: params.redirect_url,
+        user_agent: navigator.userAgent,
       });
       const result = await api.submitLead(payload);
 
