@@ -81,7 +81,7 @@ async function safeJson(res: Response, label: string): Promise<any> {
 
 export const api = {
   async bootstrap() {
-    const res = await resilientFetch(`${API_BASE}/bootstrap${getStoreParam()}`, { retries: 2 });
+    const res = await resilientFetch(`/bootstrap${getStoreParam()}`, { retries: 2 });
     return safeJson(res, "bootstrap");
   },
 
@@ -91,7 +91,7 @@ export const api = {
     ssid?: string;
     redirect_url?: string;
   }) {
-    const res = await resilientFetch(`${API_BASE}/start${getStoreParam()}`, {
+    const res = await resilientFetch(`/start${getStoreParam()}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ...data, user_agent: navigator.userAgent }),
@@ -110,7 +110,7 @@ export const api = {
     consent_version: string;
   }) {
     // Submit is critical and must be resilient — captive networks are flaky.
-    const res = await resilientFetch(`${API_BASE}/submit${getStoreParam()}`, {
+    const res = await resilientFetch(`/submit${getStoreParam()}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
@@ -121,7 +121,7 @@ export const api = {
   },
 
   async requestCode(data: { session_id: string; phone: string }) {
-    const res = await resilientFetch(`${API_BASE}/request-code${getStoreParam()}`, {
+    const res = await resilientFetch(`/request-code${getStoreParam()}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
@@ -132,7 +132,7 @@ export const api = {
   },
 
   async verifyCode(data: { session_id: string; code: string }) {
-    const res = await resilientFetch(`${API_BASE}/verify-code${getStoreParam()}`, {
+    const res = await resilientFetch(`/verify-code${getStoreParam()}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
