@@ -2540,6 +2540,7 @@ Deno.serve(async (req: Request) => {
     if (path === "/bootstrap" && req.method === "GET") return await handleBootstrap(req);
     if (path === "/start" && req.method === "POST") return await handleStart(req);
     if (path === "/submit" && req.method === "POST") return await handleSubmit(req);
+    if (path === "/session-status" && req.method === "POST") return await handleSessionStatus(req);
     if (path === "/request-code" && req.method === "POST") return await handleRequestCode(req);
     if (path === "/verify-code" && req.method === "POST") return await handleVerifyCode(req);
 
