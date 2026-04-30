@@ -19,7 +19,7 @@ async function resilientFetch(
   options?: RequestInit & { retries?: number; timeoutMs?: number },
 ): Promise<Response> {
   const { retries = 0, timeoutMs = 15000, ...fetchOpts } = options || {};
-  const delays = [500, 1500];
+  const delays = [500, 1500, 3000];
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -28,15 +28,41 @@ async function resilientFetch(
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       const res = await fetch(url, { ...fetchOpts, signal: controller.signal });
       clearTimeout(timer);
+      // Retry on transient gateway errors (502/503/504) when retries remain
+      if ((res.status === 502 || res.status === 503 || res.status === 504) && attempt < retries) {
+        lastError = new Error(`HTTP ${res.status}`);
+        await new Promise(r => setTimeout(r, delays[attempt] || 3000));
+        continue;
+      }
       return res;
     } catch (err) {
       lastError = err;
+      console.warn(`[api] fetch attempt ${attempt + 1} failed:`, (err as Error)?.message || err);
       if (attempt < retries) {
-        await new Promise(r => setTimeout(r, delays[attempt] || 1500));
+        await new Promise(r => setTimeout(r, delays[attempt] || 3000));
       }
     }
   }
   throw lastError;
+}
+
+/** Parse a Response as JSON; if the body isn't JSON, throw a useful error including status + snippet. */
+async function safeJson(res: Response, label: string): Promise<any> {
+  const ct = res.headers.get("content-type") || "";
+  const text = await res.text();
+  if (ct.includes("application/json")) {
+    try { return JSON.parse(text); } catch { /* fall through */ }
+  }
+  // Non-JSON response (HTML error page, empty body, captive portal interception, etc.)
+  const snippet = text.slice(0, 120).replace(/\s+/g, " ").trim();
+  console.error(`[api:${label}] non-JSON response`, { status: res.status, contentType: ct, snippet });
+  throw new Error(
+    res.status >= 500
+      ? `Servidor indisponível (${res.status}). Tente novamente em instantes.`
+      : res.status === 0 || !res.status
+        ? "Sem resposta do servidor. Verifique sua conexão."
+        : `Resposta inesperada do servidor (${res.status}).`,
+  );
 }
 
 export const api = {
