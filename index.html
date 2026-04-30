@@ -284,22 +284,31 @@
           };
 
           apiFetch('/submit','POST',payload,function(err,data){
+            function ok(d){
+              if(d.redirect_url) state.redirect_url = d.redirect_url;
+              if(d.requires_verification){
+                $('fb-otp-phone').textContent = state.phone;
+                goStep('otp');
+                startCooldown(60);
+              } else {
+                showSuccess(d.message||'Cadastro realizado! Você já pode navegar.');
+              }
+            }
+            if(err){
+              // Recovery: maybe backend already saved it, check session-status.
+              apiFetch('/session-status','POST',{session_id:sid},function(e2,st){
+                subBtn.textContent='Conectar ao Wi-Fi';
+                subBtn.disabled=!chk.checked;
+                if(!e2 && st && st.requires_verification){ ok(st); return; }
+                showErr('fb-form-err', err);
+              }, 8000);
+              return;
+            }
             subBtn.textContent='Conectar ao Wi-Fi';
             subBtn.disabled=!chk.checked;
-
-            if(err){showErr('fb-form-err',err);return;}
             if(data.error){showErr('fb-form-err',data.error);return;}
-
-            if(data.redirect_url) state.redirect_url = data.redirect_url;
-
-            if(data.requires_verification){
-              $('fb-otp-phone').textContent = state.phone;
-              goStep('otp');
-              startCooldown(60);
-            } else {
-              showSuccess(data.message||'Cadastro realizado! Você já pode navegar.');
-            }
-          });
+            ok(data);
+          }, 25000);
         });
       });
 
