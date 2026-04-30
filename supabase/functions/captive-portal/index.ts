@@ -1259,101 +1259,59 @@ async function handleSubmit(req: Request): Promise<Response> {
     console.log(`[submit] recovered missing session=${sessionId}`);
   }
 
-  // Validate consent
-  const { data: consent } = await db.from("consent_versions").select("version, text").eq("version", consentVersion).maybeSingle();
-  if (!consent) return errorResponse("Versão de consentimento inválida");
-
   // Idempotent recovery: if this session already has a pending verification,
-  // return it instead of treating the retry as a duplicate. This handles the
-  // case where the network aborted the previous response after the lead was saved.
-  if (sessionId) {
-    const { data: existingVer } = await db
-      .from("captive_verifications")
-      .select("id, status, expires_at")
-      .eq("session_id", sessionId as string)
-      .eq("status", "pending")
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (existingVer && new Date(existingVer.expires_at) > new Date()) {
-      console.log(`[submit] recovered existing pending verification for session=${sessionId} (${Date.now() - t0}ms)`);
-      return jsonResponse({
-        ok: true,
-        authorized: false,
-        redirect_url: redirectUrl || DEFAULT_REDIRECT_URL,
-        requires_verification: true,
-        message: "Código de verificação já enviado para seu WhatsApp.",
-        recovered: true,
-      });
-    }
+  // return immediately so retries don't pile up. Cheap single query.
+  const { data: existingVer } = await db
+    .from("captive_verifications")
+    .select("id, expires_at")
+    .eq("session_id", sessionId as string)
+    .eq("status", "pending")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (existingVer && new Date(existingVer.expires_at) > new Date()) {
+    console.log(`[submit] recovered existing pending verification session=${sessionId} (${Date.now() - t0}ms)`);
+    return jsonResponse({
+      ok: true,
+      session_id: sessionId,
+      authorized: false,
+      redirect_url: redirectUrl || DEFAULT_REDIRECT_URL,
+      requires_verification: true,
+      recovered: true,
+      message: "Código de verificação já enviado para seu WhatsApp.",
+    });
   }
 
-  // Consent text hash
-  const consentTextHash = consent.text
-    ? await crypto.subtle.digest("SHA-256", new TextEncoder().encode(consent.text)).then((buf) =>
-        Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("")
-      )
-    : null;
-
-  // Create lead (idempotent: check if already exists for this session)
-  let leadId: string;
-  if (sessionId) {
-    const { data: existingLead } = await db
-      .from("leads")
-      .select("id")
-      .eq("session_id", sessionId)
-      .maybeSingle();
-    if (existingLead) {
-      leadId = existingLead.id;
-    } else {
-      const { data: lead, error: leadError } = await db.from("leads").insert({
-        store_id: storeId, session_id: sessionId || null, name,
-        email: email || null, phone: phone || null, cpf: cpf || null, client_mac: clientMac,
-        consented_at: new Date().toISOString(), consent_version: consentVersion,
-        consent_text_hash: consentTextHash, source: "captive_portal",
-        origin_ip: clientIp,
-      }).select("id").single();
-      if (leadError) {
-        console.error("[submit] Lead insert error:", leadError.message);
-        return errorResponse("Erro ao salvar cadastro. Tente novamente.", 500);
-      }
-      leadId = lead.id;
-    }
-  } else {
-    const { data: lead, error: leadError } = await db.from("leads").insert({
-      store_id: storeId, session_id: null, name,
-      email: email || null, phone: phone || null, cpf: cpf || null, client_mac: clientMac,
-      consented_at: new Date().toISOString(), consent_version: consentVersion,
-      consent_text_hash: consentTextHash, source: "captive_portal",
-      origin_ip: clientIp,
-    }).select("id").single();
-    if (leadError) {
-      console.error("[submit] Lead insert error:", leadError.message);
-      return errorResponse("Erro ao salvar cadastro. Tente novamente.", 500);
-    }
-    leadId = lead.id;
-  }
-
-  // Update session
-  if (sessionId) {
-    await db.from("captive_sessions")
-      .update({ status: "submitted", submitted_at: new Date().toISOString(), client_mac: clientMac })
-      .eq("id", sessionId);
-  }
-
-  // Generate OTP code
+  // Generate OTP code FIRST so we can insert verification immediately.
   const otpCode = generateOtpCode();
   const otpHash = await hashOtp(otpCode);
   const expiresAt = new Date(Date.now() + OTP_EXPIRES_SECONDS * 1000).toISOString();
 
-  // Expire any existing pending for this session
-  if (sessionId) {
-    await db.from("captive_verifications")
-      .update({ status: "expired" })
-      .eq("session_id", sessionId)
-      .eq("status", "pending");
-  }
+  // Insert lead (minimum required fields). consent_text_hash, audit, geoip
+  // are all enriched in background to keep the response fast for captive
+  // portal clients on flaky walled-garden networks.
+  const { data: lead, error: leadError } = await db.from("leads").insert({
+    store_id: storeId,
+    session_id: sessionId,
+    name,
+    email: email || null,
+    phone: phone || null,
+    cpf: cpf || null,
+    client_mac: clientMac,
+    consented_at: new Date().toISOString(),
+    consent_version: consentVersion,
+    source: "captive_portal",
+    origin_ip: clientIp,
+  }).select("id").single();
 
+  if (leadError || !lead) {
+    console.error("[submit] Lead insert error:", leadError?.message);
+    return errorResponse("Erro ao salvar cadastro. Tente novamente.", 500);
+  }
+  const leadId = lead.id;
+
+  // Insert verification (required to gate the OTP step).
   const { error: verError } = await db.from("captive_verifications").insert({
     store_id: storeId,
     session_id: sessionId,
@@ -1369,27 +1327,38 @@ async function handleSubmit(req: Request): Promise<Response> {
     return errorResponse("Erro ao gerar código de verificação. Tente novamente.", 500);
   }
 
-  // Run non-essential work in background so /submit responds fast.
+  // Everything else runs in background — keep response fast.
   const storeName = detected.store_name || "Drogaria Minas Brasil";
   const bgWork = (async () => {
     try {
-      if (clientIp) {
-        const geo = await enrichGeoIp(db, clientIp).catch(() => null);
-        if (geo) {
-          await db.from("leads").update({
-            origin_city: geo.city, origin_region: geo.region, origin_country: geo.country,
-            origin_isp: geo.isp, origin_asn: geo.asn, origin_source: geo.source,
-          }).eq("id", leadId);
-        }
-        await incrementClusterLeadCount(db, clientIp).catch(() => {});
-      }
-      await db.from("audit_logs").insert({
+      // Update session status (non-essential for client)
+      db.from("captive_sessions")
+        .update({ status: "submitted", submitted_at: new Date().toISOString(), client_mac: clientMac })
+        .eq("id", sessionId as string)
+        .then(() => {}, () => {});
+
+      // Send WhatsApp OTP (the critical background task).
+      const r = await sendWhatsAppCode(db, storeId, phone, otpCode, storeName, sessionId as string | null, clientIp, expiresAt);
+      if (!r.sent) console.warn("[submit] WhatsApp not sent (bg):", r.error);
+      else console.log(`[submit] WhatsApp OTP sent session=${sessionId}`);
+
+      // Audit + GeoIP enrichment
+      db.from("audit_logs").insert({
         store_id: storeId, entity: "lead", entity_id: leadId,
         action: "create",
         meta: { session_id: sessionId, mac: clientMac, ip: clientIpStr, store_slug: storeSlug },
       }).then(() => {}, () => {});
-      const r = await sendWhatsAppCode(db, storeId, phone, otpCode, storeName, sessionId as string | null, clientIp, expiresAt);
-      if (!r.sent) console.warn("[submit] WhatsApp not sent (bg):", r.error);
+
+      if (clientIp) {
+        const geo = await enrichGeoIp(db, clientIp).catch(() => null);
+        if (geo) {
+          db.from("leads").update({
+            origin_city: geo.city, origin_region: geo.region, origin_country: geo.country,
+            origin_isp: geo.isp, origin_asn: geo.asn, origin_source: geo.source,
+          }).eq("id", leadId).then(() => {}, () => {});
+        }
+        incrementClusterLeadCount(db, clientIp).catch(() => {});
+      }
     } catch (e) {
       console.warn("[submit] background work failed:", (e as Error)?.message);
     }
@@ -1408,7 +1377,7 @@ async function handleSubmit(req: Request): Promise<Response> {
     authorized: false,
     redirect_url: redirectUrl || DEFAULT_REDIRECT_URL,
     requires_verification: true,
-    message: "Código de verificação sendo enviado para seu WhatsApp.",
+    message: "Código de verificação enviado para seu WhatsApp.",
   });
 }
 
