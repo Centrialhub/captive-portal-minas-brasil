@@ -37,6 +37,18 @@ export class ApiError extends Error {
   }
 }
 
+export function createClientSessionId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = Math.random() * 16 | 0;
+    const v = c === "x" ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+}
+
 interface XhrOptions {
   method?: string;
   body?: unknown;
@@ -145,6 +157,10 @@ export const api = {
     phone?: string;
     cpf?: string;
     client_mac?: string;
+    ap_mac?: string;
+    ssid?: string;
+    redirect_url?: string;
+    user_agent?: string;
     consent_version: string;
   }) {
     return xhrRequest<any>("/submit", {

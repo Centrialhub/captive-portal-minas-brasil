@@ -1206,17 +1206,46 @@ async function handleSubmit(req: Request): Promise<Response> {
   const storeSlug = detected.store_slug;
   const redirectUrl = detected.redirect_url;
 
-  // Captive assistants can lose the initial /start response. If /submit arrives
-  // without a session, create one here so the OTP table (session_id NOT NULL)
-  // and the rest of the flow can still proceed.
-  if (!sessionId) {
+  // Captive assistants can lose API responses. /submit is therefore the source
+  // of truth: if the frontend supplied a UUID, guarantee that session exists;
+  // otherwise create one here so the OTP table can be reached.
+  if (sessionId) {
+    const { data: existingSession } = await db
+      .from("captive_sessions")
+      .select("id")
+      .eq("id", sessionId)
+      .maybeSingle();
+
+    if (!existingSession) {
+      const { error: sessionError } = await db
+        .from("captive_sessions")
+        .insert({
+          id: sessionId,
+          store_id: storeId,
+          client_mac: clientMac,
+          client_ip: clientIpStr,
+          ap_mac: normalizeMac(body.ap_mac),
+          ssid: sanitizeString(body.ssid, 64),
+          user_agent: sanitizeString(body.user_agent, 500) || req.headers.get("user-agent")?.slice(0, 500),
+          redirect_url: sanitizeString(body.redirect_url, 2000),
+          status: "started",
+        });
+      if (sessionError) {
+        console.error("[submit] Supplied session insert error:", sessionError.message);
+        return errorResponse("Erro ao iniciar sessão. Tente novamente.", 500);
+      }
+      console.log(`[submit] created supplied session=${sessionId}`);
+    }
+  } else {
     const { data: recoveredSession, error: sessionError } = await db
       .from("captive_sessions")
       .insert({
         store_id: storeId,
         client_mac: clientMac,
         client_ip: clientIpStr,
-        user_agent: req.headers.get("user-agent")?.slice(0, 500),
+        ap_mac: normalizeMac(body.ap_mac),
+        ssid: sanitizeString(body.ssid, 64),
+        user_agent: sanitizeString(body.user_agent, 500) || req.headers.get("user-agent")?.slice(0, 500),
         redirect_url: sanitizeString(body.redirect_url, 2000),
         status: "started",
       })

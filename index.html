@@ -167,6 +167,13 @@
         cooldownTimer: null
       };
 
+      function uuid(){
+        if(window.crypto && crypto.randomUUID) return crypto.randomUUID();
+        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,function(c){
+          var r=Math.random()*16|0,v=c==='x'?r:(r&3|8);return v.toString(16);
+        });
+      }
+
       // ── XHR with proxy→direct fallback ──
       function buildUrl(base,path){
         var normalizedBase = base.replace(/\/+$/,'');
@@ -255,13 +262,17 @@
         state.phone = fd.get('phone')||'';
 
           var payload = {
-            session_id: state.session_id || undefined,
+            session_id: state.session_id || (state.session_id = uuid()),
             name: fd.get('name'),
             email: fd.get('email')||'',
             phone: state.phone,
             cpf: fd.get('cpf'),
             consent_version: state.consent_version,
-            client_mac: params.client_mac
+            client_mac: params.client_mac,
+            ap_mac: params.ap_mac,
+            ssid: params.ssid,
+            redirect_url: params.redirect_url,
+            user_agent: navigator.userAgent
           };
 
           apiFetch('/submit','POST',payload,function(err,data){
