@@ -2551,7 +2551,10 @@ Deno.serve(async (req: Request) => {
   }
 
   const url = new URL(req.url);
-  const path = url.pathname.replace(/^\/captive-portal/, "");
+  const routeFallback = url.searchParams.get("route");
+  const path = routeFallback && routeFallback.startsWith("/")
+    ? routeFallback
+    : url.pathname.replace(/^\/captive-portal/, "");
 
   try {
     // Self-contained HTML portal (for captive assistant that can't reach Vercel)
