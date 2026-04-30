@@ -89,22 +89,6 @@ export default function App() {
         const data = await api.bootstrap();
         if (!data.error) setBoot(data);
       } catch { /* use fallback */ }
-
-      try {
-        const promise = api.startSession(params).then(s => {
-          const id = s.session_id || null;
-          if (id) {
-            sessionIdRef.current = id;
-            setSessionId(id);
-          }
-          return id;
-        }).catch(() => {
-          startPromiseRef.current = null;
-          return null;
-        });
-        startPromiseRef.current = promise;
-        await promise;
-      } catch { /* non-blocking, ensureSession will retry */ }
     })();
   }, []);
 
