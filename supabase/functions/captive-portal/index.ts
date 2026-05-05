@@ -2504,7 +2504,7 @@ req('GET','/bootstrap',null,function(e,d){
 if(d&&d.store&&d.store.name){document.getElementById('store-info').textContent=d.store.city?d.store.name+' \\u2014 '+d.store.city:d.store.name;}
 if(d&&d.consent){document.getElementById('consent-text').textContent=d.consent.text;consentVersion=d.consent.version||consentVersion;}
 },5000);
-req('POST','/start',{client_mac:clientMac,user_agent:navigator.userAgent},function(e,d){if(d&&d.session_id)sessionId=d.session_id;},6000);
+req('POST','/start',{client_mac:clientMac,ap_mac:apMac,ssid:ssid,redirect_url:redirectUrl,captive_timestamp:captiveTs,site:siteParam,original_unifi_url_params:unifiOriginalParams,user_agent:navigator.userAgent},function(e,d){if(d&&d.session_id)sessionId=d.session_id;},6000);
 function showErr(el,m){el.textContent=m;el.style.display='block';}
 function hideErr(el){el.style.display='none';}
 form.addEventListener('submit',function(ev){
