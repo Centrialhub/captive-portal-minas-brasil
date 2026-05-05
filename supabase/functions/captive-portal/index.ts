@@ -2474,6 +2474,12 @@ details p{padding:0 12px 12px;font-size:11px;color:#888;line-height:1.5}
 var API='';
 var FALLBACK_API='${API_BASE}';
 var clientMac='${clientMac}';
+var apMac='${apMac}';
+var ssid='${ssidParam}';
+var captiveTs='${tParam}';
+var siteParam='${siteParam}';
+var rawQuery='${rawQuery}';
+var unifiOriginalParams={id:clientMac,ap:apMac,ssid:ssid,url:'${redirectParam}',t:captiveTs,site:siteParam,raw_query:rawQuery};
 var sessionId=null;
 var consentVersion='offline-fallback';
 var redirectUrl='${redirectParam}'||null;
