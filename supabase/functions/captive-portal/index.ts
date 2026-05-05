@@ -1215,6 +1215,12 @@ async function handleSubmit(req: Request): Promise<Response> {
   const storeSlug = detected.store_slug;
   const redirectUrl = detected.redirect_url;
 
+  const submitCaptiveTs = sanitizeString(body.captive_timestamp, 32);
+  const submitUnifiParams = (body.original_unifi_url_params && typeof body.original_unifi_url_params === "object")
+    ? body.original_unifi_url_params
+    : null;
+  console.log(`[portal-params] (submit) id=${clientMac} ap=${normalizeMac(body.ap_mac)} ssid=${body.ssid} url=${body.redirect_url} t=${submitCaptiveTs}`);
+
   // Captive assistants can lose API responses. /submit is therefore the source
   // of truth: if the frontend supplied a UUID, guarantee that session exists;
   // otherwise create one here so the OTP table can be reached.
@@ -1237,6 +1243,8 @@ async function handleSubmit(req: Request): Promise<Response> {
           ssid: sanitizeString(body.ssid, 64),
           user_agent: sanitizeString(body.user_agent, 500) || req.headers.get("user-agent")?.slice(0, 500),
           redirect_url: sanitizeString(body.redirect_url, 2000),
+          captive_timestamp: submitCaptiveTs,
+          original_unifi_url_params: submitUnifiParams,
           status: "started",
         });
       if (sessionError) {
@@ -1244,6 +1252,19 @@ async function handleSubmit(req: Request): Promise<Response> {
         return errorResponse("Erro ao iniciar sessão. Tente novamente.", 500);
       }
       console.log(`[submit] created supplied session=${sessionId}`);
+    } else {
+      // Backfill UniFi fields if the existing session was created without them.
+      const updateFields: Record<string, unknown> = {};
+      if (clientMac) updateFields.client_mac = clientMac;
+      const apMacNorm = normalizeMac(body.ap_mac);
+      if (apMacNorm) updateFields.ap_mac = apMacNorm;
+      if (body.ssid) updateFields.ssid = sanitizeString(body.ssid, 64);
+      if (body.redirect_url) updateFields.redirect_url = sanitizeString(body.redirect_url, 2000);
+      if (submitCaptiveTs) updateFields.captive_timestamp = submitCaptiveTs;
+      if (submitUnifiParams) updateFields.original_unifi_url_params = submitUnifiParams;
+      if (Object.keys(updateFields).length > 0) {
+        await db.from("captive_sessions").update(updateFields).eq("id", sessionId).then(() => {}, () => {});
+      }
     }
   } else {
     const { data: recoveredSession, error: sessionError } = await db
@@ -1256,6 +1277,8 @@ async function handleSubmit(req: Request): Promise<Response> {
         ssid: sanitizeString(body.ssid, 64),
         user_agent: sanitizeString(body.user_agent, 500) || req.headers.get("user-agent")?.slice(0, 500),
         redirect_url: sanitizeString(body.redirect_url, 2000),
+        captive_timestamp: submitCaptiveTs,
+        original_unifi_url_params: submitUnifiParams,
         status: "started",
       })
       .select("id")
