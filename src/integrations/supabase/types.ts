@@ -62,6 +62,9 @@ export type Database = {
           status: Database["public"]["Enums"]["session_status"]
           store_id: string | null
           submitted_at: string | null
+          unifi_cmd_accepted_at: string | null
+          unifi_fallback_redirect_url: string | null
+          unifi_last_verify_result: Json | null
           updated_at: string
           user_agent: string | null
         }
@@ -82,6 +85,9 @@ export type Database = {
           status?: Database["public"]["Enums"]["session_status"]
           store_id?: string | null
           submitted_at?: string | null
+          unifi_cmd_accepted_at?: string | null
+          unifi_fallback_redirect_url?: string | null
+          unifi_last_verify_result?: Json | null
           updated_at?: string
           user_agent?: string | null
         }
@@ -102,6 +108,9 @@ export type Database = {
           status?: Database["public"]["Enums"]["session_status"]
           store_id?: string | null
           submitted_at?: string | null
+          unifi_cmd_accepted_at?: string | null
+          unifi_fallback_redirect_url?: string | null
+          unifi_last_verify_result?: Json | null
           updated_at?: string
           user_agent?: string | null
         }

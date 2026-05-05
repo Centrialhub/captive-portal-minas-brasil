@@ -619,9 +619,11 @@ async function unifiLogin(
   return { ok: false, error: `OS: ${osResult.error} | Legacy: ${legacyResult.error}` };
 }
 
-// Polling backoff for /stat/sta confirmation (~20s total across 10 attempts)
-const VERIFY_BACKOFF_MS = [500, 750, 1000, 1500, 2000, 2000, 2500, 3000, 3000, 3500];
-const RESEND_AFTER_ATTEMPT = 5; // re-emit authorize-guest if not confirmed by attempt 5
+// Polling backoff for /stat/sta confirmation (~3s total across 3 attempts).
+// Captive assistants typically time out around 5-10s, so we keep this short
+// and rely on the hotspot fallback redirect for the final handshake.
+const VERIFY_BACKOFF_MS = [500, 1000, 1500];
+const RESEND_AFTER_ATTEMPT = 999; // disable mid-poll re-emission (kept for clarity)
 
 interface UnifiStation {
   mac?: string;
@@ -649,6 +651,9 @@ type UnifiAuthResult = {
   effective_mac?: string; // MAC actually authorized (may differ from input)
   ap_mac_used?: string | null;
   latency_ms?: number;
+  cmd_accepted_at?: string; // ISO when controller accepted authorize-guest
+  last_verify_result?: Record<string, unknown>; // diagnostic snapshot
+  weak_signal?: boolean; // station has IP/is_guest/recentAssoc but authorized!=true
 };
 
 function isJsonContentType(res: Response): boolean {
@@ -866,6 +871,7 @@ async function unifiAuthorizeByMac(
     let activeUrl = "";
     let lastError = "";
     let cmdSentAt = 0;
+    let cmdAcceptedAtIso: string | undefined;
     let usedMinutes = desiredMinutes;
     let policyOverride = false;
 
@@ -880,6 +886,7 @@ async function unifiAuthorizeByMac(
         if (cmd.ok && cmd.rcOk) {
           activeUrl = url;
           cmdSentAt = Math.floor(Date.now() / 1000);
+          cmdAcceptedAtIso = new Date().toISOString();
           console.log(`[unifi-auth] reason=CMD_ACCEPTED url=${url} mac=${effectiveMac} ap=${apMacForPayload || "-"} minutes=${mins}`);
           return true;
         }
@@ -913,7 +920,8 @@ async function unifiAuthorizeByMac(
     const staUrl = activeUrl.replace("/cmd/stamgr", "/stat/sta");
     let confirmed = false;
     let verifyError = "controller did not confirm authorized client";
-    let resentOnce = false;
+    let weakSignal = false;
+    let lastVerifySnapshot: Record<string, unknown> = { mac: effectiveMac, found: false };
 
     for (let attempt = 1; attempt <= VERIFY_BACKOFF_MS.length; attempt++) {
       let staRes = await unifiFetchStations(staUrl, headers, httpClient);
@@ -925,34 +933,48 @@ async function unifiAuthorizeByMac(
       if (staRes.ok && staRes.data) {
         const found = staRes.data.find((s) => (s.mac || "").toLowerCase() === effectiveMac);
         if (found) {
-          // Accept authorized=true OR ip+assoc_time>=cmdSentAt (some firmwares mark authorized=false but liberate)
           const hasIp = !!found.ip;
           const recentAssoc = typeof found.assoc_time === "number" && found.assoc_time >= cmdSentAt - 2;
-          if (found.authorized === true || (hasIp && recentAssoc && found.is_guest)) {
+          const ms = Date.now() - startedAt;
+          lastVerifySnapshot = {
+            mac: effectiveMac, found: true,
+            authorized: found.authorized === true,
+            is_guest: !!found.is_guest,
+            ip: found.ip || null,
+            essid: found.essid || null,
+            ap_mac: found.ap_mac || null,
+            assoc_time: found.assoc_time || null,
+            recent_assoc: recentAssoc,
+            attempt, latency_ms: ms,
+          };
+          // STRICT: only authorized=true is treated as confirmed liberation.
+          // Having an IP / is_guest / recent assoc is NOT enough — captive
+          // clients can satisfy those even while still blocked.
+          if (found.authorized === true) {
             confirmed = true;
-            const ms = Date.now() - startedAt;
             console.log(`[unifi-auth] reason=AUTH_CONFIRMED mac=${effectiveMac} ap=${found.ap_mac || "-"} ip=${found.ip || "-"} attempts=${attempt} ms=${ms}`);
             return {
               ok: true, effective_mac: effectiveMac.replace(/:/g, "").toUpperCase(),
               ap_mac_used: apMacForPayload, latency_ms: ms,
+              cmd_accepted_at: cmdAcceptedAtIso,
+              last_verify_result: { ...lastVerifySnapshot, verify_error: null },
             };
           }
-          verifyError = `MAC ${effectiveMac} found but authorized=${String(found.authorized)} ip=${found.ip || "-"}`;
+          if (hasIp && recentAssoc && found.is_guest) {
+            weakSignal = true;
+            verifyError = `WEAK_SIGNAL_ONLY: station has IP/is_guest/recentAssoc but authorized!=true (mac=${effectiveMac} ip=${found.ip})`;
+          } else {
+            verifyError = `MAC ${effectiveMac} found but authorized=${String(found.authorized)} ip=${found.ip || "-"}`;
+          }
         } else {
+          lastVerifySnapshot = { mac: effectiveMac, found: false, total_stations: staRes.data.length, attempt };
           verifyError = `MAC ${effectiveMac} not in /stat/sta (total=${staRes.data.length})`;
         }
       } else if (staRes.error) {
         verifyError = staRes.error;
+        lastVerifySnapshot = { mac: effectiveMac, found: false, sta_error: staRes.error, attempt };
       }
       console.warn(`[unifi-auth] poll attempt=${attempt}/${VERIFY_BACKOFF_MS.length}: ${verifyError}`);
-
-      // Re-emit command once at the halfway point (causa #7)
-      if (!resentOnce && attempt === RESEND_AFTER_ATTEMPT) {
-        console.warn(`[unifi-auth] reason=CMD_RESEND attempt=${attempt} mac=${effectiveMac}`);
-        resentOnce = true;
-        const cmd2 = await unifiSendAuthorizeCmd(activeUrl, headers, httpClient, buildPayload(usedMinutes));
-        if (cmd2.ok && cmd2.rcOk) cmdSentAt = Math.floor(Date.now() / 1000);
-      }
 
       if (attempt < VERIFY_BACKOFF_MS.length) {
         await new Promise((r) => setTimeout(r, VERIFY_BACKOFF_MS[attempt - 1]));
@@ -966,6 +988,9 @@ async function unifiAuthorizeByMac(
       effective_mac: effectiveMac.replace(/:/g, "").toUpperCase(),
       ap_mac_used: apMacForPayload,
       latency_ms: Date.now() - startedAt,
+      cmd_accepted_at: cmdAcceptedAtIso,
+      last_verify_result: { ...lastVerifySnapshot, verify_error: verifyError },
+      weak_signal: weakSignal,
     };
   } finally {
     httpClient?.close();
@@ -992,7 +1017,7 @@ async function authorizeClient(
   db: ReturnType<typeof supabaseAdmin>,
   storeId: string | null, storeSlug: string, clientMac: string | null, sessionId: string, clientIp: string,
   context: { apMac?: string | null; ssid?: string | null } = {},
-): Promise<{ ok: boolean; reason?: string; userMessage?: string }> {
+): Promise<{ ok: boolean; reason?: string; userMessage?: string; cmd_accepted_at?: string; last_verify_result?: Record<string, unknown> | null }> {
   if (!storeId) {
     await db.from("captive_sessions").update({ status: "failed", fail_reason: "NO_STORE_CONFIGURED" }).eq("id", sessionId);
     return { ok: false, reason: "NO_STORE_CONFIGURED" };
@@ -1013,29 +1038,19 @@ async function authorizeClient(
     return { ok: false, reason: "UNIFI_NOT_CONFIGURED" };
   }
 
-  // Per-store credentials with fallback to global secrets
   const storeUser = store.unifi_username || UNIFI_USERNAME;
   const storePass = store.unifi_password || UNIFI_PASSWORD;
 
   if (!storeUser || !storePass) {
     await db.from("captive_sessions").update({ status: "failed", fail_reason: "UNIFI_CREDENTIALS_MISSING" }).eq("id", sessionId);
-    await db.from("audit_logs").insert({
-      store_id: storeId, entity: "session", entity_id: sessionId,
-      action: "fail", meta: { reason: "UNIFI_CREDENTIALS_MISSING", store_slug: storeSlug, ip: clientIp },
-    });
     return { ok: false, reason: "UNIFI_CREDENTIALS_MISSING" };
   }
 
   if (!clientMac || !isValidMac(clientMac)) {
     await db.from("captive_sessions").update({ status: "failed", fail_reason: "INVALID_MAC_ADDRESS" }).eq("id", sessionId);
-    await db.from("audit_logs").insert({
-      store_id: storeId, entity: "session", entity_id: sessionId,
-      action: "fail", meta: { reason: "INVALID_MAC_ADDRESS", mac: clientMac, store_slug: storeSlug, ip: clientIp },
-    });
     return { ok: false, reason: "INVALID_MAC_ADDRESS" };
   }
 
-  // Read session-duration policy (causa #9)
   const { data: settings } = await db
     .from("global_settings")
     .select("session_duration_minutes")
@@ -1049,37 +1064,41 @@ async function authorizeClient(
     { apMac: context.apMac || null, ssid: context.ssid || null, minutes: desiredMinutes },
   );
 
+  // Persist UniFi audit columns regardless of outcome
+  const auditUpdate: Record<string, unknown> = {};
+  if (result.cmd_accepted_at) auditUpdate.unifi_cmd_accepted_at = result.cmd_accepted_at;
+  if (result.last_verify_result) auditUpdate.unifi_last_verify_result = result.last_verify_result;
+
   if (result.ok) {
-    const update: Record<string, unknown> = {
+    Object.assign(auditUpdate, {
       status: "authorized",
       authorized_at: new Date().toISOString(),
       auth_latency_ms: result.latency_ms ?? null,
-    };
-    // If MAC was remapped (causa #1), preserve original and store the effective one
+    });
     if (result.effective_mac && result.effective_mac !== clientMac) {
-      update.original_client_mac = clientMac;
-      update.client_mac = result.effective_mac;
+      auditUpdate.original_client_mac = clientMac;
+      auditUpdate.client_mac = result.effective_mac;
     }
-    await db.from("captive_sessions").update(update).eq("id", sessionId);
+    await db.from("captive_sessions").update(auditUpdate).eq("id", sessionId);
     await db.from("audit_logs").insert({
       store_id: storeId, entity: "session", entity_id: sessionId,
       action: "authorize",
       meta: {
         mac: result.effective_mac || clientMac,
-        original_mac: result.effective_mac && result.effective_mac !== clientMac ? clientMac : undefined,
         ap_mac: result.ap_mac_used || context.apMac || null,
         store_slug: storeSlug, ip: clientIp,
         attempts: result.attempts, latency_ms: result.latency_ms,
       },
     });
-    return { ok: true };
+    return { ok: true, cmd_accepted_at: result.cmd_accepted_at, last_verify_result: result.last_verify_result || null };
   } else {
     const failReason = (result.reason || result.error || "UNKNOWN").slice(0, 500);
-    await db.from("captive_sessions").update({
+    Object.assign(auditUpdate, {
       status: "failed",
       fail_reason: failReason,
       auth_latency_ms: result.latency_ms ?? null,
-    }).eq("id", sessionId);
+    });
+    await db.from("captive_sessions").update(auditUpdate).eq("id", sessionId);
     await db.from("audit_logs").insert({
       store_id: storeId, entity: "session", entity_id: sessionId,
       action: "fail",
@@ -1088,14 +1107,28 @@ async function authorizeClient(
         mac: clientMac, ap_mac: context.apMac || null,
         store_slug: storeSlug, ip: clientIp,
         attempts: result.attempts, latency_ms: result.latency_ms,
+        weak_signal: result.weak_signal || false,
       },
     });
-    // User-actionable message for MAC randomization
-    const userMessage = result.reason === "MAC_RANDOMIZATION_AMBIGUOUS"
-      ? result.error
-      : undefined;
-    return { ok: false, reason: result.reason, userMessage };
+    const userMessage = result.reason === "MAC_RANDOMIZATION_AMBIGUOUS" ? result.error : undefined;
+    return {
+      ok: false, reason: result.reason, userMessage,
+      cmd_accepted_at: result.cmd_accepted_at,
+      last_verify_result: result.last_verify_result || null,
+    };
   }
+}
+
+/**
+ * Build the controller base URL for /guest/s/<site>/ fallback redirects.
+ * Preserves any path prefix the controller URL was configured with — we never
+ * silently drop it. If the controller is reachable only at the origin root,
+ * configure the controller URL accordingly.
+ */
+function getControllerBaseForGuestRedirect(controllerUrl: string): string {
+  const u = new URL(controllerUrl);
+  const path = u.pathname.replace(/\/+$/, "");
+  return `${u.origin}${path}`;
 }
 
 async function handleBootstrap(req: Request): Promise<Response> {
@@ -1129,7 +1162,10 @@ async function handleStart(req: Request): Promise<Response> {
   const db = supabaseAdmin();
 
   // Distributed rate limit
-  const rl = await checkRateLimitDb(db, `ip:${clientIp}`, 60, 20, 120);
+  // Captive portals frequently NAT many clients behind one public IP, so this
+  // limit is intentionally loose. Tighter limits live on per-phone request-code,
+  // per-session verify and per-MAC daily caps.
+  const rl = await checkRateLimitDb(db, `start:ip:${clientIp}`, 60, 100, 120);
   if (!rl.allowed) return errorResponse("Muitas requisições. Aguarde um momento.", 429);
 
   const body = await safeParseJson(req);
@@ -1651,9 +1687,9 @@ async function handleVerifyCode(req: Request): Promise<Response> {
 
   const resolvedStoreId = session ? (session.store_id || verification.store_id) : null;
 
-  // Build the UniFi Hotspot redirect ALWAYS when we have MAC + controller.
-  // Per CMD_ACCEPTED but unconfirmed scenarios, the browser hitting
-  // /guest/s/<site>/ lets the controller authorize the MAC the AP actually sees.
+  // Build the UniFi Hotspot fallback redirect when we have MAC + controller.
+  // Used ONLY when authorize confirmation didn't land — the browser hitting
+  // /guest/s/<site>/ lets the controller finalize the handshake.
   let unifiHotspotRedirect: string | null = null;
   if (resolvedStoreId && session?.client_mac && !dailyLimitReached) {
     const { data: store } = await db
@@ -1663,7 +1699,7 @@ async function handleVerifyCode(req: Request): Promise<Response> {
       .maybeSingle();
     if (store?.unifi_controller_url) {
       try {
-        const ctrlUrl = new URL(store.unifi_controller_url);
+        const ctrlBase = getControllerBaseForGuestRedirect(store.unifi_controller_url);
         const siteId = store.unifi_site_id || "default";
         const macWithColons = session.client_mac.toLowerCase().replace(/(.{2})(?=.)/g, "$1:");
         const apRaw = (session as { ap_mac?: string }).ap_mac || "";
@@ -1679,7 +1715,7 @@ async function handleVerifyCode(req: Request): Promise<Response> {
         for (const [k, v] of Array.from(params.entries())) {
           if (!v) params.delete(k);
         }
-        unifiHotspotRedirect = `${ctrlUrl.origin}/guest/s/${siteId}/?${params.toString()}`;
+        unifiHotspotRedirect = `${ctrlBase}/guest/s/${siteId}/?${params.toString()}`;
         console.log(`[unifi-auth] HOTSPOT_FALLBACK_REDIRECT url=${unifiHotspotRedirect}`);
       } catch (err) {
         console.warn(`[verify-code] Failed to build UniFi Hotspot redirect: ${(err as Error).message}`);
@@ -1687,10 +1723,20 @@ async function handleVerifyCode(req: Request): Promise<Response> {
     }
   }
 
-  const resolvedRedirectUrl = unifiHotspotRedirect || redirectUrl || session?.redirect_url || DEFAULT_REDIRECT_URL;
-  // Use hotspot redirect whenever we have one (whether authorized or pending confirmation).
-  const useHotspotRedirect = !!unifiHotspotRedirect;
-  const pendingUnifiConfirmation = !authorized && useHotspotRedirect && !dailyLimitReached;
+  // Persist fallback URL for traceability (always — even if we end up not using it)
+  if (unifiHotspotRedirect) {
+    await db.from("captive_sessions")
+      .update({ unifi_fallback_redirect_url: unifiHotspotRedirect })
+      .eq("id", sessionId as string);
+  }
+
+  // Hotspot redirect is ONLY used as a fallback when /stat/sta did NOT confirm
+  // authorized=true. When authorized=true we keep the normal post-auth URL.
+  const useHotspotRedirect = !authorized && !!unifiHotspotRedirect && !dailyLimitReached;
+  const resolvedRedirectUrl = useHotspotRedirect
+    ? (unifiHotspotRedirect as string)
+    : (redirectUrl || session?.redirect_url || DEFAULT_REDIRECT_URL);
+  const pendingUnifiConfirmation = !authorized && useHotspotRedirect;
 
   // Mark verification as completed once OTP is correct AND we have a path forward
   // (either confirmed authorization or a hotspot fallback redirect to finalize it).
