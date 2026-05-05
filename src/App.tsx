@@ -199,20 +199,28 @@ export default function App() {
       if (result.error) {
         setError(result.error);
         setOtpCode("");
-      } else if (result.authorized) {
+        setVerifying(false);
+        return;
+      }
+
+      // Hotspot redirect has PRIORITY over authorized flag — backend already
+      // accepted the OTP, and the UniFi controller will finalize liberation
+      // when the browser hits /guest/s/<site>/.
+      if (result.use_hotspot_redirect && result.redirect_url) {
+        setSuccessMsg(result.message || "Finalizando liberação do Wi-Fi...");
+        setRedirectUrl(result.redirect_url);
+        setStep("success");
+        setTimeout(() => { window.location.href = result.redirect_url; }, 800);
+        return;
+      }
+
+      if (result.authorized) {
         setSuccessMsg(result.message || "Conectado com sucesso!");
         const finalUrl = result.redirect_url || redirectUrl;
         setRedirectUrl(finalUrl);
         setStep("success");
-
-        // CRITICAL: when backend says use_hotspot_redirect, navigate to the UniFi
-        // controller's /guest/s/<site>/ endpoint. The controller will authorize
-        // the MAC the AP actually sees (solves Android MAC randomization issue).
-        if (result.use_hotspot_redirect && finalUrl) {
-          setTimeout(() => { window.location.href = finalUrl; }, 1200);
-        }
       } else {
-        setError(result.message || "Código verificado, mas o UniFi ainda não confirmou a liberação. Tente novamente.");
+        setError(result.message || "Cadastro confirmado, mas o UniFi não confirmou a liberação. Desconecte e conecte novamente à rede ou procure atendimento.");
         setOtpCode("");
       }
     } catch {
