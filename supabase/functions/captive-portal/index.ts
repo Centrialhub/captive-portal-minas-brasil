@@ -701,13 +701,16 @@ function pickEffectiveMac(
   const exact = stations.find((s) => (s.mac || "").toLowerCase() === target);
   if (exact) return { mac: target, remapped: false, candidateCount: 1 };
 
+  // Strict remap window: only if exactly 1 unauthorized candidate on the
+  // same AP+SSID in the last 2 minutes. UniFi's `id` URL param is the source
+  // of truth; remapping is only a last-resort fallback.
   const apNorm = (apMac || "").toLowerCase().replace(/[^a-f0-9]/g, "");
-  const cutoff = Math.floor(Date.now() / 1000) - 5 * 60; // last 5 minutes
+  const cutoff = Math.floor(Date.now() / 1000) - 2 * 60;
   const candidates = stations.filter((s) => {
     if (s.authorized === true) return false;
     if (apNorm) {
       const sa = (s.ap_mac || "").toLowerCase().replace(/[^a-f0-9]/g, "");
-      if (sa && sa !== apNorm) return false;
+      if (!sa || sa !== apNorm) return false;
     }
     if (ssid && s.essid && s.essid !== ssid) return false;
     if (typeof s.assoc_time === "number" && s.assoc_time < cutoff) return false;
