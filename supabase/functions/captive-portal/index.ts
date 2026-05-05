@@ -871,6 +871,7 @@ async function unifiAuthorizeByMac(
     let activeUrl = "";
     let lastError = "";
     let cmdSentAt = 0;
+    let cmdAcceptedAtIso: string | undefined;
     let usedMinutes = desiredMinutes;
     let policyOverride = false;
 
