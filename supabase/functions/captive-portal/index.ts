@@ -1140,9 +1140,13 @@ async function handleStart(req: Request): Promise<Response> {
 
   const mac = normalizeMac(body.client_mac);
   const apMac = normalizeMac(body.ap_mac);
+  const captiveTimestamp = sanitizeString(body.captive_timestamp, 32);
+  const originalUnifiParams = (body.original_unifi_url_params && typeof body.original_unifi_url_params === "object")
+    ? body.original_unifi_url_params
+    : null;
 
-  // Diagnostic: log raw vs normalized MAC and full URL params for tracing portal flow
   const reqUrl = new URL(req.url);
+  console.log(`[portal-params] id=${mac} ap=${apMac} ssid=${body.ssid} url=${body.redirect_url} t=${captiveTimestamp} site=${body.site}`);
   console.log(`[start] raw_client_mac="${body.client_mac}" normalized="${mac}" raw_ap_mac="${body.ap_mac}" ssid="${body.ssid}" ua="${(req.headers.get("user-agent") || "").slice(0, 80)}" all_params=${JSON.stringify(Object.fromEntries(reqUrl.searchParams))}`);
 
   const { data: session, error } = await db
@@ -1155,6 +1159,8 @@ async function handleStart(req: Request): Promise<Response> {
       ssid: sanitizeString(body.ssid, 64),
       user_agent: sanitizeString(body.user_agent, 500) || req.headers.get("user-agent")?.slice(0, 500),
       redirect_url: sanitizeString(body.redirect_url, 2000),
+      captive_timestamp: captiveTimestamp,
+      original_unifi_url_params: originalUnifiParams,
       status: "started",
     })
     .select("id")
