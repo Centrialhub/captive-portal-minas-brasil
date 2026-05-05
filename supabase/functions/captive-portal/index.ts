@@ -2387,8 +2387,13 @@ async function handleCronHousekeeping(req: Request): Promise<Response> {
 async function handlePortalHtml(req: Request, url: URL): Promise<Response> {
   const API_BASE = `${SUPABASE_URL}/functions/v1/captive-portal`;
   const qp = url.searchParams;
-  const clientMac = (qp.get("id") || qp.get("mac") || "").replace(/'/g, "");
-  const redirectParam = (qp.get("url") || "").replace(/'/g, "");
+  const clientMac = (qp.get("id") || qp.get("mac") || "").replace(/['"<>]/g, "");
+  const apMac = (qp.get("ap") || "").replace(/['"<>]/g, "");
+  const ssidParam = (qp.get("ssid") || "").replace(/['"<>]/g, "");
+  const redirectParam = (qp.get("url") || "").replace(/['"<>]/g, "");
+  const tParam = (qp.get("t") || "").replace(/['"<>]/g, "");
+  const siteParam = (qp.get("site") || "").replace(/['"<>]/g, "");
+  const rawQuery = (url.search || "").replace(/^\?/, "").replace(/['"<>]/g, "");
   const year = new Date().getFullYear();
 
   const html = `<!DOCTYPE html>
