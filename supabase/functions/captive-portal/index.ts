@@ -1162,7 +1162,10 @@ async function handleStart(req: Request): Promise<Response> {
   const db = supabaseAdmin();
 
   // Distributed rate limit
-  const rl = await checkRateLimitDb(db, `ip:${clientIp}`, 60, 20, 120);
+  // Captive portals frequently NAT many clients behind one public IP, so this
+  // limit is intentionally loose. Tighter limits live on per-phone request-code,
+  // per-session verify and per-MAC daily caps.
+  const rl = await checkRateLimitDb(db, `start:ip:${clientIp}`, 60, 100, 120);
   if (!rl.allowed) return errorResponse("Muitas requisições. Aguarde um momento.", 429);
 
   const body = await safeParseJson(req);
