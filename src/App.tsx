@@ -128,6 +128,17 @@ export default function App() {
         ap_mac: params.ap_mac,
         ssid: params.ssid,
         redirect_url: params.redirect_url,
+        captive_timestamp: params.captive_timestamp,
+        site: params.site,
+        original_unifi_url_params: {
+          id: params.client_mac,
+          ap: params.ap_mac,
+          ssid: params.ssid,
+          url: params.redirect_url,
+          t: params.captive_timestamp,
+          site: params.site,
+          raw_query: params.raw_query,
+        },
         user_agent: navigator.userAgent,
       });
       const result = await api.submitLead(payload);
