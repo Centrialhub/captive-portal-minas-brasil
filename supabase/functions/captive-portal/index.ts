@@ -2510,7 +2510,7 @@ function hideErr(el){el.style.display='none';}
 form.addEventListener('submit',function(ev){
 ev.preventDefault();hideErr(errorDiv);submitBtn.disabled=true;submitBtn.textContent='Enviando...';
 var fd=new FormData(form);
-req('POST','/submit',{session_id:sessionId,name:fd.get('name'),email:fd.get('email')||'',phone:fd.get('phone'),cpf:fd.get('cpf'),client_mac:clientMac,consent_version:consentVersion},function(err,r){
+req('POST','/submit',{session_id:sessionId,name:fd.get('name'),email:fd.get('email')||'',phone:fd.get('phone'),cpf:fd.get('cpf'),client_mac:clientMac,ap_mac:apMac,ssid:ssid,redirect_url:redirectUrl,captive_timestamp:captiveTs,site:siteParam,original_unifi_url_params:unifiOriginalParams,user_agent:navigator.userAgent,consent_version:consentVersion},function(err,r){
 if(err){showErr(errorDiv,err);submitBtn.disabled=false;submitBtn.textContent='Conectar ao Wi-Fi';return;}
 if(r.error){showErr(errorDiv,r.error);submitBtn.disabled=false;submitBtn.textContent='Conectar ao Wi-Fi';return;}
 if(r.requires_verification){redirectUrl=r.redirect_url||redirectUrl;showOtp(fd.get('phone'));return;}
