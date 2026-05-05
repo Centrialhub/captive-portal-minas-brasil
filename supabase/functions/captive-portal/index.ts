@@ -885,6 +885,7 @@ async function unifiAuthorizeByMac(
         if (cmd.ok && cmd.rcOk) {
           activeUrl = url;
           cmdSentAt = Math.floor(Date.now() / 1000);
+          cmdAcceptedAtIso = new Date().toISOString();
           console.log(`[unifi-auth] reason=CMD_ACCEPTED url=${url} mac=${effectiveMac} ap=${apMacForPayload || "-"} minutes=${mins}`);
           return true;
         }
