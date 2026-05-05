@@ -1687,9 +1687,9 @@ async function handleVerifyCode(req: Request): Promise<Response> {
 
   const resolvedStoreId = session ? (session.store_id || verification.store_id) : null;
 
-  // Build the UniFi Hotspot redirect ALWAYS when we have MAC + controller.
-  // Per CMD_ACCEPTED but unconfirmed scenarios, the browser hitting
-  // /guest/s/<site>/ lets the controller authorize the MAC the AP actually sees.
+  // Build the UniFi Hotspot fallback redirect when we have MAC + controller.
+  // Used ONLY when authorize confirmation didn't land — the browser hitting
+  // /guest/s/<site>/ lets the controller finalize the handshake.
   let unifiHotspotRedirect: string | null = null;
   if (resolvedStoreId && session?.client_mac && !dailyLimitReached) {
     const { data: store } = await db
@@ -1699,7 +1699,7 @@ async function handleVerifyCode(req: Request): Promise<Response> {
       .maybeSingle();
     if (store?.unifi_controller_url) {
       try {
-        const ctrlUrl = new URL(store.unifi_controller_url);
+        const ctrlBase = getControllerBaseForGuestRedirect(store.unifi_controller_url);
         const siteId = store.unifi_site_id || "default";
         const macWithColons = session.client_mac.toLowerCase().replace(/(.{2})(?=.)/g, "$1:");
         const apRaw = (session as { ap_mac?: string }).ap_mac || "";
@@ -1715,7 +1715,7 @@ async function handleVerifyCode(req: Request): Promise<Response> {
         for (const [k, v] of Array.from(params.entries())) {
           if (!v) params.delete(k);
         }
-        unifiHotspotRedirect = `${ctrlUrl.origin}/guest/s/${siteId}/?${params.toString()}`;
+        unifiHotspotRedirect = `${ctrlBase}/guest/s/${siteId}/?${params.toString()}`;
         console.log(`[unifi-auth] HOTSPOT_FALLBACK_REDIRECT url=${unifiHotspotRedirect}`);
       } catch (err) {
         console.warn(`[verify-code] Failed to build UniFi Hotspot redirect: ${(err as Error).message}`);
@@ -1723,10 +1723,20 @@ async function handleVerifyCode(req: Request): Promise<Response> {
     }
   }
 
-  const resolvedRedirectUrl = unifiHotspotRedirect || redirectUrl || session?.redirect_url || DEFAULT_REDIRECT_URL;
-  // Use hotspot redirect whenever we have one (whether authorized or pending confirmation).
-  const useHotspotRedirect = !!unifiHotspotRedirect;
-  const pendingUnifiConfirmation = !authorized && useHotspotRedirect && !dailyLimitReached;
+  // Persist fallback URL for traceability (always — even if we end up not using it)
+  if (unifiHotspotRedirect) {
+    await db.from("captive_sessions")
+      .update({ unifi_fallback_redirect_url: unifiHotspotRedirect })
+      .eq("id", sessionId as string);
+  }
+
+  // Hotspot redirect is ONLY used as a fallback when /stat/sta did NOT confirm
+  // authorized=true. When authorized=true we keep the normal post-auth URL.
+  const useHotspotRedirect = !authorized && !!unifiHotspotRedirect && !dailyLimitReached;
+  const resolvedRedirectUrl = useHotspotRedirect
+    ? (unifiHotspotRedirect as string)
+    : (redirectUrl || session?.redirect_url || DEFAULT_REDIRECT_URL);
+  const pendingUnifiConfirmation = !authorized && useHotspotRedirect;
 
   // Mark verification as completed once OTP is correct AND we have a path forward
   // (either confirmed authorization or a hotspot fallback redirect to finalize it).
