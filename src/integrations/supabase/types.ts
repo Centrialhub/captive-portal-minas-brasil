@@ -49,11 +49,13 @@ export type Database = {
           ap_mac: string | null
           auth_latency_ms: number | null
           authorized_at: string | null
+          captive_timestamp: string | null
           client_ip: string | null
           client_mac: string | null
           fail_reason: string | null
           id: string
           original_client_mac: string | null
+          original_unifi_url_params: Json | null
           redirect_url: string | null
           ssid: string | null
           started_at: string
@@ -67,11 +69,13 @@ export type Database = {
           ap_mac?: string | null
           auth_latency_ms?: number | null
           authorized_at?: string | null
+          captive_timestamp?: string | null
           client_ip?: string | null
           client_mac?: string | null
           fail_reason?: string | null
           id?: string
           original_client_mac?: string | null
+          original_unifi_url_params?: Json | null
           redirect_url?: string | null
           ssid?: string | null
           started_at?: string
@@ -85,11 +89,13 @@ export type Database = {
           ap_mac?: string | null
           auth_latency_ms?: number | null
           authorized_at?: string | null
+          captive_timestamp?: string | null
           client_ip?: string | null
           client_mac?: string | null
           fail_reason?: string | null
           id?: string
           original_client_mac?: string | null
+          original_unifi_url_params?: Json | null
           redirect_url?: string | null
           ssid?: string | null
           started_at?: string

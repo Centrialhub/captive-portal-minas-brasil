@@ -1,6 +1,5 @@
 /**
  * Shared utilities for the captive portal.
- * Used by both React (App.tsx) and can be referenced for the HTML fallback logic.
  */
 
 export function getApiBase(): string {
@@ -11,13 +10,26 @@ export function getApiBase(): string {
   return "https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal";
 }
 
-export function getQueryParams() {
+export interface UnifiQueryParams {
+  client_mac?: string;
+  ap_mac?: string;
+  ssid?: string;
+  redirect_url?: string;
+  captive_timestamp?: string;
+  site?: string;
+  raw_query?: string;
+}
+
+export function getQueryParams(): UnifiQueryParams {
   const p = new URLSearchParams(window.location.search);
   return {
     client_mac: p.get("id") || p.get("mac") || undefined,
     ap_mac: p.get("ap") || undefined,
     ssid: p.get("ssid") || undefined,
     redirect_url: p.get("url") || undefined,
+    captive_timestamp: p.get("t") || undefined,
+    site: p.get("site") || undefined,
+    raw_query: window.location.search.replace(/^\?/, "") || undefined,
   };
 }
 
@@ -30,13 +42,14 @@ export function buildSubmitPayload(fields: {
   client_mac?: string;
   consent_version: string;
 }) {
+  const q = getQueryParams();
   return {
     session_id: fields.session_id || undefined,
     name: fields.name,
     email: fields.email || "",
     phone: fields.phone,
     cpf: fields.cpf,
-    client_mac: fields.client_mac || getQueryParams().client_mac || "",
+    client_mac: fields.client_mac || q.client_mac || "",
     consent_version: fields.consent_version,
   };
 }

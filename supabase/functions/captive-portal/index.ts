@@ -701,13 +701,16 @@ function pickEffectiveMac(
   const exact = stations.find((s) => (s.mac || "").toLowerCase() === target);
   if (exact) return { mac: target, remapped: false, candidateCount: 1 };
 
+  // Strict remap window: only if exactly 1 unauthorized candidate on the
+  // same AP+SSID in the last 2 minutes. UniFi's `id` URL param is the source
+  // of truth; remapping is only a last-resort fallback.
   const apNorm = (apMac || "").toLowerCase().replace(/[^a-f0-9]/g, "");
-  const cutoff = Math.floor(Date.now() / 1000) - 5 * 60; // last 5 minutes
+  const cutoff = Math.floor(Date.now() / 1000) - 2 * 60;
   const candidates = stations.filter((s) => {
     if (s.authorized === true) return false;
     if (apNorm) {
       const sa = (s.ap_mac || "").toLowerCase().replace(/[^a-f0-9]/g, "");
-      if (sa && sa !== apNorm) return false;
+      if (!sa || sa !== apNorm) return false;
     }
     if (ssid && s.essid && s.essid !== ssid) return false;
     if (typeof s.assoc_time === "number" && s.assoc_time < cutoff) return false;
@@ -1137,9 +1140,13 @@ async function handleStart(req: Request): Promise<Response> {
 
   const mac = normalizeMac(body.client_mac);
   const apMac = normalizeMac(body.ap_mac);
+  const captiveTimestamp = sanitizeString(body.captive_timestamp, 32);
+  const originalUnifiParams = (body.original_unifi_url_params && typeof body.original_unifi_url_params === "object")
+    ? body.original_unifi_url_params
+    : null;
 
-  // Diagnostic: log raw vs normalized MAC and full URL params for tracing portal flow
   const reqUrl = new URL(req.url);
+  console.log(`[portal-params] id=${mac} ap=${apMac} ssid=${body.ssid} url=${body.redirect_url} t=${captiveTimestamp} site=${body.site}`);
   console.log(`[start] raw_client_mac="${body.client_mac}" normalized="${mac}" raw_ap_mac="${body.ap_mac}" ssid="${body.ssid}" ua="${(req.headers.get("user-agent") || "").slice(0, 80)}" all_params=${JSON.stringify(Object.fromEntries(reqUrl.searchParams))}`);
 
   const { data: session, error } = await db
@@ -1152,6 +1159,8 @@ async function handleStart(req: Request): Promise<Response> {
       ssid: sanitizeString(body.ssid, 64),
       user_agent: sanitizeString(body.user_agent, 500) || req.headers.get("user-agent")?.slice(0, 500),
       redirect_url: sanitizeString(body.redirect_url, 2000),
+      captive_timestamp: captiveTimestamp,
+      original_unifi_url_params: originalUnifiParams,
       status: "started",
     })
     .select("id")
@@ -1206,6 +1215,12 @@ async function handleSubmit(req: Request): Promise<Response> {
   const storeSlug = detected.store_slug;
   const redirectUrl = detected.redirect_url;
 
+  const submitCaptiveTs = sanitizeString(body.captive_timestamp, 32);
+  const submitUnifiParams = (body.original_unifi_url_params && typeof body.original_unifi_url_params === "object")
+    ? body.original_unifi_url_params
+    : null;
+  console.log(`[portal-params] (submit) id=${clientMac} ap=${normalizeMac(body.ap_mac)} ssid=${body.ssid} url=${body.redirect_url} t=${submitCaptiveTs}`);
+
   // Captive assistants can lose API responses. /submit is therefore the source
   // of truth: if the frontend supplied a UUID, guarantee that session exists;
   // otherwise create one here so the OTP table can be reached.
@@ -1228,6 +1243,8 @@ async function handleSubmit(req: Request): Promise<Response> {
           ssid: sanitizeString(body.ssid, 64),
           user_agent: sanitizeString(body.user_agent, 500) || req.headers.get("user-agent")?.slice(0, 500),
           redirect_url: sanitizeString(body.redirect_url, 2000),
+          captive_timestamp: submitCaptiveTs,
+          original_unifi_url_params: submitUnifiParams,
           status: "started",
         });
       if (sessionError) {
@@ -1235,6 +1252,19 @@ async function handleSubmit(req: Request): Promise<Response> {
         return errorResponse("Erro ao iniciar sessão. Tente novamente.", 500);
       }
       console.log(`[submit] created supplied session=${sessionId}`);
+    } else {
+      // Backfill UniFi fields if the existing session was created without them.
+      const updateFields: Record<string, unknown> = {};
+      if (clientMac) updateFields.client_mac = clientMac;
+      const apMacNorm = normalizeMac(body.ap_mac);
+      if (apMacNorm) updateFields.ap_mac = apMacNorm;
+      if (body.ssid) updateFields.ssid = sanitizeString(body.ssid, 64);
+      if (body.redirect_url) updateFields.redirect_url = sanitizeString(body.redirect_url, 2000);
+      if (submitCaptiveTs) updateFields.captive_timestamp = submitCaptiveTs;
+      if (submitUnifiParams) updateFields.original_unifi_url_params = submitUnifiParams;
+      if (Object.keys(updateFields).length > 0) {
+        await db.from("captive_sessions").update(updateFields).eq("id", sessionId).then(() => {}, () => {});
+      }
     }
   } else {
     const { data: recoveredSession, error: sessionError } = await db
@@ -1247,6 +1277,8 @@ async function handleSubmit(req: Request): Promise<Response> {
         ssid: sanitizeString(body.ssid, 64),
         user_agent: sanitizeString(body.user_agent, 500) || req.headers.get("user-agent")?.slice(0, 500),
         redirect_url: sanitizeString(body.redirect_url, 2000),
+        captive_timestamp: submitCaptiveTs,
+        original_unifi_url_params: submitUnifiParams,
         status: "started",
       })
       .select("id")
@@ -1558,13 +1590,14 @@ async function handleVerifyCode(req: Request): Promise<Response> {
   // Authorize client via UniFi
   const { data: session } = await db
     .from("captive_sessions")
-    .select("client_mac, ap_mac, ssid, store_id, redirect_url")
+    .select("client_mac, ap_mac, ssid, store_id, redirect_url, captive_timestamp")
     .eq("id", sessionId as string)
     .maybeSingle();
 
   let authorized = false;
   let authUserMessage: string | undefined;
   let redirectUrl: string | null = null;
+  let dailyLimitReached = false;
 
   if (session) {
     const storeId = session.store_id || verification.store_id;
@@ -1579,7 +1612,7 @@ async function handleVerifyCode(req: Request): Promise<Response> {
     }
 
     if (storeId && session.client_mac) {
-      // Check daily authorization limit (max 2 per MAC per day)
+      // Daily limit (max 2/day per MAC)
       const todayStart = new Date();
       todayStart.setUTCHours(0, 0, 0, 0);
       const { count: dailyAuthCount } = await db
@@ -1590,6 +1623,7 @@ async function handleVerifyCode(req: Request): Promise<Response> {
         .gte("authorized_at", todayStart.toISOString());
 
       if ((dailyAuthCount ?? 0) >= 2) {
+        dailyLimitReached = true;
         console.warn(`[verify-code] Daily auth limit reached for MAC ${session.client_mac} (count=${dailyAuthCount})`);
         await db.from("captive_sessions")
           .update({ status: "failed", fail_reason: "DAILY_LIMIT_REACHED" })
@@ -1607,11 +1641,8 @@ async function handleVerifyCode(req: Request): Promise<Response> {
         }
       }
     } else {
-      // Log why authorization was skipped
       const reason = !storeId ? "store_id missing" : "client_mac missing";
       console.warn(`[verify-code] UniFi authorization skipped: ${reason} (session=${sessionId})`);
-
-      // Mark as "submitted" (verified but not authorized) instead of falsely "authorized"
       await db.from("captive_sessions")
         .update({ status: "submitted", fail_reason: `SKIPPED:${reason}` })
         .eq("id", sessionId as string);
@@ -1620,13 +1651,11 @@ async function handleVerifyCode(req: Request): Promise<Response> {
 
   const resolvedStoreId = session ? (session.store_id || verification.store_id) : null;
 
-  // Build UniFi Hotspot redirect URL — this is the KEY fix for MAC randomization issue.
-  // Instead of relying on API-based MAC authorization (which fails when Android randomizes
-  // the MAC between the captive webview and the actual Wi-Fi association), we redirect the
-  // browser to the controller's /guest/s/<site>/ endpoint. The controller then authorizes
-  // using the MAC the AP ACTUALLY SEES at that moment.
+  // Build the UniFi Hotspot redirect ALWAYS when we have MAC + controller.
+  // Per CMD_ACCEPTED but unconfirmed scenarios, the browser hitting
+  // /guest/s/<site>/ lets the controller authorize the MAC the AP actually sees.
   let unifiHotspotRedirect: string | null = null;
-  if (resolvedStoreId && session?.client_mac) {
+  if (resolvedStoreId && session?.client_mac && !dailyLimitReached) {
     const { data: store } = await db
       .from("stores")
       .select("unifi_controller_url, unifi_site_id")
@@ -1636,28 +1665,22 @@ async function handleVerifyCode(req: Request): Promise<Response> {
       try {
         const ctrlUrl = new URL(store.unifi_controller_url);
         const siteId = store.unifi_site_id || "default";
-        // Format MAC with colons (UniFi expects aa:bb:cc:dd:ee:ff)
         const macWithColons = session.client_mac.toLowerCase().replace(/(.{2})(?=.)/g, "$1:");
+        const apRaw = (session as { ap_mac?: string }).ap_mac || "";
+        const apWithColons = apRaw ? apRaw.toLowerCase().replace(/(.{2})(?=.)/g, "$1:") : "";
+        const captiveTs = (session as { captive_timestamp?: string }).captive_timestamp || String(Math.floor(Date.now() / 1000));
         const params = new URLSearchParams({
           id: macWithColons,
-          ap: (session as { ap_mac?: string }).ap_mac
-            ? ((session as { ap_mac?: string }).ap_mac as string).toLowerCase().replace(/(.{2})(?=.)/g, "$1:")
-            : "",
+          ap: apWithColons,
           ssid: (session as { ssid?: string }).ssid || "",
-          t: String(Math.floor(Date.now() / 1000)),
+          t: captiveTs,
           url: redirectUrl || session?.redirect_url || DEFAULT_REDIRECT_URL,
         });
-        // Strip empty values
         for (const [k, v] of Array.from(params.entries())) {
           if (!v) params.delete(k);
         }
         unifiHotspotRedirect = `${ctrlUrl.origin}/guest/s/${siteId}/?${params.toString()}`;
-        if (authorized) {
-          console.log(`[verify-code] UniFi Hotspot redirect built: ${unifiHotspotRedirect}`);
-        } else {
-          console.warn(`[verify-code] Hotspot redirect suppressed because UniFi authorization was not confirmed (session=${sessionId})`);
-          unifiHotspotRedirect = null;
-        }
+        console.log(`[unifi-auth] HOTSPOT_FALLBACK_REDIRECT url=${unifiHotspotRedirect}`);
       } catch (err) {
         console.warn(`[verify-code] Failed to build UniFi Hotspot redirect: ${(err as Error).message}`);
       }
@@ -1665,34 +1688,40 @@ async function handleVerifyCode(req: Request): Promise<Response> {
   }
 
   const resolvedRedirectUrl = unifiHotspotRedirect || redirectUrl || session?.redirect_url || DEFAULT_REDIRECT_URL;
+  // Use hotspot redirect whenever we have one (whether authorized or pending confirmation).
+  const useHotspotRedirect = !!unifiHotspotRedirect;
+  const pendingUnifiConfirmation = !authorized && useHotspotRedirect && !dailyLimitReached;
 
-  // Check if daily limit was the reason for no authorization
-  const dailyLimitReached = !authorized && session?.client_mac && resolvedStoreId
-    ? (await db.from("captive_sessions").select("fail_reason").eq("id", sessionId as string).maybeSingle())?.data?.fail_reason === "DAILY_LIMIT_REACHED"
-    : false;
-
-  let message: string;
-  if (authorized) {
+  // Mark verification as completed once OTP is correct AND we have a path forward
+  // (either confirmed authorization or a hotspot fallback redirect to finalize it).
+  if (authorized || pendingUnifiConfirmation) {
     await db.from("captive_verifications").update({
       status: "verified",
       verified_at: new Date().toISOString(),
     }).eq("id", verification.id);
+  }
+
+  let message: string;
+  if (authorized) {
     message = "Conectado! Acesso liberado com sucesso.";
   } else if (dailyLimitReached) {
     message = "Você atingiu o limite de 2 acessos por dia. Tente novamente amanhã.";
+  } else if (pendingUnifiConfirmation) {
+    message = "Código confirmado. Finalizando liberação do Wi-Fi...";
   } else if (!session?.client_mac) {
     message = "Cadastro salvo! Para liberar o WiFi, reconecte à rede.";
   } else if (authUserMessage) {
     message = authUserMessage;
   } else {
-    message = "Cadastro salvo! Houve um problema na liberação automática. Tente reconectar ao WiFi.";
+    message = "Cadastro confirmado, mas o UniFi não confirmou a liberação. Desconecte e conecte novamente à rede ou procure atendimento.";
   }
 
   return jsonResponse({
     ok: true,
     authorized,
+    pending_unifi_confirmation: pendingUnifiConfirmation,
     redirect_url: resolvedRedirectUrl,
-    use_hotspot_redirect: authorized && !!unifiHotspotRedirect,
+    use_hotspot_redirect: useHotspotRedirect,
     message,
   });
 }
@@ -2358,8 +2387,13 @@ async function handleCronHousekeeping(req: Request): Promise<Response> {
 async function handlePortalHtml(req: Request, url: URL): Promise<Response> {
   const API_BASE = `${SUPABASE_URL}/functions/v1/captive-portal`;
   const qp = url.searchParams;
-  const clientMac = (qp.get("id") || qp.get("mac") || "").replace(/'/g, "");
-  const redirectParam = (qp.get("url") || "").replace(/'/g, "");
+  const clientMac = (qp.get("id") || qp.get("mac") || "").replace(/['"<>]/g, "");
+  const apMac = (qp.get("ap") || "").replace(/['"<>]/g, "");
+  const ssidParam = (qp.get("ssid") || "").replace(/['"<>]/g, "");
+  const redirectParam = (qp.get("url") || "").replace(/['"<>]/g, "");
+  const tParam = (qp.get("t") || "").replace(/['"<>]/g, "");
+  const siteParam = (qp.get("site") || "").replace(/['"<>]/g, "");
+  const rawQuery = (url.search || "").replace(/^\?/, "").replace(/['"<>]/g, "");
   const year = new Date().getFullYear();
 
   const html = `<!DOCTYPE html>
@@ -2440,6 +2474,12 @@ details p{padding:0 12px 12px;font-size:11px;color:#888;line-height:1.5}
 var API='';
 var FALLBACK_API='${API_BASE}';
 var clientMac='${clientMac}';
+var apMac='${apMac}';
+var ssid='${ssidParam}';
+var captiveTs='${tParam}';
+var siteParam='${siteParam}';
+var rawQuery='${rawQuery}';
+var unifiOriginalParams={id:clientMac,ap:apMac,ssid:ssid,url:'${redirectParam}',t:captiveTs,site:siteParam,raw_query:rawQuery};
 var sessionId=null;
 var consentVersion='offline-fallback';
 var redirectUrl='${redirectParam}'||null;
@@ -2464,13 +2504,13 @@ req('GET','/bootstrap',null,function(e,d){
 if(d&&d.store&&d.store.name){document.getElementById('store-info').textContent=d.store.city?d.store.name+' \\u2014 '+d.store.city:d.store.name;}
 if(d&&d.consent){document.getElementById('consent-text').textContent=d.consent.text;consentVersion=d.consent.version||consentVersion;}
 },5000);
-req('POST','/start',{client_mac:clientMac,user_agent:navigator.userAgent},function(e,d){if(d&&d.session_id)sessionId=d.session_id;},6000);
+req('POST','/start',{client_mac:clientMac,ap_mac:apMac,ssid:ssid,redirect_url:redirectUrl,captive_timestamp:captiveTs,site:siteParam,original_unifi_url_params:unifiOriginalParams,user_agent:navigator.userAgent},function(e,d){if(d&&d.session_id)sessionId=d.session_id;},6000);
 function showErr(el,m){el.textContent=m;el.style.display='block';}
 function hideErr(el){el.style.display='none';}
 form.addEventListener('submit',function(ev){
 ev.preventDefault();hideErr(errorDiv);submitBtn.disabled=true;submitBtn.textContent='Enviando...';
 var fd=new FormData(form);
-req('POST','/submit',{session_id:sessionId,name:fd.get('name'),email:fd.get('email')||'',phone:fd.get('phone'),cpf:fd.get('cpf'),client_mac:clientMac,consent_version:consentVersion},function(err,r){
+req('POST','/submit',{session_id:sessionId,name:fd.get('name'),email:fd.get('email')||'',phone:fd.get('phone'),cpf:fd.get('cpf'),client_mac:clientMac,ap_mac:apMac,ssid:ssid,redirect_url:redirectUrl,captive_timestamp:captiveTs,site:siteParam,original_unifi_url_params:unifiOriginalParams,user_agent:navigator.userAgent,consent_version:consentVersion},function(err,r){
 if(err){showErr(errorDiv,err);submitBtn.disabled=false;submitBtn.textContent='Conectar ao Wi-Fi';return;}
 if(r.error){showErr(errorDiv,r.error);submitBtn.disabled=false;submitBtn.textContent='Conectar ao Wi-Fi';return;}
 if(r.requires_verification){redirectUrl=r.redirect_url||redirectUrl;showOtp(fd.get('phone'));return;}
@@ -2495,7 +2535,8 @@ var oe=document.getElementById('otp-error');hideErr(oe);
 req('POST','/verify-code',{session_id:sessionId,code:code},function(err,r){
 if(err){showErr(oe,err);btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';return;}
 if(r.error){showErr(oe,r.error);btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';document.querySelectorAll('.otp-input').forEach(function(i){i.value='';});document.querySelector('.otp-input').focus();return;}
-if(!r.authorized){showErr(oe,r.message||'C\\u00f3digo verificado, mas o UniFi ainda n\\u00e3o confirmou a libera\\u00e7\\u00e3o. Tente novamente.');btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';document.querySelectorAll('.otp-input').forEach(function(i){i.value='';});document.querySelector('.otp-input').focus();return;}
+if(r.use_hotspot_redirect&&r.redirect_url){redirectUrl=r.redirect_url;showSuccess(r.message||'Finalizando libera\\u00e7\\u00e3o do Wi-Fi...',true);setTimeout(function(){location.replace(r.redirect_url);},800);return;}
+if(!r.authorized){showErr(oe,r.message||'Cadastro confirmado, mas o UniFi n\\u00e3o confirmou a libera\\u00e7\\u00e3o. Desconecte e conecte novamente \\u00e0 rede.');btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';document.querySelectorAll('.otp-input').forEach(function(i){i.value='';});document.querySelector('.otp-input').focus();return;}
 redirectUrl=r.redirect_url||redirectUrl;showSuccess(r.message||'Conectado com sucesso!',true);
 });
 });
