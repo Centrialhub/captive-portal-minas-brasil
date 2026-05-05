@@ -651,6 +651,9 @@ type UnifiAuthResult = {
   effective_mac?: string; // MAC actually authorized (may differ from input)
   ap_mac_used?: string | null;
   latency_ms?: number;
+  cmd_accepted_at?: string; // ISO when controller accepted authorize-guest
+  last_verify_result?: Record<string, unknown>; // diagnostic snapshot
+  weak_signal?: boolean; // station has IP/is_guest/recentAssoc but authorized!=true
 };
 
 function isJsonContentType(res: Response): boolean {
