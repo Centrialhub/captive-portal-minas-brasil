@@ -619,9 +619,11 @@ async function unifiLogin(
   return { ok: false, error: `OS: ${osResult.error} | Legacy: ${legacyResult.error}` };
 }
 
-// Polling backoff for /stat/sta confirmation (~20s total across 10 attempts)
-const VERIFY_BACKOFF_MS = [500, 750, 1000, 1500, 2000, 2000, 2500, 3000, 3000, 3500];
-const RESEND_AFTER_ATTEMPT = 5; // re-emit authorize-guest if not confirmed by attempt 5
+// Polling backoff for /stat/sta confirmation (~3s total across 3 attempts).
+// Captive assistants typically time out around 5-10s, so we keep this short
+// and rely on the hotspot fallback redirect for the final handshake.
+const VERIFY_BACKOFF_MS = [500, 1000, 1500];
+const RESEND_AFTER_ATTEMPT = 999; // disable mid-poll re-emission (kept for clarity)
 
 interface UnifiStation {
   mac?: string;
