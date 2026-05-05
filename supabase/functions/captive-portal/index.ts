@@ -920,7 +920,8 @@ async function unifiAuthorizeByMac(
     const staUrl = activeUrl.replace("/cmd/stamgr", "/stat/sta");
     let confirmed = false;
     let verifyError = "controller did not confirm authorized client";
-    let resentOnce = false;
+    let weakSignal = false;
+    let lastVerifySnapshot: Record<string, unknown> = { mac: effectiveMac, found: false };
 
     for (let attempt = 1; attempt <= VERIFY_BACKOFF_MS.length; attempt++) {
       let staRes = await unifiFetchStations(staUrl, headers, httpClient);
@@ -932,34 +933,48 @@ async function unifiAuthorizeByMac(
       if (staRes.ok && staRes.data) {
         const found = staRes.data.find((s) => (s.mac || "").toLowerCase() === effectiveMac);
         if (found) {
-          // Accept authorized=true OR ip+assoc_time>=cmdSentAt (some firmwares mark authorized=false but liberate)
           const hasIp = !!found.ip;
           const recentAssoc = typeof found.assoc_time === "number" && found.assoc_time >= cmdSentAt - 2;
-          if (found.authorized === true || (hasIp && recentAssoc && found.is_guest)) {
+          const ms = Date.now() - startedAt;
+          lastVerifySnapshot = {
+            mac: effectiveMac, found: true,
+            authorized: found.authorized === true,
+            is_guest: !!found.is_guest,
+            ip: found.ip || null,
+            essid: found.essid || null,
+            ap_mac: found.ap_mac || null,
+            assoc_time: found.assoc_time || null,
+            recent_assoc: recentAssoc,
+            attempt, latency_ms: ms,
+          };
+          // STRICT: only authorized=true is treated as confirmed liberation.
+          // Having an IP / is_guest / recent assoc is NOT enough — captive
+          // clients can satisfy those even while still blocked.
+          if (found.authorized === true) {
             confirmed = true;
-            const ms = Date.now() - startedAt;
             console.log(`[unifi-auth] reason=AUTH_CONFIRMED mac=${effectiveMac} ap=${found.ap_mac || "-"} ip=${found.ip || "-"} attempts=${attempt} ms=${ms}`);
             return {
               ok: true, effective_mac: effectiveMac.replace(/:/g, "").toUpperCase(),
               ap_mac_used: apMacForPayload, latency_ms: ms,
+              cmd_accepted_at: cmdAcceptedAtIso,
+              last_verify_result: { ...lastVerifySnapshot, verify_error: null },
             };
           }
-          verifyError = `MAC ${effectiveMac} found but authorized=${String(found.authorized)} ip=${found.ip || "-"}`;
+          if (hasIp && recentAssoc && found.is_guest) {
+            weakSignal = true;
+            verifyError = `WEAK_SIGNAL_ONLY: station has IP/is_guest/recentAssoc but authorized!=true (mac=${effectiveMac} ip=${found.ip})`;
+          } else {
+            verifyError = `MAC ${effectiveMac} found but authorized=${String(found.authorized)} ip=${found.ip || "-"}`;
+          }
         } else {
+          lastVerifySnapshot = { mac: effectiveMac, found: false, total_stations: staRes.data.length, attempt };
           verifyError = `MAC ${effectiveMac} not in /stat/sta (total=${staRes.data.length})`;
         }
       } else if (staRes.error) {
         verifyError = staRes.error;
+        lastVerifySnapshot = { mac: effectiveMac, found: false, sta_error: staRes.error, attempt };
       }
       console.warn(`[unifi-auth] poll attempt=${attempt}/${VERIFY_BACKOFF_MS.length}: ${verifyError}`);
-
-      // Re-emit command once at the halfway point (causa #7)
-      if (!resentOnce && attempt === RESEND_AFTER_ATTEMPT) {
-        console.warn(`[unifi-auth] reason=CMD_RESEND attempt=${attempt} mac=${effectiveMac}`);
-        resentOnce = true;
-        const cmd2 = await unifiSendAuthorizeCmd(activeUrl, headers, httpClient, buildPayload(usedMinutes));
-        if (cmd2.ok && cmd2.rcOk) cmdSentAt = Math.floor(Date.now() / 1000);
-      }
 
       if (attempt < VERIFY_BACKOFF_MS.length) {
         await new Promise((r) => setTimeout(r, VERIFY_BACKOFF_MS[attempt - 1]));
@@ -973,6 +988,9 @@ async function unifiAuthorizeByMac(
       effective_mac: effectiveMac.replace(/:/g, "").toUpperCase(),
       ap_mac_used: apMacForPayload,
       latency_ms: Date.now() - startedAt,
+      cmd_accepted_at: cmdAcceptedAtIso,
+      last_verify_result: { ...lastVerifySnapshot, verify_error: verifyError },
+      weak_signal: weakSignal,
     };
   } finally {
     httpClient?.close();
