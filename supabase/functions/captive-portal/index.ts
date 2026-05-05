@@ -1017,7 +1017,7 @@ async function authorizeClient(
   db: ReturnType<typeof supabaseAdmin>,
   storeId: string | null, storeSlug: string, clientMac: string | null, sessionId: string, clientIp: string,
   context: { apMac?: string | null; ssid?: string | null } = {},
-): Promise<{ ok: boolean; reason?: string; userMessage?: string }> {
+): Promise<{ ok: boolean; reason?: string; userMessage?: string; cmd_accepted_at?: string; last_verify_result?: Record<string, unknown> | null }> {
   if (!storeId) {
     await db.from("captive_sessions").update({ status: "failed", fail_reason: "NO_STORE_CONFIGURED" }).eq("id", sessionId);
     return { ok: false, reason: "NO_STORE_CONFIGURED" };
@@ -1038,29 +1038,19 @@ async function authorizeClient(
     return { ok: false, reason: "UNIFI_NOT_CONFIGURED" };
   }
 
-  // Per-store credentials with fallback to global secrets
   const storeUser = store.unifi_username || UNIFI_USERNAME;
   const storePass = store.unifi_password || UNIFI_PASSWORD;
 
   if (!storeUser || !storePass) {
     await db.from("captive_sessions").update({ status: "failed", fail_reason: "UNIFI_CREDENTIALS_MISSING" }).eq("id", sessionId);
-    await db.from("audit_logs").insert({
-      store_id: storeId, entity: "session", entity_id: sessionId,
-      action: "fail", meta: { reason: "UNIFI_CREDENTIALS_MISSING", store_slug: storeSlug, ip: clientIp },
-    });
     return { ok: false, reason: "UNIFI_CREDENTIALS_MISSING" };
   }
 
   if (!clientMac || !isValidMac(clientMac)) {
     await db.from("captive_sessions").update({ status: "failed", fail_reason: "INVALID_MAC_ADDRESS" }).eq("id", sessionId);
-    await db.from("audit_logs").insert({
-      store_id: storeId, entity: "session", entity_id: sessionId,
-      action: "fail", meta: { reason: "INVALID_MAC_ADDRESS", mac: clientMac, store_slug: storeSlug, ip: clientIp },
-    });
     return { ok: false, reason: "INVALID_MAC_ADDRESS" };
   }
 
-  // Read session-duration policy (causa #9)
   const { data: settings } = await db
     .from("global_settings")
     .select("session_duration_minutes")
@@ -1074,37 +1064,41 @@ async function authorizeClient(
     { apMac: context.apMac || null, ssid: context.ssid || null, minutes: desiredMinutes },
   );
 
+  // Persist UniFi audit columns regardless of outcome
+  const auditUpdate: Record<string, unknown> = {};
+  if (result.cmd_accepted_at) auditUpdate.unifi_cmd_accepted_at = result.cmd_accepted_at;
+  if (result.last_verify_result) auditUpdate.unifi_last_verify_result = result.last_verify_result;
+
   if (result.ok) {
-    const update: Record<string, unknown> = {
+    Object.assign(auditUpdate, {
       status: "authorized",
       authorized_at: new Date().toISOString(),
       auth_latency_ms: result.latency_ms ?? null,
-    };
-    // If MAC was remapped (causa #1), preserve original and store the effective one
+    });
     if (result.effective_mac && result.effective_mac !== clientMac) {
-      update.original_client_mac = clientMac;
-      update.client_mac = result.effective_mac;
+      auditUpdate.original_client_mac = clientMac;
+      auditUpdate.client_mac = result.effective_mac;
     }
-    await db.from("captive_sessions").update(update).eq("id", sessionId);
+    await db.from("captive_sessions").update(auditUpdate).eq("id", sessionId);
     await db.from("audit_logs").insert({
       store_id: storeId, entity: "session", entity_id: sessionId,
       action: "authorize",
       meta: {
         mac: result.effective_mac || clientMac,
-        original_mac: result.effective_mac && result.effective_mac !== clientMac ? clientMac : undefined,
         ap_mac: result.ap_mac_used || context.apMac || null,
         store_slug: storeSlug, ip: clientIp,
         attempts: result.attempts, latency_ms: result.latency_ms,
       },
     });
-    return { ok: true };
+    return { ok: true, cmd_accepted_at: result.cmd_accepted_at, last_verify_result: result.last_verify_result || null };
   } else {
     const failReason = (result.reason || result.error || "UNKNOWN").slice(0, 500);
-    await db.from("captive_sessions").update({
+    Object.assign(auditUpdate, {
       status: "failed",
       fail_reason: failReason,
       auth_latency_ms: result.latency_ms ?? null,
-    }).eq("id", sessionId);
+    });
+    await db.from("captive_sessions").update(auditUpdate).eq("id", sessionId);
     await db.from("audit_logs").insert({
       store_id: storeId, entity: "session", entity_id: sessionId,
       action: "fail",
@@ -1113,14 +1107,28 @@ async function authorizeClient(
         mac: clientMac, ap_mac: context.apMac || null,
         store_slug: storeSlug, ip: clientIp,
         attempts: result.attempts, latency_ms: result.latency_ms,
+        weak_signal: result.weak_signal || false,
       },
     });
-    // User-actionable message for MAC randomization
-    const userMessage = result.reason === "MAC_RANDOMIZATION_AMBIGUOUS"
-      ? result.error
-      : undefined;
-    return { ok: false, reason: result.reason, userMessage };
+    const userMessage = result.reason === "MAC_RANDOMIZATION_AMBIGUOUS" ? result.error : undefined;
+    return {
+      ok: false, reason: result.reason, userMessage,
+      cmd_accepted_at: result.cmd_accepted_at,
+      last_verify_result: result.last_verify_result || null,
+    };
   }
+}
+
+/**
+ * Build the controller base URL for /guest/s/<site>/ fallback redirects.
+ * Preserves any path prefix the controller URL was configured with — we never
+ * silently drop it. If the controller is reachable only at the origin root,
+ * configure the controller URL accordingly.
+ */
+function getControllerBaseForGuestRedirect(controllerUrl: string): string {
+  const u = new URL(controllerUrl);
+  const path = u.pathname.replace(/\/+$/, "");
+  return `${u.origin}${path}`;
 }
 
 async function handleBootstrap(req: Request): Promise<Response> {
