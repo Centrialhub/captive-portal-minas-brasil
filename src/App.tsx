@@ -96,6 +96,44 @@ export default function App() {
     return () => { if (cooldownRef.current) clearInterval(cooldownRef.current); };
   }, []);
 
+  // Restore session_id from sessionStorage on mount (CNA may reload page mid-flow)
+  useEffect(() => {
+    try {
+      const stored = sessionStorage.getItem("mb_session_id");
+      if (stored && !sessionIdRef.current) {
+        sessionIdRef.current = stored;
+        setSessionId(stored);
+      }
+    } catch { /* ignore */ }
+
+    const onErr = (msg: unknown, src?: unknown, line?: unknown) => {
+      try {
+        api.clientEvent({
+          session_id: sessionIdRef.current,
+          event: "window_error",
+          status: "error",
+          error_message: String(msg).slice(0, 200),
+          payload: { src: String(src).slice(0, 200), line: typeof line === "number" ? line : 0 },
+        });
+      } catch { /* ignore */ }
+    };
+    window.addEventListener("error", (e) => onErr(e.message, e.filename, e.lineno));
+    window.addEventListener("unhandledrejection", (e) => onErr(e.reason?.message || e.reason || "unhandledrejection"));
+  }, []);
+
+  // Telemetry on entering OTP step
+  useEffect(() => {
+    if (step === "otp") {
+      api.clientEvent({
+        session_id: sessionIdRef.current,
+        event: "otp_screen_mounted",
+        step: "otp",
+        status: "info",
+        payload: { has_session: !!sessionIdRef.current },
+      });
+    }
+  }, [step]);
+
   const startCooldown = (sec: number) => {
     setCooldown(sec);
     if (cooldownRef.current) clearInterval(cooldownRef.current);
@@ -146,6 +184,9 @@ export default function App() {
       if (result?.session_id) {
         sessionIdRef.current = result.session_id;
         setSessionId(result.session_id);
+        try { sessionStorage.setItem("mb_session_id", result.session_id); } catch { /* ignore */ }
+      } else if (sid) {
+        try { sessionStorage.setItem("mb_session_id", sid); } catch { /* ignore */ }
       }
 
       if (result?.error) {
@@ -188,14 +229,37 @@ export default function App() {
   };
 
   const handleVerify = async () => {
-    const sid = sessionIdRef.current || sessionId;
-    if (!sid) { setError("Sessão não encontrada. Recarregue a página."); return; }
+    let sid = sessionIdRef.current || sessionId;
+    if (!sid) {
+      try {
+        const stored = sessionStorage.getItem("mb_session_id");
+        if (stored) {
+          sid = stored;
+          sessionIdRef.current = stored;
+          setSessionId(stored);
+        }
+      } catch { /* ignore */ }
+    }
+    if (!sid) {
+      api.clientEvent({ event: "verify_no_session", status: "error" });
+      setError("Sessão não encontrada. Recarregue a página.");
+      return;
+    }
     if (otpCode.length !== 6) return;
     setVerifying(true);
     setError("");
 
+    api.clientEvent({ session_id: sid, event: "verify_attempt_started", step: "otp", status: "info" });
+
     try {
       const result = await api.verifyCode({ session_id: sid, code: otpCode });
+      api.clientEvent({
+        session_id: sid,
+        event: "verify_attempt_finished",
+        step: "otp",
+        status: result?.error ? "error" : (result?.authorized ? "success" : "warning"),
+        payload: { has_error: !!result?.error, authorized: !!result?.authorized, use_hotspot_redirect: !!result?.use_hotspot_redirect },
+      });
       if (result.error) {
         setError(result.error);
         setOtpCode("");
@@ -223,7 +287,16 @@ export default function App() {
         setError(result.message || "Cadastro confirmado, mas o UniFi não confirmou a liberação. Desconecte e conecte novamente à rede ou procure atendimento.");
         setOtpCode("");
       }
-    } catch {
+    } catch (err) {
+      const e2 = err as { kind?: string; message?: string };
+      api.clientEvent({
+        session_id: sid,
+        event: "verify_attempt_failed",
+        step: "otp",
+        status: "error",
+        error_code: e2?.kind || "unknown",
+        error_message: e2?.message?.slice(0, 200),
+      });
       setError("Erro ao verificar código.");
     }
     setVerifying(false);

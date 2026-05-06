@@ -196,6 +196,24 @@
         cooldownTimer: null
       };
 
+      // Restore session_id from sessionStorage (CNA may reload page)
+      try { var s = sessionStorage.getItem('mb_session_id'); if(s) state.session_id = s; } catch(e){}
+
+      // ── Telemetry (fire-and-forget) ──
+      function clientEvent(name, status, extras){
+        try {
+          var body = { event: name, status: status||'info', step: (extras&&extras.step)||'client', session_id: state.session_id||null };
+          if(extras&&extras.payload) body.payload = extras.payload;
+          if(extras&&extras.error_message) body.error_message = String(extras.error_message).slice(0,200);
+          if(extras&&extras.error_code) body.error_code = extras.error_code;
+          apiFetch('/client-event','POST',body,function(){}, 5000);
+        } catch(e){}
+      }
+
+      window.addEventListener('error', function(e){
+        clientEvent('window_error','error',{error_message:e.message,payload:{src:String(e.filename).slice(0,200),line:e.lineno||0}});
+      });
+
       function uuid(){
         if(window.crypto && crypto.randomUUID) return crypto.randomUUID();
         return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,function(c){
@@ -301,9 +319,11 @@
             function ok(d){
               if(d.redirect_url) state.redirect_url = d.redirect_url;
               if(d.session_id) state.session_id = d.session_id;
+              try { if(state.session_id) sessionStorage.setItem('mb_session_id', state.session_id); } catch(e){}
               if(d.requires_verification){
                 $('fb-otp-phone').textContent = state.phone;
                 goStep('otp');
+                clientEvent('otp_screen_mounted','info',{step:'otp',payload:{has_session:!!state.session_id}});
                 startCooldown(60);
               } else {
                 showSuccess(d.message||'Cadastro realizado! Você já pode navegar.');
@@ -331,14 +351,31 @@
 
       // ── OTP: verify ──
       $('fb-otp-verify').addEventListener('click',function(){
-        if(!state.session_id||codeInp.value.length!==6) return;
+        // Restore session_id from storage if lost (CNA reload)
+        if(!state.session_id){
+          try { var s = sessionStorage.getItem('mb_session_id'); if(s) state.session_id = s; } catch(e){}
+        }
+        if(!state.session_id){
+          clientEvent('verify_no_session','error',{step:'otp'});
+          showErr('fb-otp-err','Sessão não encontrada. Recarregue a página.');
+          return;
+        }
+        if(codeInp.value.length!==6) return;
         hideErr('fb-otp-err');
         var btn=$('fb-otp-verify');
         btn.disabled=true;btn.textContent='Verificando...';
 
+        clientEvent('verify_attempt_started','info',{step:'otp'});
+
         apiFetch('/verify-code','POST',{session_id:state.session_id,code:codeInp.value},function(err,data){
           btn.textContent='Verificar código';
           btn.disabled=codeInp.value.length!==6;
+
+          clientEvent('verify_attempt_finished', err?'error':((data&&data.authorized)?'success':'warning'), {
+            step:'otp',
+            error_message: err||undefined,
+            payload: { has_error: !!(err||(data&&data.error)), authorized: !!(data&&data.authorized), use_hotspot_redirect: !!(data&&data.use_hotspot_redirect) }
+          });
 
           if(err){showErr('fb-otp-err',err);codeInp.value='';btn.disabled=true;return;}
           if(data.error){showErr('fb-otp-err',data.error);codeInp.value='';btn.disabled=true;return;}

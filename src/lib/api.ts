@@ -195,4 +195,11 @@ export const api = {
       timeoutMs: 30000,
     });
   },
+
+  /** Fire-and-forget client telemetry. Never throws. */
+  clientEvent(data: { session_id?: string | null; event: string; step?: string; status?: string; error_code?: string; error_message?: string; payload?: Record<string, unknown> }) {
+    try {
+      xhrRequest<any>("/client-event", { method: "POST", body: data, timeoutMs: 5000 }).catch(() => {});
+    } catch { /* ignore */ }
+  },
 };
