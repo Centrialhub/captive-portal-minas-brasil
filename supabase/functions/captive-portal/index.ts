@@ -1382,20 +1382,29 @@ async function handleSubmit(req: Request): Promise<Response> {
           client_ip: clientIpStr,
           ap_mac: normalizeMac(body.ap_mac),
           ssid: sanitizeString(body.ssid, 64),
-          user_agent: sanitizeString(body.user_agent, 500) || req.headers.get("user-agent")?.slice(0, 500),
+          user_agent: sanitizeString(body.user_agent, 500) || ua,
           redirect_url: sanitizeString(body.redirect_url, 2000),
           captive_timestamp: submitCaptiveTs,
           original_unifi_url_params: submitUnifiParams,
           status: "started",
+          trace_id: traceId,
+          params_received_at: new Date().toISOString(),
+          last_step: "form",
         });
       if (sessionError) {
         console.error("[submit] Supplied session insert error:", sessionError.message);
+        logEvent(db, {
+          session_id: sessionId, trace_id: traceId, store_id: storeId,
+          event_type: "session_create_failed", step: "form", status: "error",
+          error_code: "SUPPLIED_INSERT_ERROR", error_message: sessionError.message,
+          client_ip: clientIp, user_agent: ua,
+        });
         return errorResponse("Erro ao iniciar sessão. Tente novamente.", 500);
       }
       console.log(`[submit] created supplied session=${sessionId}`);
     } else {
       // Backfill UniFi fields if the existing session was created without them.
-      const updateFields: Record<string, unknown> = {};
+      const updateFields: Record<string, unknown> = { trace_id: traceId };
       if (clientMac) updateFields.client_mac = clientMac;
       const apMacNorm = normalizeMac(body.ap_mac);
       if (apMacNorm) updateFields.ap_mac = apMacNorm;
@@ -1403,9 +1412,7 @@ async function handleSubmit(req: Request): Promise<Response> {
       if (body.redirect_url) updateFields.redirect_url = sanitizeString(body.redirect_url, 2000);
       if (submitCaptiveTs) updateFields.captive_timestamp = submitCaptiveTs;
       if (submitUnifiParams) updateFields.original_unifi_url_params = submitUnifiParams;
-      if (Object.keys(updateFields).length > 0) {
-        await db.from("captive_sessions").update(updateFields).eq("id", sessionId).then(() => {}, () => {});
-      }
+      await db.from("captive_sessions").update(updateFields).eq("id", sessionId).then(() => {}, () => {});
     }
   } else {
     const { data: recoveredSession, error: sessionError } = await db
@@ -1416,21 +1423,39 @@ async function handleSubmit(req: Request): Promise<Response> {
         client_ip: clientIpStr,
         ap_mac: normalizeMac(body.ap_mac),
         ssid: sanitizeString(body.ssid, 64),
-        user_agent: sanitizeString(body.user_agent, 500) || req.headers.get("user-agent")?.slice(0, 500),
+        user_agent: sanitizeString(body.user_agent, 500) || ua,
         redirect_url: sanitizeString(body.redirect_url, 2000),
         captive_timestamp: submitCaptiveTs,
         original_unifi_url_params: submitUnifiParams,
         status: "started",
+        trace_id: traceId,
+        params_received_at: new Date().toISOString(),
+        last_step: "form",
       })
       .select("id")
       .single();
     if (sessionError || !recoveredSession?.id) {
       console.error("[submit] Recovery session insert error:", sessionError?.message);
+      logEvent(db, {
+        trace_id: traceId, store_id: storeId,
+        event_type: "session_create_failed", step: "form", status: "error",
+        error_code: "RECOVERY_INSERT_ERROR", error_message: sessionError?.message || "unknown",
+        client_ip: clientIp, user_agent: ua,
+      });
       return errorResponse("Erro ao iniciar sessão. Tente novamente.", 500);
     }
     sessionId = recoveredSession.id;
     console.log(`[submit] recovered missing session=${sessionId}`);
   }
+
+  // Log form_submitted (after session is guaranteed)
+  logEvent(db, {
+    session_id: sessionId, trace_id: traceId, store_id: storeId,
+    event_type: "form_submitted", step: "form", status: "success",
+    payload: { has_email: !!email, has_cpf: !!cpf, phone_masked: phone?.replace(/^(\d{2})\d+(\d{2})$/, "$1***$2"), client_mac: clientMac, ap_mac: normalizeMac(body.ap_mac), ssid: body.ssid, store_slug: storeSlug, captive_timestamp: submitCaptiveTs },
+    session_patch: { form_submitted_at: new Date().toISOString() },
+    client_ip: clientIp, user_agent: ua,
+  });
 
   // Idempotent recovery: if this session already has a pending verification,
   // return immediately so retries don't pile up. Cheap single query.
