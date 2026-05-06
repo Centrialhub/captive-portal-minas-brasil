@@ -2014,6 +2014,7 @@ async function handleVerifyCode(req: Request): Promise<Response> {
     pending_unifi_confirmation: pendingUnifiConfirmation,
     redirect_url: resolvedRedirectUrl,
     use_hotspot_redirect: useHotspotRedirect,
+    trace_id: traceId,
     message,
   });
 }
