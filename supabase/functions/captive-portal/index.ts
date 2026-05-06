@@ -2916,6 +2916,7 @@ Deno.serve(async (req: Request) => {
     if (path === "/session-status" && req.method === "POST") return await handleSessionStatus(req);
     if (path === "/request-code" && req.method === "POST") return await handleRequestCode(req);
     if (path === "/verify-code" && req.method === "POST") return await handleVerifyCode(req);
+    if (path === "/client-event" && req.method === "POST") return await handleClientEvent(req);
 
     // Diagnostic: list clients the AP currently sees (to find real MAC behind randomization)
     // GET /diag/list-aps?store=matriz — list all APs adopted by the controller with their WLANs
