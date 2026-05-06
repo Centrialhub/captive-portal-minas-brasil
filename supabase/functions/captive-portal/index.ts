@@ -4,7 +4,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.4";
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
+    "authorization, x-client-info, apikey, content-type, x-trace-id, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
   "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
 };
 
@@ -121,6 +121,71 @@ function isValidIp(ip: string): boolean {
 
 function safeParseJson(req: Request): Promise<Record<string, unknown> | null> {
   return req.json().catch(() => null);
+}
+
+// ========== Trace ID + Event Logging ==========
+function getTraceId(req: Request, body?: Record<string, unknown> | null): string {
+  const fromHeader = req.headers.get("x-trace-id")?.trim();
+  if (fromHeader && fromHeader.length <= 64) return fromHeader;
+  const fromBody = body && typeof body.trace_id === "string" ? body.trace_id.trim() : "";
+  if (fromBody && fromBody.length <= 64) return fromBody;
+  return (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : `t-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+interface LogEventArgs {
+  session_id?: string | null;
+  trace_id?: string | null;
+  store_id?: string | null;
+  event_type: string;
+  step: "params" | "form" | "otp" | "unifi" | "redirect" | "system";
+  status?: "info" | "success" | "warning" | "error";
+  error_code?: string | null;
+  error_message?: string | null;
+  latency_ms?: number | null;
+  payload?: Record<string, unknown> | null;
+  client_ip?: string | null;
+  user_agent?: string | null;
+  /** When provided, also patches captive_sessions with these fields. */
+  session_patch?: Record<string, unknown>;
+}
+
+/** Fire-and-forget event logger. Inserts into portal_events and optionally
+ *  updates captive_sessions timeline columns. Never throws. */
+function logEvent(db: ReturnType<typeof supabaseAdmin>, args: LogEventArgs): void {
+  const row = {
+    session_id: args.session_id || null,
+    trace_id: args.trace_id || null,
+    store_id: args.store_id || null,
+    event_type: args.event_type,
+    step: args.step,
+    status: args.status || "info",
+    error_code: args.error_code || null,
+    error_message: args.error_message || null,
+    latency_ms: args.latency_ms ?? null,
+    payload: args.payload || null,
+    client_ip: args.client_ip || null,
+    user_agent: args.user_agent ? args.user_agent.slice(0, 500) : null,
+  };
+  db.from("portal_events").insert(row).then(
+    () => {},
+    (e) => console.warn("[logEvent] insert failed:", (e as Error)?.message),
+  );
+
+  if (args.session_id) {
+    const patch: Record<string, unknown> = {
+      last_step: args.step,
+      ...(args.session_patch || {}),
+    };
+    if (args.trace_id) patch.trace_id = args.trace_id;
+    if (args.status === "error") {
+      if (args.error_code) patch.last_error_code = args.error_code;
+      if (args.error_message) patch.last_error_message = args.error_message.slice(0, 500);
+    }
+    db.from("captive_sessions").update(patch).eq("id", args.session_id).then(
+      () => {},
+      (e) => console.warn("[logEvent] session patch failed:", (e as Error)?.message),
+    );
+  }
 }
 
 // ========== Detect Store (slug param > IP > single active fallback) ==========
@@ -1158,20 +1223,18 @@ async function handleBootstrap(req: Request): Promise<Response> {
 }
 
 async function handleStart(req: Request): Promise<Response> {
+  const t0 = Date.now();
   const clientIp = getPublicIp(req) || "unknown";
+  const ua = req.headers.get("user-agent")?.slice(0, 500) || null;
   const db = supabaseAdmin();
 
-  // Distributed rate limit
-  // Captive portals frequently NAT many clients behind one public IP, so this
-  // limit is intentionally loose. Tighter limits live on per-phone request-code,
-  // per-session verify and per-MAC daily caps.
   const rl = await checkRateLimitDb(db, `start:ip:${clientIp}`, 60, 100, 120);
   if (!rl.allowed) return errorResponse("Muitas requisições. Aguarde um momento.", 429);
 
   const body = await safeParseJson(req);
   if (!body) return errorResponse("Invalid JSON body");
 
-  // Detect store: ?store=slug > IP mapping > single active store
+  const traceId = getTraceId(req, body);
   const detected = await detectStoreFromRequest(db, req);
 
   const mac = normalizeMac(body.client_mac);
@@ -1182,8 +1245,20 @@ async function handleStart(req: Request): Promise<Response> {
     : null;
 
   const reqUrl = new URL(req.url);
-  console.log(`[portal-params] id=${mac} ap=${apMac} ssid=${body.ssid} url=${body.redirect_url} t=${captiveTimestamp} site=${body.site}`);
-  console.log(`[start] raw_client_mac="${body.client_mac}" normalized="${mac}" raw_ap_mac="${body.ap_mac}" ssid="${body.ssid}" ua="${(req.headers.get("user-agent") || "").slice(0, 80)}" all_params=${JSON.stringify(Object.fromEntries(reqUrl.searchParams))}`);
+  console.log(`[portal-params] trace=${traceId} id=${mac} ap=${apMac} ssid=${body.ssid} url=${body.redirect_url} t=${captiveTimestamp} site=${body.site}`);
+
+  // Log params reception (no session yet)
+  logEvent(db, {
+    trace_id: traceId, store_id: detected.store_id,
+    event_type: "params_received", step: "params", status: "info",
+    payload: {
+      raw: Object.fromEntries(reqUrl.searchParams),
+      normalized: { client_mac: mac, ap_mac: apMac, ssid: body.ssid, captive_timestamp: captiveTimestamp, site: body.site },
+      original_unifi_url_params: originalUnifiParams,
+      store_slug: detected.store_slug,
+    },
+    client_ip: clientIp, user_agent: ua,
+  });
 
   const { data: session, error } = await db
     .from("captive_sessions")
@@ -1193,57 +1268,87 @@ async function handleStart(req: Request): Promise<Response> {
       client_ip: sanitizeString(body.client_ip, 45) || clientIp,
       ap_mac: apMac,
       ssid: sanitizeString(body.ssid, 64),
-      user_agent: sanitizeString(body.user_agent, 500) || req.headers.get("user-agent")?.slice(0, 500),
+      user_agent: sanitizeString(body.user_agent, 500) || ua,
       redirect_url: sanitizeString(body.redirect_url, 2000),
       captive_timestamp: captiveTimestamp,
       original_unifi_url_params: originalUnifiParams,
       status: "started",
+      trace_id: traceId,
+      params_received_at: new Date().toISOString(),
+      last_step: "params",
     })
     .select("id")
     .single();
 
   if (error) {
     console.error("Session insert error:", error.message);
+    logEvent(db, {
+      trace_id: traceId, store_id: detected.store_id,
+      event_type: "session_create_failed", step: "params", status: "error",
+      error_code: "SESSION_INSERT_ERROR", error_message: error.message,
+      latency_ms: Date.now() - t0, client_ip: clientIp, user_agent: ua,
+    });
     return errorResponse("Erro ao iniciar sessão", 500);
   }
 
-  await db.from("audit_logs").insert({
-    store_id: detected.store_id, entity: "session", entity_id: session.id,
-    action: "create", meta: { client_mac: mac, ip: clientIp, store_slug: detected.store_slug },
+  logEvent(db, {
+    session_id: session.id, trace_id: traceId, store_id: detected.store_id,
+    event_type: "session_created", step: "params", status: "success",
+    latency_ms: Date.now() - t0,
+    payload: { client_mac: mac, ap_mac: apMac, ssid: body.ssid, store_slug: detected.store_slug },
+    client_ip: clientIp, user_agent: ua,
   });
 
-  return jsonResponse({ session_id: session.id });
+  await db.from("audit_logs").insert({
+    store_id: detected.store_id, entity: "session", entity_id: session.id,
+    action: "create", meta: { client_mac: mac, ip: clientIp, store_slug: detected.store_slug, trace_id: traceId },
+  });
+
+  return jsonResponse({ session_id: session.id, trace_id: traceId });
 }
 
 async function handleSubmit(req: Request): Promise<Response> {
   const t0 = Date.now();
   const clientIp = getPublicIp(req);
   const clientIpStr = clientIp || "unknown";
+  const ua = req.headers.get("user-agent")?.slice(0, 500) || null;
   const db = supabaseAdmin();
 
   const body = await safeParseJson(req);
   if (!body) return errorResponse("Invalid JSON body");
 
-  const name = sanitizeString(body.name, MAX_NAME_LEN);
-  if (!name) return errorResponse("Nome é obrigatório");
+  const traceId = getTraceId(req, body);
 
+  const name = sanitizeString(body.name, MAX_NAME_LEN);
   const email = sanitizeString(body.email, MAX_EMAIL_LEN);
   const phone = sanitizeString(body.phone, MAX_PHONE_LEN);
   const cpf = sanitizeString(body.cpf, 20);
-
-  if (!cpf) return errorResponse("CPF é obrigatório");
-  if (!phone || !isValidPhone(phone)) return errorResponse("Telefone válido é obrigatório");
-  if (email && !isValidEmail(email)) return errorResponse("E-mail inválido");
-
   const consentVersion = sanitizeString(body.consent_version, 20);
-  if (!consentVersion) return errorResponse("Consentimento é obrigatório");
-
   let sessionId = body.session_id as string | undefined;
-  if (sessionId && !isValidUUID(sessionId)) return errorResponse("session_id inválido");
+
+  // Validation with structured logging
+  const failValidation = (code: string, msg: string) => {
+    logEvent(db, {
+      session_id: sessionId && isValidUUID(sessionId) ? sessionId : null,
+      trace_id: traceId,
+      event_type: "form_validation_failed", step: "form", status: "error",
+      error_code: code, error_message: msg,
+      payload: { has_name: !!name, has_phone: !!phone, has_cpf: !!cpf, has_email: !!email, consent_version: consentVersion },
+      client_ip: clientIp, user_agent: ua,
+    });
+    return errorResponse(msg);
+  };
+
+  if (!name) return failValidation("NAME_REQUIRED", "Nome é obrigatório");
+  if (!cpf) return failValidation("CPF_REQUIRED", "CPF é obrigatório");
+  if (!phone || !isValidPhone(phone)) return failValidation("PHONE_INVALID", "Telefone válido é obrigatório");
+  if (email && !isValidEmail(email)) return failValidation("EMAIL_INVALID", "E-mail inválido");
+  if (!consentVersion) return failValidation("CONSENT_REQUIRED", "Consentimento é obrigatório");
+  if (sessionId && !isValidUUID(sessionId)) return failValidation("SESSION_ID_INVALID", "session_id inválido");
 
   const clientMac = normalizeMac(body.client_mac);
 
-  console.log(`[submit] start session=${sessionId || "none"} mac=${clientMac || "none"} ip=${clientIpStr}`);
+  console.log(`[submit] trace=${traceId} session=${sessionId || "none"} mac=${clientMac || "none"} ip=${clientIpStr}`);
 
   // Detect store: ?store=slug > IP mapping > single active store
   const detected = await detectStoreFromRequest(db, req);
@@ -1277,20 +1382,29 @@ async function handleSubmit(req: Request): Promise<Response> {
           client_ip: clientIpStr,
           ap_mac: normalizeMac(body.ap_mac),
           ssid: sanitizeString(body.ssid, 64),
-          user_agent: sanitizeString(body.user_agent, 500) || req.headers.get("user-agent")?.slice(0, 500),
+          user_agent: sanitizeString(body.user_agent, 500) || ua,
           redirect_url: sanitizeString(body.redirect_url, 2000),
           captive_timestamp: submitCaptiveTs,
           original_unifi_url_params: submitUnifiParams,
           status: "started",
+          trace_id: traceId,
+          params_received_at: new Date().toISOString(),
+          last_step: "form",
         });
       if (sessionError) {
         console.error("[submit] Supplied session insert error:", sessionError.message);
+        logEvent(db, {
+          session_id: sessionId, trace_id: traceId, store_id: storeId,
+          event_type: "session_create_failed", step: "form", status: "error",
+          error_code: "SUPPLIED_INSERT_ERROR", error_message: sessionError.message,
+          client_ip: clientIp, user_agent: ua,
+        });
         return errorResponse("Erro ao iniciar sessão. Tente novamente.", 500);
       }
       console.log(`[submit] created supplied session=${sessionId}`);
     } else {
       // Backfill UniFi fields if the existing session was created without them.
-      const updateFields: Record<string, unknown> = {};
+      const updateFields: Record<string, unknown> = { trace_id: traceId };
       if (clientMac) updateFields.client_mac = clientMac;
       const apMacNorm = normalizeMac(body.ap_mac);
       if (apMacNorm) updateFields.ap_mac = apMacNorm;
@@ -1298,9 +1412,7 @@ async function handleSubmit(req: Request): Promise<Response> {
       if (body.redirect_url) updateFields.redirect_url = sanitizeString(body.redirect_url, 2000);
       if (submitCaptiveTs) updateFields.captive_timestamp = submitCaptiveTs;
       if (submitUnifiParams) updateFields.original_unifi_url_params = submitUnifiParams;
-      if (Object.keys(updateFields).length > 0) {
-        await db.from("captive_sessions").update(updateFields).eq("id", sessionId).then(() => {}, () => {});
-      }
+      await db.from("captive_sessions").update(updateFields).eq("id", sessionId).then(() => {}, () => {});
     }
   } else {
     const { data: recoveredSession, error: sessionError } = await db
@@ -1311,21 +1423,39 @@ async function handleSubmit(req: Request): Promise<Response> {
         client_ip: clientIpStr,
         ap_mac: normalizeMac(body.ap_mac),
         ssid: sanitizeString(body.ssid, 64),
-        user_agent: sanitizeString(body.user_agent, 500) || req.headers.get("user-agent")?.slice(0, 500),
+        user_agent: sanitizeString(body.user_agent, 500) || ua,
         redirect_url: sanitizeString(body.redirect_url, 2000),
         captive_timestamp: submitCaptiveTs,
         original_unifi_url_params: submitUnifiParams,
         status: "started",
+        trace_id: traceId,
+        params_received_at: new Date().toISOString(),
+        last_step: "form",
       })
       .select("id")
       .single();
     if (sessionError || !recoveredSession?.id) {
       console.error("[submit] Recovery session insert error:", sessionError?.message);
+      logEvent(db, {
+        trace_id: traceId, store_id: storeId,
+        event_type: "session_create_failed", step: "form", status: "error",
+        error_code: "RECOVERY_INSERT_ERROR", error_message: sessionError?.message || "unknown",
+        client_ip: clientIp, user_agent: ua,
+      });
       return errorResponse("Erro ao iniciar sessão. Tente novamente.", 500);
     }
     sessionId = recoveredSession.id;
     console.log(`[submit] recovered missing session=${sessionId}`);
   }
+
+  // Log form_submitted (after session is guaranteed)
+  logEvent(db, {
+    session_id: sessionId, trace_id: traceId, store_id: storeId,
+    event_type: "form_submitted", step: "form", status: "success",
+    payload: { has_email: !!email, has_cpf: !!cpf, phone_masked: phone?.replace(/^(\d{2})\d+(\d{2})$/, "$1***$2"), client_mac: clientMac, ap_mac: normalizeMac(body.ap_mac), ssid: body.ssid, store_slug: storeSlug, captive_timestamp: submitCaptiveTs },
+    session_patch: { form_submitted_at: new Date().toISOString() },
+    client_ip: clientIp, user_agent: ua,
+  });
 
   // Idempotent recovery: if this session already has a pending verification,
   // return immediately so retries don't pile up. Cheap single query.
@@ -1340,9 +1470,15 @@ async function handleSubmit(req: Request): Promise<Response> {
 
   if (existingVer && new Date(existingVer.expires_at) > new Date()) {
     console.log(`[submit] recovered existing pending verification session=${sessionId} (${Date.now() - t0}ms)`);
+    logEvent(db, {
+      session_id: sessionId, trace_id: traceId, store_id: storeId,
+      event_type: "otp_already_pending", step: "otp", status: "info",
+      latency_ms: Date.now() - t0, client_ip: clientIp, user_agent: ua,
+    });
     return jsonResponse({
       ok: true,
       session_id: sessionId,
+      trace_id: traceId,
       authorized: false,
       redirect_url: redirectUrl || DEFAULT_REDIRECT_URL,
       requires_verification: true,
@@ -1375,6 +1511,12 @@ async function handleSubmit(req: Request): Promise<Response> {
 
   if (leadError || !lead) {
     console.error("[submit] Lead insert error:", leadError?.message);
+    logEvent(db, {
+      session_id: sessionId, trace_id: traceId, store_id: storeId,
+      event_type: "lead_insert_failed", step: "form", status: "error",
+      error_code: "LEAD_INSERT_ERROR", error_message: leadError?.message || "unknown",
+      client_ip: clientIp, user_agent: ua,
+    });
     return errorResponse("Erro ao salvar cadastro. Tente novamente.", 500);
   }
   const leadId = lead.id;
@@ -1392,6 +1534,12 @@ async function handleSubmit(req: Request): Promise<Response> {
 
   if (verError) {
     console.error("[submit] Verification insert error:", verError.message);
+    logEvent(db, {
+      session_id: sessionId, trace_id: traceId, store_id: storeId,
+      event_type: "verification_insert_failed", step: "otp", status: "error",
+      error_code: "VERIFICATION_INSERT_ERROR", error_message: verError.message,
+      client_ip: clientIp, user_agent: ua,
+    });
     return errorResponse("Erro ao gerar código de verificação. Tente novamente.", 500);
   }
 
@@ -1406,15 +1554,34 @@ async function handleSubmit(req: Request): Promise<Response> {
         .then(() => {}, () => {});
 
       // Send WhatsApp OTP (the critical background task).
+      const otpStartedAt = Date.now();
       const r = await sendWhatsAppCode(db, storeId, phone, otpCode, storeName, sessionId as string | null, clientIp, expiresAt);
-      if (!r.sent) console.warn("[submit] WhatsApp not sent (bg):", r.error);
-      else console.log(`[submit] WhatsApp OTP sent session=${sessionId}`);
+      const otpLatency = Date.now() - otpStartedAt;
+      if (!r.sent) {
+        console.warn("[submit] WhatsApp not sent (bg):", r.error);
+        logEvent(db, {
+          session_id: sessionId, trace_id: traceId, store_id: storeId,
+          event_type: "otp_send_failed", step: "otp", status: "error",
+          error_code: "WHATSAPP_SEND_FAILED", error_message: r.error || "unknown",
+          latency_ms: otpLatency, client_ip: clientIp, user_agent: ua,
+        });
+      } else {
+        console.log(`[submit] WhatsApp OTP sent session=${sessionId}`);
+        logEvent(db, {
+          session_id: sessionId, trace_id: traceId, store_id: storeId,
+          event_type: "otp_sent", step: "otp", status: "success",
+          latency_ms: otpLatency,
+          payload: { phone_masked: phone?.replace(/^(\d{2})\d+(\d{2})$/, "$1***$2") },
+          session_patch: { otp_sent_at: new Date().toISOString() },
+          client_ip: clientIp, user_agent: ua,
+        });
+      }
 
       // Audit + GeoIP enrichment
       db.from("audit_logs").insert({
         store_id: storeId, entity: "lead", entity_id: leadId,
         action: "create",
-        meta: { session_id: sessionId, mac: clientMac, ip: clientIpStr, store_slug: storeSlug },
+        meta: { session_id: sessionId, mac: clientMac, ip: clientIpStr, store_slug: storeSlug, trace_id: traceId },
       }).then(() => {}, () => {});
 
       if (clientIp) {
@@ -1437,11 +1604,12 @@ async function handleSubmit(req: Request): Promise<Response> {
     EdgeRuntime.waitUntil(bgWork);
   }
 
-  console.log(`[submit] done session=${sessionId || "none"} (${Date.now() - t0}ms)`);
+  console.log(`[submit] done session=${sessionId || "none"} trace=${traceId} (${Date.now() - t0}ms)`);
 
   return jsonResponse({
     ok: true,
     session_id: sessionId,
+    trace_id: traceId,
     authorized: false,
     redirect_url: redirectUrl || DEFAULT_REDIRECT_URL,
     requires_verification: true,
