@@ -1470,9 +1470,15 @@ async function handleSubmit(req: Request): Promise<Response> {
 
   if (existingVer && new Date(existingVer.expires_at) > new Date()) {
     console.log(`[submit] recovered existing pending verification session=${sessionId} (${Date.now() - t0}ms)`);
+    logEvent(db, {
+      session_id: sessionId, trace_id: traceId, store_id: storeId,
+      event_type: "otp_already_pending", step: "otp", status: "info",
+      latency_ms: Date.now() - t0, client_ip: clientIp, user_agent: ua,
+    });
     return jsonResponse({
       ok: true,
       session_id: sessionId,
+      trace_id: traceId,
       authorized: false,
       redirect_url: redirectUrl || DEFAULT_REDIRECT_URL,
       requires_verification: true,
@@ -1505,6 +1511,12 @@ async function handleSubmit(req: Request): Promise<Response> {
 
   if (leadError || !lead) {
     console.error("[submit] Lead insert error:", leadError?.message);
+    logEvent(db, {
+      session_id: sessionId, trace_id: traceId, store_id: storeId,
+      event_type: "lead_insert_failed", step: "form", status: "error",
+      error_code: "LEAD_INSERT_ERROR", error_message: leadError?.message || "unknown",
+      client_ip: clientIp, user_agent: ua,
+    });
     return errorResponse("Erro ao salvar cadastro. Tente novamente.", 500);
   }
   const leadId = lead.id;
@@ -1522,6 +1534,12 @@ async function handleSubmit(req: Request): Promise<Response> {
 
   if (verError) {
     console.error("[submit] Verification insert error:", verError.message);
+    logEvent(db, {
+      session_id: sessionId, trace_id: traceId, store_id: storeId,
+      event_type: "verification_insert_failed", step: "otp", status: "error",
+      error_code: "VERIFICATION_INSERT_ERROR", error_message: verError.message,
+      client_ip: clientIp, user_agent: ua,
+    });
     return errorResponse("Erro ao gerar código de verificação. Tente novamente.", 500);
   }
 
@@ -1536,15 +1554,34 @@ async function handleSubmit(req: Request): Promise<Response> {
         .then(() => {}, () => {});
 
       // Send WhatsApp OTP (the critical background task).
+      const otpStartedAt = Date.now();
       const r = await sendWhatsAppCode(db, storeId, phone, otpCode, storeName, sessionId as string | null, clientIp, expiresAt);
-      if (!r.sent) console.warn("[submit] WhatsApp not sent (bg):", r.error);
-      else console.log(`[submit] WhatsApp OTP sent session=${sessionId}`);
+      const otpLatency = Date.now() - otpStartedAt;
+      if (!r.sent) {
+        console.warn("[submit] WhatsApp not sent (bg):", r.error);
+        logEvent(db, {
+          session_id: sessionId, trace_id: traceId, store_id: storeId,
+          event_type: "otp_send_failed", step: "otp", status: "error",
+          error_code: "WHATSAPP_SEND_FAILED", error_message: r.error || "unknown",
+          latency_ms: otpLatency, client_ip: clientIp, user_agent: ua,
+        });
+      } else {
+        console.log(`[submit] WhatsApp OTP sent session=${sessionId}`);
+        logEvent(db, {
+          session_id: sessionId, trace_id: traceId, store_id: storeId,
+          event_type: "otp_sent", step: "otp", status: "success",
+          latency_ms: otpLatency,
+          payload: { phone_masked: phone?.replace(/^(\d{2})\d+(\d{2})$/, "$1***$2") },
+          session_patch: { otp_sent_at: new Date().toISOString() },
+          client_ip: clientIp, user_agent: ua,
+        });
+      }
 
       // Audit + GeoIP enrichment
       db.from("audit_logs").insert({
         store_id: storeId, entity: "lead", entity_id: leadId,
         action: "create",
-        meta: { session_id: sessionId, mac: clientMac, ip: clientIpStr, store_slug: storeSlug },
+        meta: { session_id: sessionId, mac: clientMac, ip: clientIpStr, store_slug: storeSlug, trace_id: traceId },
       }).then(() => {}, () => {});
 
       if (clientIp) {
@@ -1567,11 +1604,12 @@ async function handleSubmit(req: Request): Promise<Response> {
     EdgeRuntime.waitUntil(bgWork);
   }
 
-  console.log(`[submit] done session=${sessionId || "none"} (${Date.now() - t0}ms)`);
+  console.log(`[submit] done session=${sessionId || "none"} trace=${traceId} (${Date.now() - t0}ms)`);
 
   return jsonResponse({
     ok: true,
     session_id: sessionId,
+    trace_id: traceId,
     authorized: false,
     redirect_url: redirectUrl || DEFAULT_REDIRECT_URL,
     requires_verification: true,
