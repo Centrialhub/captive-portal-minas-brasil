@@ -2884,6 +2884,46 @@ if(redirectUrl){document.getElementById('success-redirect').style.display='block
   });
 }
 
+// ========== Client-side telemetry ==========
+async function handleClientEvent(req: Request): Promise<Response> {
+  const clientIp = getPublicIp(req) || "unknown";
+  const ua = req.headers.get("user-agent")?.slice(0, 500) || null;
+  const db = supabaseAdmin();
+
+  const body = await safeParseJson(req);
+  if (!body) return errorResponse("Invalid JSON body");
+
+  const sessionId = isValidUUID(body.session_id) ? (body.session_id as string) : null;
+  const eventName = sanitizeString(body.event, 64) || "client_event";
+  const step = sanitizeString(body.step, 32) || "client";
+  const status = sanitizeString(body.status, 16) || "info";
+  const errorCode = sanitizeString(body.error_code, 64);
+  const errorMessage = sanitizeString(body.error_message, 500);
+  const traceId = sanitizeString(body.trace_id, 64) || getTraceId(req, body);
+
+  // Light rate limit per session/ip — keep cheap, telemetry must not block flow
+  const rl = await checkRateLimitDb(db, `client-event:${sessionId || clientIp}`, 60, 60, 60);
+  if (!rl.allowed) return jsonResponse({ ok: true, throttled: true });
+
+  let payload: unknown = null;
+  try { payload = body.payload && typeof body.payload === "object" ? body.payload : null; } catch { payload = null; }
+
+  logEvent(db, {
+    session_id: sessionId,
+    trace_id: traceId,
+    event_type: `client_${eventName}`.slice(0, 64),
+    step,
+    status,
+    error_code: errorCode || undefined,
+    error_message: errorMessage || undefined,
+    payload: payload as Record<string, unknown> | null,
+    client_ip: clientIp,
+    user_agent: ua,
+  });
+
+  return jsonResponse({ ok: true });
+}
+
 // ========== Main Router ==========
 
 Deno.serve(async (req: Request) => {
