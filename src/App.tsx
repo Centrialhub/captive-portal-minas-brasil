@@ -191,14 +191,37 @@ export default function App() {
   };
 
   const handleVerify = async () => {
-    const sid = sessionIdRef.current || sessionId;
-    if (!sid) { setError("Sessão não encontrada. Recarregue a página."); return; }
+    let sid = sessionIdRef.current || sessionId;
+    if (!sid) {
+      try {
+        const stored = sessionStorage.getItem("mb_session_id");
+        if (stored) {
+          sid = stored;
+          sessionIdRef.current = stored;
+          setSessionId(stored);
+        }
+      } catch { /* ignore */ }
+    }
+    if (!sid) {
+      api.clientEvent({ event: "verify_no_session", status: "error" });
+      setError("Sessão não encontrada. Recarregue a página.");
+      return;
+    }
     if (otpCode.length !== 6) return;
     setVerifying(true);
     setError("");
 
+    api.clientEvent({ session_id: sid, event: "verify_attempt_started", step: "otp", status: "info" });
+
     try {
       const result = await api.verifyCode({ session_id: sid, code: otpCode });
+      api.clientEvent({
+        session_id: sid,
+        event: "verify_attempt_finished",
+        step: "otp",
+        status: result?.error ? "error" : (result?.authorized ? "success" : "warning"),
+        payload: { has_error: !!result?.error, authorized: !!result?.authorized, use_hotspot_redirect: !!result?.use_hotspot_redirect },
+      });
       if (result.error) {
         setError(result.error);
         setOtpCode("");
@@ -226,7 +249,16 @@ export default function App() {
         setError(result.message || "Cadastro confirmado, mas o UniFi não confirmou a liberação. Desconecte e conecte novamente à rede ou procure atendimento.");
         setOtpCode("");
       }
-    } catch {
+    } catch (err) {
+      const e2 = err as { kind?: string; message?: string };
+      api.clientEvent({
+        session_id: sid,
+        event: "verify_attempt_failed",
+        step: "otp",
+        status: "error",
+        error_code: e2?.kind || "unknown",
+        error_message: e2?.message?.slice(0, 200),
+      });
       setError("Erro ao verificar código.");
     }
     setVerifying(false);
