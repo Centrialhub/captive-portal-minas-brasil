@@ -1738,17 +1738,28 @@ async function handleRequestCode(req: Request): Promise<Response> {
 
 // ========== OTP: Verify Code ==========
 async function handleVerifyCode(req: Request): Promise<Response> {
+  const t0 = Date.now();
   const clientIp = getPublicIp(req) || "unknown";
+  const ua = req.headers.get("user-agent")?.slice(0, 500) || null;
   const db = supabaseAdmin();
 
   const body = await safeParseJson(req);
   if (!body) return errorResponse("Invalid JSON body");
 
+  const traceId = getTraceId(req, body);
   const sessionId = body.session_id;
   if (!isValidUUID(sessionId)) return errorResponse("session_id inválido");
 
   const code = sanitizeString(body.code, 6);
-  if (!code || code.length !== 6 || !/^\d{6}$/.test(code)) return errorResponse("Código inválido");
+  if (!code || code.length !== 6 || !/^\d{6}$/.test(code)) {
+    logEvent(db, {
+      session_id: sessionId as string, trace_id: traceId,
+      event_type: "otp_verify_invalid_format", step: "otp", status: "error",
+      error_code: "OTP_FORMAT_INVALID",
+      client_ip: clientIp, user_agent: ua,
+    });
+    return errorResponse("Código inválido");
+  }
 
   // Rate limits
   const rlIp = await checkRateLimitDb(db, `verify:ip:${clientIp}`, 60, 10, 120);
