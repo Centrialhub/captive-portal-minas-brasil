@@ -1867,7 +1867,22 @@ async function handleVerifyCode(req: Request): Promise<Response> {
         await db.from("captive_sessions")
           .update({ status: "failed", fail_reason: "DAILY_LIMIT_REACHED" })
           .eq("id", sessionId as string);
+        logEvent(db, {
+          session_id: sessionId as string, trace_id: traceId, store_id: storeId,
+          event_type: "daily_limit_reached", step: "unifi", status: "warning",
+          error_code: "DAILY_LIMIT_REACHED",
+          payload: { count: dailyAuthCount, mac: session.client_mac },
+          client_ip: clientIp, user_agent: ua,
+        });
       } else {
+        const authStartedAt = Date.now();
+        logEvent(db, {
+          session_id: sessionId as string, trace_id: traceId, store_id: storeId,
+          event_type: "unifi_authorize_started", step: "unifi", status: "info",
+          payload: { mac: session.client_mac, ap_mac: (session as { ap_mac?: string | null }).ap_mac || null, ssid: (session as { ssid?: string | null }).ssid || null },
+          session_patch: { unifi_authorize_called_at: new Date().toISOString() },
+          client_ip: clientIp, user_agent: ua,
+        });
         try {
           const authResult = await authorizeClient(
             db, storeId, storeSlug, session.client_mac, sessionId as string, clientIp,
@@ -1875,8 +1890,29 @@ async function handleVerifyCode(req: Request): Promise<Response> {
           );
           authorized = authResult.ok;
           if (!authResult.ok && authResult.userMessage) authUserMessage = authResult.userMessage;
+          logEvent(db, {
+            session_id: sessionId as string, trace_id: traceId, store_id: storeId,
+            event_type: authResult.ok ? "unifi_authorize_confirmed" : "unifi_authorize_failed",
+            step: "unifi",
+            status: authResult.ok ? "success" : "error",
+            error_code: authResult.ok ? null : (authResult.reason || "UNIFI_UNKNOWN"),
+            error_message: authResult.ok ? null : (authResult.userMessage || authResult.reason || null),
+            latency_ms: Date.now() - authStartedAt,
+            payload: {
+              cmd_accepted_at: authResult.cmd_accepted_at || null,
+              last_verify_result: authResult.last_verify_result || null,
+            },
+            session_patch: authResult.ok ? { unifi_confirmed_at: new Date().toISOString() } : undefined,
+            client_ip: clientIp, user_agent: ua,
+          });
         } catch (err) {
           console.error("UniFi authorization error:", (err as Error).message);
+          logEvent(db, {
+            session_id: sessionId as string, trace_id: traceId, store_id: storeId,
+            event_type: "unifi_authorize_exception", step: "unifi", status: "error",
+            error_code: "UNIFI_EXCEPTION", error_message: (err as Error).message,
+            client_ip: clientIp, user_agent: ua,
+          });
         }
       }
     } else {
@@ -1885,6 +1921,13 @@ async function handleVerifyCode(req: Request): Promise<Response> {
       await db.from("captive_sessions")
         .update({ status: "submitted", fail_reason: `SKIPPED:${reason}` })
         .eq("id", sessionId as string);
+      logEvent(db, {
+        session_id: sessionId as string, trace_id: traceId, store_id: storeId,
+        event_type: "unifi_authorize_skipped", step: "unifi", status: "warning",
+        error_code: !storeId ? "STORE_MISSING" : "MAC_MISSING",
+        error_message: reason,
+        client_ip: clientIp, user_agent: ua,
+      });
     }
   }
 
