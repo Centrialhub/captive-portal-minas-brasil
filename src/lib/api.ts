@@ -86,6 +86,7 @@ function xhrRequest<T = any>(path: string, opts: XhrOptions = {}): Promise<T> {
       if (body !== undefined) {
         xhr.setRequestHeader("Content-Type", "application/json");
       }
+      try { xhr.setRequestHeader("x-trace-id", getOrCreateTraceId()); } catch { /* ignore */ }
       xhr.onload = () => {
         const status = xhr.status;
         const text = xhr.responseText || "";
