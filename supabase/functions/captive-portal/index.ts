@@ -86,6 +86,26 @@ function isValidPhone(phone: string): boolean {
   return digits.length >= 8 && digits.length <= 15;
 }
 
+/**
+ * Normaliza telefone para E.164 brasileiro (ex: 5531999999999).
+ * O webhook do Centrial Hub exige esse formato — sem '+', apenas dígitos com DDI 55.
+ */
+function toE164BR(phone: string): string {
+  let digits = (phone || "").replace(/\D/g, "");
+  // Remove zero à esquerda (formato antigo de discagem nacional)
+  digits = digits.replace(/^0+/, "");
+  // Se já começa com 55 e tem 12-13 dígitos, já está OK
+  if (digits.startsWith("55") && (digits.length === 12 || digits.length === 13)) {
+    return digits;
+  }
+  // Se tem 10 ou 11 dígitos (DDD + número), prefixar 55
+  if (digits.length === 10 || digits.length === 11) {
+    return "55" + digits;
+  }
+  // Fallback: retorna como veio (já validado por isValidPhone)
+  return digits;
+}
+
 function isValidSlug(slug: string): boolean {
   return /^[a-z0-9][a-z0-9_-]{0,48}[a-z0-9]$/.test(slug) || /^[a-z0-9]$/.test(slug);
 }
@@ -480,11 +500,13 @@ async function sendWhatsAppCode(
       headers["Authorization"] = `Bearer ${config.secret}`;
     }
 
+    const phoneE164 = toE164BR(phone);
     const res = await fetch(config.url, {
       method: "POST",
       headers,
       body: JSON.stringify({
-        phone,
+        phone: phoneE164,
+        phone_raw: phone,
         code,
         store_name: storeName,
         store_id: storeId,
