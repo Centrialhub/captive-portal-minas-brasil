@@ -27,6 +27,8 @@ export function getOrCreateTraceId(): string {
 export function traceHeaders(): Record<string, string> {
   return { "x-trace-id": getOrCreateTraceId() };
 }
+
+export interface UnifiQueryParams {
   client_mac?: string;
   ap_mac?: string;
   ssid?: string;
