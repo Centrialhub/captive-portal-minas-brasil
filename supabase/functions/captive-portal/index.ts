@@ -1311,31 +1311,44 @@ async function handleSubmit(req: Request): Promise<Response> {
   const t0 = Date.now();
   const clientIp = getPublicIp(req);
   const clientIpStr = clientIp || "unknown";
+  const ua = req.headers.get("user-agent")?.slice(0, 500) || null;
   const db = supabaseAdmin();
 
   const body = await safeParseJson(req);
   if (!body) return errorResponse("Invalid JSON body");
 
-  const name = sanitizeString(body.name, MAX_NAME_LEN);
-  if (!name) return errorResponse("Nome é obrigatório");
+  const traceId = getTraceId(req, body);
 
+  const name = sanitizeString(body.name, MAX_NAME_LEN);
   const email = sanitizeString(body.email, MAX_EMAIL_LEN);
   const phone = sanitizeString(body.phone, MAX_PHONE_LEN);
   const cpf = sanitizeString(body.cpf, 20);
-
-  if (!cpf) return errorResponse("CPF é obrigatório");
-  if (!phone || !isValidPhone(phone)) return errorResponse("Telefone válido é obrigatório");
-  if (email && !isValidEmail(email)) return errorResponse("E-mail inválido");
-
   const consentVersion = sanitizeString(body.consent_version, 20);
-  if (!consentVersion) return errorResponse("Consentimento é obrigatório");
-
   let sessionId = body.session_id as string | undefined;
-  if (sessionId && !isValidUUID(sessionId)) return errorResponse("session_id inválido");
+
+  // Validation with structured logging
+  const failValidation = (code: string, msg: string) => {
+    logEvent(db, {
+      session_id: sessionId && isValidUUID(sessionId) ? sessionId : null,
+      trace_id: traceId,
+      event_type: "form_validation_failed", step: "form", status: "error",
+      error_code: code, error_message: msg,
+      payload: { has_name: !!name, has_phone: !!phone, has_cpf: !!cpf, has_email: !!email, consent_version: consentVersion },
+      client_ip: clientIp, user_agent: ua,
+    });
+    return errorResponse(msg);
+  };
+
+  if (!name) return failValidation("NAME_REQUIRED", "Nome é obrigatório");
+  if (!cpf) return failValidation("CPF_REQUIRED", "CPF é obrigatório");
+  if (!phone || !isValidPhone(phone)) return failValidation("PHONE_INVALID", "Telefone válido é obrigatório");
+  if (email && !isValidEmail(email)) return failValidation("EMAIL_INVALID", "E-mail inválido");
+  if (!consentVersion) return failValidation("CONSENT_REQUIRED", "Consentimento é obrigatório");
+  if (sessionId && !isValidUUID(sessionId)) return failValidation("SESSION_ID_INVALID", "session_id inválido");
 
   const clientMac = normalizeMac(body.client_mac);
 
-  console.log(`[submit] start session=${sessionId || "none"} mac=${clientMac || "none"} ip=${clientIpStr}`);
+  console.log(`[submit] trace=${traceId} session=${sessionId || "none"} mac=${clientMac || "none"} ip=${clientIpStr}`);
 
   // Detect store: ?store=slug > IP mapping > single active store
   const detected = await detectStoreFromRequest(db, req);
