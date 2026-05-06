@@ -146,6 +146,9 @@ export default function App() {
       if (result?.session_id) {
         sessionIdRef.current = result.session_id;
         setSessionId(result.session_id);
+        try { sessionStorage.setItem("mb_session_id", result.session_id); } catch { /* ignore */ }
+      } else if (sid) {
+        try { sessionStorage.setItem("mb_session_id", sid); } catch { /* ignore */ }
       }
 
       if (result?.error) {
