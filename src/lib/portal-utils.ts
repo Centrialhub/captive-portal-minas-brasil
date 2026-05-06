@@ -10,6 +10,24 @@ export function getApiBase(): string {
   return "https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal";
 }
 
+const TRACE_KEY = "mb_trace_id";
+
+export function getOrCreateTraceId(): string {
+  try {
+    const existing = sessionStorage.getItem(TRACE_KEY);
+    if (existing && existing.length <= 64) return existing;
+  } catch { /* ignore */ }
+  const t = (typeof crypto !== "undefined" && crypto.randomUUID)
+    ? crypto.randomUUID()
+    : `t-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  try { sessionStorage.setItem(TRACE_KEY, t); } catch { /* ignore */ }
+  return t;
+}
+
+export function traceHeaders(): Record<string, string> {
+  return { "x-trace-id": getOrCreateTraceId() };
+}
+
 export interface UnifiQueryParams {
   client_mac?: string;
   ap_mac?: string;

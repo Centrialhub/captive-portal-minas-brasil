@@ -1738,17 +1738,28 @@ async function handleRequestCode(req: Request): Promise<Response> {
 
 // ========== OTP: Verify Code ==========
 async function handleVerifyCode(req: Request): Promise<Response> {
+  const t0 = Date.now();
   const clientIp = getPublicIp(req) || "unknown";
+  const ua = req.headers.get("user-agent")?.slice(0, 500) || null;
   const db = supabaseAdmin();
 
   const body = await safeParseJson(req);
   if (!body) return errorResponse("Invalid JSON body");
 
+  const traceId = getTraceId(req, body);
   const sessionId = body.session_id;
   if (!isValidUUID(sessionId)) return errorResponse("session_id inválido");
 
   const code = sanitizeString(body.code, 6);
-  if (!code || code.length !== 6 || !/^\d{6}$/.test(code)) return errorResponse("Código inválido");
+  if (!code || code.length !== 6 || !/^\d{6}$/.test(code)) {
+    logEvent(db, {
+      session_id: sessionId as string, trace_id: traceId,
+      event_type: "otp_verify_invalid_format", step: "otp", status: "error",
+      error_code: "OTP_FORMAT_INVALID",
+      client_ip: clientIp, user_agent: ua,
+    });
+    return errorResponse("Código inválido");
+  }
 
   // Rate limits
   const rlIp = await checkRateLimitDb(db, `verify:ip:${clientIp}`, 60, 10, 120);
@@ -1769,12 +1780,22 @@ async function handleVerifyCode(req: Request): Promise<Response> {
   // Check expiration
   if (new Date(verification.expires_at) < new Date()) {
     await db.from("captive_verifications").update({ status: "expired" }).eq("id", verification.id);
+    logEvent(db, {
+      session_id: sessionId as string, trace_id: traceId, store_id: verification.store_id,
+      event_type: "otp_expired", step: "otp", status: "error",
+      error_code: "OTP_EXPIRED", client_ip: clientIp, user_agent: ua,
+    });
     return errorResponse("Código expirado. Solicite um novo.", 410);
   }
 
   // Check attempts
   if (verification.attempts >= OTP_MAX_ATTEMPTS) {
     await db.from("captive_verifications").update({ status: "locked" }).eq("id", verification.id);
+    logEvent(db, {
+      session_id: sessionId as string, trace_id: traceId, store_id: verification.store_id,
+      event_type: "otp_locked", step: "otp", status: "error",
+      error_code: "OTP_MAX_ATTEMPTS", client_ip: clientIp, user_agent: ua,
+    });
     return errorResponse("Número máximo de tentativas atingido.", 429);
   }
 
@@ -1785,8 +1806,22 @@ async function handleVerifyCode(req: Request): Promise<Response> {
   const inputHash = await hashOtp(code);
   if (inputHash !== verification.code_hash) {
     const remaining = OTP_MAX_ATTEMPTS - verification.attempts - 1;
+    logEvent(db, {
+      session_id: sessionId as string, trace_id: traceId, store_id: verification.store_id,
+      event_type: "otp_incorrect", step: "otp", status: "warning",
+      error_code: "OTP_MISMATCH",
+      payload: { attempt: verification.attempts + 1, remaining },
+      client_ip: clientIp, user_agent: ua,
+    });
     return errorResponse(`Código incorreto. ${remaining} tentativa(s) restante(s).`);
   }
+
+  logEvent(db, {
+    session_id: sessionId as string, trace_id: traceId, store_id: verification.store_id,
+    event_type: "otp_verified", step: "otp", status: "success",
+    session_patch: { otp_verified_at: new Date().toISOString() },
+    client_ip: clientIp, user_agent: ua,
+  });
 
   // Code is correct; only mark the verification as completed after UniFi confirms access.
   // This lets the same valid OTP be retried when the controller returns HTTP 200
@@ -1832,7 +1867,22 @@ async function handleVerifyCode(req: Request): Promise<Response> {
         await db.from("captive_sessions")
           .update({ status: "failed", fail_reason: "DAILY_LIMIT_REACHED" })
           .eq("id", sessionId as string);
+        logEvent(db, {
+          session_id: sessionId as string, trace_id: traceId, store_id: storeId,
+          event_type: "daily_limit_reached", step: "unifi", status: "warning",
+          error_code: "DAILY_LIMIT_REACHED",
+          payload: { count: dailyAuthCount, mac: session.client_mac },
+          client_ip: clientIp, user_agent: ua,
+        });
       } else {
+        const authStartedAt = Date.now();
+        logEvent(db, {
+          session_id: sessionId as string, trace_id: traceId, store_id: storeId,
+          event_type: "unifi_authorize_started", step: "unifi", status: "info",
+          payload: { mac: session.client_mac, ap_mac: (session as { ap_mac?: string | null }).ap_mac || null, ssid: (session as { ssid?: string | null }).ssid || null },
+          session_patch: { unifi_authorize_called_at: new Date().toISOString() },
+          client_ip: clientIp, user_agent: ua,
+        });
         try {
           const authResult = await authorizeClient(
             db, storeId, storeSlug, session.client_mac, sessionId as string, clientIp,
@@ -1840,8 +1890,29 @@ async function handleVerifyCode(req: Request): Promise<Response> {
           );
           authorized = authResult.ok;
           if (!authResult.ok && authResult.userMessage) authUserMessage = authResult.userMessage;
+          logEvent(db, {
+            session_id: sessionId as string, trace_id: traceId, store_id: storeId,
+            event_type: authResult.ok ? "unifi_authorize_confirmed" : "unifi_authorize_failed",
+            step: "unifi",
+            status: authResult.ok ? "success" : "error",
+            error_code: authResult.ok ? null : (authResult.reason || "UNIFI_UNKNOWN"),
+            error_message: authResult.ok ? null : (authResult.userMessage || authResult.reason || null),
+            latency_ms: Date.now() - authStartedAt,
+            payload: {
+              cmd_accepted_at: authResult.cmd_accepted_at || null,
+              last_verify_result: authResult.last_verify_result || null,
+            },
+            session_patch: authResult.ok ? { unifi_confirmed_at: new Date().toISOString() } : undefined,
+            client_ip: clientIp, user_agent: ua,
+          });
         } catch (err) {
           console.error("UniFi authorization error:", (err as Error).message);
+          logEvent(db, {
+            session_id: sessionId as string, trace_id: traceId, store_id: storeId,
+            event_type: "unifi_authorize_exception", step: "unifi", status: "error",
+            error_code: "UNIFI_EXCEPTION", error_message: (err as Error).message,
+            client_ip: clientIp, user_agent: ua,
+          });
         }
       }
     } else {
@@ -1850,6 +1921,13 @@ async function handleVerifyCode(req: Request): Promise<Response> {
       await db.from("captive_sessions")
         .update({ status: "submitted", fail_reason: `SKIPPED:${reason}` })
         .eq("id", sessionId as string);
+      logEvent(db, {
+        session_id: sessionId as string, trace_id: traceId, store_id: storeId,
+        event_type: "unifi_authorize_skipped", step: "unifi", status: "warning",
+        error_code: !storeId ? "STORE_MISSING" : "MAC_MISSING",
+        error_message: reason,
+        client_ip: clientIp, user_agent: ua,
+      });
     }
   }
 
@@ -1930,12 +2008,30 @@ async function handleVerifyCode(req: Request): Promise<Response> {
     message = "Cadastro confirmado, mas o UniFi não confirmou a liberação. Desconecte e conecte novamente à rede ou procure atendimento.";
   }
 
+  const totalLatency = Date.now() - t0;
+  logEvent(db, {
+    session_id: sessionId as string, trace_id: traceId, store_id: resolvedStoreId,
+    event_type: "verify_code_response", step: "redirect",
+    status: authorized ? "success" : (pendingUnifiConfirmation ? "warning" : "error"),
+    latency_ms: totalLatency,
+    payload: {
+      authorized,
+      pending_unifi_confirmation: pendingUnifiConfirmation,
+      use_hotspot_redirect: useHotspotRedirect,
+      daily_limit_reached: dailyLimitReached,
+      redirect_url: resolvedRedirectUrl,
+    },
+    session_patch: { total_latency_ms: totalLatency, redirect_served_at: new Date().toISOString() },
+    client_ip: clientIp, user_agent: ua,
+  });
+
   return jsonResponse({
     ok: true,
     authorized,
     pending_unifi_confirmation: pendingUnifiConfirmation,
     redirect_url: resolvedRedirectUrl,
     use_hotspot_redirect: useHotspotRedirect,
+    trace_id: traceId,
     message,
   });
 }
