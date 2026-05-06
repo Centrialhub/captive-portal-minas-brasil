@@ -1,4 +1,4 @@
-import { getApiBase } from "./portal-utils";
+import { getApiBase, getOrCreateTraceId } from "./portal-utils";
 
 const API_BASE = getApiBase();
 const SUPABASE_DIRECT = "https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal";
