@@ -123,6 +123,71 @@ function safeParseJson(req: Request): Promise<Record<string, unknown> | null> {
   return req.json().catch(() => null);
 }
 
+// ========== Trace ID + Event Logging ==========
+function getTraceId(req: Request, body?: Record<string, unknown> | null): string {
+  const fromHeader = req.headers.get("x-trace-id")?.trim();
+  if (fromHeader && fromHeader.length <= 64) return fromHeader;
+  const fromBody = body && typeof body.trace_id === "string" ? body.trace_id.trim() : "";
+  if (fromBody && fromBody.length <= 64) return fromBody;
+  return (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : `t-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+interface LogEventArgs {
+  session_id?: string | null;
+  trace_id?: string | null;
+  store_id?: string | null;
+  event_type: string;
+  step: "params" | "form" | "otp" | "unifi" | "redirect" | "system";
+  status?: "info" | "success" | "warning" | "error";
+  error_code?: string | null;
+  error_message?: string | null;
+  latency_ms?: number | null;
+  payload?: Record<string, unknown> | null;
+  client_ip?: string | null;
+  user_agent?: string | null;
+  /** When provided, also patches captive_sessions with these fields. */
+  session_patch?: Record<string, unknown>;
+}
+
+/** Fire-and-forget event logger. Inserts into portal_events and optionally
+ *  updates captive_sessions timeline columns. Never throws. */
+function logEvent(db: ReturnType<typeof supabaseAdmin>, args: LogEventArgs): void {
+  const row = {
+    session_id: args.session_id || null,
+    trace_id: args.trace_id || null,
+    store_id: args.store_id || null,
+    event_type: args.event_type,
+    step: args.step,
+    status: args.status || "info",
+    error_code: args.error_code || null,
+    error_message: args.error_message || null,
+    latency_ms: args.latency_ms ?? null,
+    payload: args.payload || null,
+    client_ip: args.client_ip || null,
+    user_agent: args.user_agent ? args.user_agent.slice(0, 500) : null,
+  };
+  db.from("portal_events").insert(row).then(
+    () => {},
+    (e) => console.warn("[logEvent] insert failed:", (e as Error)?.message),
+  );
+
+  if (args.session_id) {
+    const patch: Record<string, unknown> = {
+      last_step: args.step,
+      ...(args.session_patch || {}),
+    };
+    if (args.trace_id) patch.trace_id = args.trace_id;
+    if (args.status === "error") {
+      if (args.error_code) patch.last_error_code = args.error_code;
+      if (args.error_message) patch.last_error_message = args.error_message.slice(0, 500);
+    }
+    db.from("captive_sessions").update(patch).eq("id", args.session_id).then(
+      () => {},
+      (e) => console.warn("[logEvent] session patch failed:", (e as Error)?.message),
+    );
+  }
+}
+
 // ========== Detect Store (slug param > IP > single active fallback) ==========
 async function detectStoreFromRequest(
   db: ReturnType<typeof supabaseAdmin>,
