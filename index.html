@@ -196,6 +196,24 @@
         cooldownTimer: null
       };
 
+      // Restore session_id from sessionStorage (CNA may reload page)
+      try { var s = sessionStorage.getItem('mb_session_id'); if(s) state.session_id = s; } catch(e){}
+
+      // ── Telemetry (fire-and-forget) ──
+      function clientEvent(name, status, extras){
+        try {
+          var body = { event: name, status: status||'info', step: (extras&&extras.step)||'client', session_id: state.session_id||null };
+          if(extras&&extras.payload) body.payload = extras.payload;
+          if(extras&&extras.error_message) body.error_message = String(extras.error_message).slice(0,200);
+          if(extras&&extras.error_code) body.error_code = extras.error_code;
+          apiFetch('/client-event','POST',body,function(){}, 5000);
+        } catch(e){}
+      }
+
+      window.addEventListener('error', function(e){
+        clientEvent('window_error','error',{error_message:e.message,payload:{src:String(e.filename).slice(0,200),line:e.lineno||0}});
+      });
+
       function uuid(){
         if(window.crypto && crypto.randomUUID) return crypto.randomUUID();
         return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,function(c){
