@@ -53,16 +53,29 @@ export type Database = {
           client_ip: string | null
           client_mac: string | null
           fail_reason: string | null
+          form_submitted_at: string | null
           id: string
+          last_error_code: string | null
+          last_error_message: string | null
+          last_step: string | null
           original_client_mac: string | null
           original_unifi_url_params: Json | null
+          otp_sent_at: string | null
+          otp_verified_at: string | null
+          params_received_at: string | null
+          redirect_clicked_at: string | null
+          redirect_served_at: string | null
           redirect_url: string | null
           ssid: string | null
           started_at: string
           status: Database["public"]["Enums"]["session_status"]
           store_id: string | null
           submitted_at: string | null
+          total_latency_ms: number | null
+          trace_id: string | null
+          unifi_authorize_called_at: string | null
           unifi_cmd_accepted_at: string | null
+          unifi_confirmed_at: string | null
           unifi_fallback_redirect_url: string | null
           unifi_last_verify_result: Json | null
           updated_at: string
@@ -76,16 +89,29 @@ export type Database = {
           client_ip?: string | null
           client_mac?: string | null
           fail_reason?: string | null
+          form_submitted_at?: string | null
           id?: string
+          last_error_code?: string | null
+          last_error_message?: string | null
+          last_step?: string | null
           original_client_mac?: string | null
           original_unifi_url_params?: Json | null
+          otp_sent_at?: string | null
+          otp_verified_at?: string | null
+          params_received_at?: string | null
+          redirect_clicked_at?: string | null
+          redirect_served_at?: string | null
           redirect_url?: string | null
           ssid?: string | null
           started_at?: string
           status?: Database["public"]["Enums"]["session_status"]
           store_id?: string | null
           submitted_at?: string | null
+          total_latency_ms?: number | null
+          trace_id?: string | null
+          unifi_authorize_called_at?: string | null
           unifi_cmd_accepted_at?: string | null
+          unifi_confirmed_at?: string | null
           unifi_fallback_redirect_url?: string | null
           unifi_last_verify_result?: Json | null
           updated_at?: string
@@ -99,16 +125,29 @@ export type Database = {
           client_ip?: string | null
           client_mac?: string | null
           fail_reason?: string | null
+          form_submitted_at?: string | null
           id?: string
+          last_error_code?: string | null
+          last_error_message?: string | null
+          last_step?: string | null
           original_client_mac?: string | null
           original_unifi_url_params?: Json | null
+          otp_sent_at?: string | null
+          otp_verified_at?: string | null
+          params_received_at?: string | null
+          redirect_clicked_at?: string | null
+          redirect_served_at?: string | null
           redirect_url?: string | null
           ssid?: string | null
           started_at?: string
           status?: Database["public"]["Enums"]["session_status"]
           store_id?: string | null
           submitted_at?: string | null
+          total_latency_ms?: number | null
+          trace_id?: string | null
+          unifi_authorize_called_at?: string | null
           unifi_cmd_accepted_at?: string | null
+          unifi_confirmed_at?: string | null
           unifi_fallback_redirect_url?: string | null
           unifi_last_verify_result?: Json | null
           updated_at?: string
@@ -407,6 +446,57 @@ export type Database = {
           notes?: string | null
           public_ip?: string
           region?: string | null
+        }
+        Relationships: []
+      }
+      portal_events: {
+        Row: {
+          client_ip: string | null
+          created_at: string
+          error_code: string | null
+          error_message: string | null
+          event_type: string
+          id: string
+          latency_ms: number | null
+          payload: Json | null
+          session_id: string | null
+          status: string
+          step: string
+          store_id: string | null
+          trace_id: string | null
+          user_agent: string | null
+        }
+        Insert: {
+          client_ip?: string | null
+          created_at?: string
+          error_code?: string | null
+          error_message?: string | null
+          event_type: string
+          id?: string
+          latency_ms?: number | null
+          payload?: Json | null
+          session_id?: string | null
+          status?: string
+          step: string
+          store_id?: string | null
+          trace_id?: string | null
+          user_agent?: string | null
+        }
+        Update: {
+          client_ip?: string | null
+          created_at?: string
+          error_code?: string | null
+          error_message?: string | null
+          event_type?: string
+          id?: string
+          latency_ms?: number | null
+          payload?: Json | null
+          session_id?: string | null
+          status?: string
+          step?: string
+          store_id?: string | null
+          trace_id?: string | null
+          user_agent?: string | null
         }
         Relationships: []
       }
