@@ -1223,20 +1223,18 @@ async function handleBootstrap(req: Request): Promise<Response> {
 }
 
 async function handleStart(req: Request): Promise<Response> {
+  const t0 = Date.now();
   const clientIp = getPublicIp(req) || "unknown";
+  const ua = req.headers.get("user-agent")?.slice(0, 500) || null;
   const db = supabaseAdmin();
 
-  // Distributed rate limit
-  // Captive portals frequently NAT many clients behind one public IP, so this
-  // limit is intentionally loose. Tighter limits live on per-phone request-code,
-  // per-session verify and per-MAC daily caps.
   const rl = await checkRateLimitDb(db, `start:ip:${clientIp}`, 60, 100, 120);
   if (!rl.allowed) return errorResponse("Muitas requisições. Aguarde um momento.", 429);
 
   const body = await safeParseJson(req);
   if (!body) return errorResponse("Invalid JSON body");
 
-  // Detect store: ?store=slug > IP mapping > single active store
+  const traceId = getTraceId(req, body);
   const detected = await detectStoreFromRequest(db, req);
 
   const mac = normalizeMac(body.client_mac);
@@ -1247,8 +1245,20 @@ async function handleStart(req: Request): Promise<Response> {
     : null;
 
   const reqUrl = new URL(req.url);
-  console.log(`[portal-params] id=${mac} ap=${apMac} ssid=${body.ssid} url=${body.redirect_url} t=${captiveTimestamp} site=${body.site}`);
-  console.log(`[start] raw_client_mac="${body.client_mac}" normalized="${mac}" raw_ap_mac="${body.ap_mac}" ssid="${body.ssid}" ua="${(req.headers.get("user-agent") || "").slice(0, 80)}" all_params=${JSON.stringify(Object.fromEntries(reqUrl.searchParams))}`);
+  console.log(`[portal-params] trace=${traceId} id=${mac} ap=${apMac} ssid=${body.ssid} url=${body.redirect_url} t=${captiveTimestamp} site=${body.site}`);
+
+  // Log params reception (no session yet)
+  logEvent(db, {
+    trace_id: traceId, store_id: detected.store_id,
+    event_type: "params_received", step: "params", status: "info",
+    payload: {
+      raw: Object.fromEntries(reqUrl.searchParams),
+      normalized: { client_mac: mac, ap_mac: apMac, ssid: body.ssid, captive_timestamp: captiveTimestamp, site: body.site },
+      original_unifi_url_params: originalUnifiParams,
+      store_slug: detected.store_slug,
+    },
+    client_ip: clientIp, user_agent: ua,
+  });
 
   const { data: session, error } = await db
     .from("captive_sessions")
@@ -1258,11 +1268,14 @@ async function handleStart(req: Request): Promise<Response> {
       client_ip: sanitizeString(body.client_ip, 45) || clientIp,
       ap_mac: apMac,
       ssid: sanitizeString(body.ssid, 64),
-      user_agent: sanitizeString(body.user_agent, 500) || req.headers.get("user-agent")?.slice(0, 500),
+      user_agent: sanitizeString(body.user_agent, 500) || ua,
       redirect_url: sanitizeString(body.redirect_url, 2000),
       captive_timestamp: captiveTimestamp,
       original_unifi_url_params: originalUnifiParams,
       status: "started",
+      trace_id: traceId,
+      params_received_at: new Date().toISOString(),
+      last_step: "params",
     })
     .select("id")
     .single();
