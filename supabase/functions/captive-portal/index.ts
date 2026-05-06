@@ -2008,6 +2008,23 @@ async function handleVerifyCode(req: Request): Promise<Response> {
     message = "Cadastro confirmado, mas o UniFi não confirmou a liberação. Desconecte e conecte novamente à rede ou procure atendimento.";
   }
 
+  const totalLatency = Date.now() - t0;
+  logEvent(db, {
+    session_id: sessionId as string, trace_id: traceId, store_id: resolvedStoreId,
+    event_type: "verify_code_response", step: "redirect",
+    status: authorized ? "success" : (pendingUnifiConfirmation ? "warning" : "error"),
+    latency_ms: totalLatency,
+    payload: {
+      authorized,
+      pending_unifi_confirmation: pendingUnifiConfirmation,
+      use_hotspot_redirect: useHotspotRedirect,
+      daily_limit_reached: dailyLimitReached,
+      redirect_url: resolvedRedirectUrl,
+    },
+    session_patch: { total_latency_ms: totalLatency, redirect_served_at: new Date().toISOString() },
+    client_ip: clientIp, user_agent: ua,
+  });
+
   return jsonResponse({
     ok: true,
     authorized,
