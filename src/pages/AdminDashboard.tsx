@@ -194,7 +194,7 @@ export default function AdminDashboard() {
           <thead>
             <tr style={{ background: "#f3f4f6", textAlign: "left" }}>
               <Th>Iniciado</Th><Th>Status</Th><Th>Etapa</Th><Th>MAC</Th>
-              <Th>IP</Th><Th>Erro</Th><Th>Latência</Th><Th>Trace</Th><Th></Th>
+              <Th>IP</Th><Th>Erro</Th><Th>Latência</Th><Th>Trace</Th><Th>{""}</Th>
             </tr>
           </thead>
           <tbody>
