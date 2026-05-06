@@ -1780,12 +1780,22 @@ async function handleVerifyCode(req: Request): Promise<Response> {
   // Check expiration
   if (new Date(verification.expires_at) < new Date()) {
     await db.from("captive_verifications").update({ status: "expired" }).eq("id", verification.id);
+    logEvent(db, {
+      session_id: sessionId as string, trace_id: traceId, store_id: verification.store_id,
+      event_type: "otp_expired", step: "otp", status: "error",
+      error_code: "OTP_EXPIRED", client_ip: clientIp, user_agent: ua,
+    });
     return errorResponse("Código expirado. Solicite um novo.", 410);
   }
 
   // Check attempts
   if (verification.attempts >= OTP_MAX_ATTEMPTS) {
     await db.from("captive_verifications").update({ status: "locked" }).eq("id", verification.id);
+    logEvent(db, {
+      session_id: sessionId as string, trace_id: traceId, store_id: verification.store_id,
+      event_type: "otp_locked", step: "otp", status: "error",
+      error_code: "OTP_MAX_ATTEMPTS", client_ip: clientIp, user_agent: ua,
+    });
     return errorResponse("Número máximo de tentativas atingido.", 429);
   }
 
@@ -1796,8 +1806,22 @@ async function handleVerifyCode(req: Request): Promise<Response> {
   const inputHash = await hashOtp(code);
   if (inputHash !== verification.code_hash) {
     const remaining = OTP_MAX_ATTEMPTS - verification.attempts - 1;
+    logEvent(db, {
+      session_id: sessionId as string, trace_id: traceId, store_id: verification.store_id,
+      event_type: "otp_incorrect", step: "otp", status: "warning",
+      error_code: "OTP_MISMATCH",
+      payload: { attempt: verification.attempts + 1, remaining },
+      client_ip: clientIp, user_agent: ua,
+    });
     return errorResponse(`Código incorreto. ${remaining} tentativa(s) restante(s).`);
   }
+
+  logEvent(db, {
+    session_id: sessionId as string, trace_id: traceId, store_id: verification.store_id,
+    event_type: "otp_verified", step: "otp", status: "success",
+    session_patch: { otp_verified_at: new Date().toISOString() },
+    client_ip: clientIp, user_agent: ua,
+  });
 
   // Code is correct; only mark the verification as completed after UniFi confirms access.
   // This lets the same valid OTP be retried when the controller returns HTTP 200
