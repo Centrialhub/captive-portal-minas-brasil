@@ -500,11 +500,13 @@ async function sendWhatsAppCode(
       headers["Authorization"] = `Bearer ${config.secret}`;
     }
 
+    const phoneE164 = toE164BR(phone);
     const res = await fetch(config.url, {
       method: "POST",
       headers,
       body: JSON.stringify({
-        phone,
+        phone: phoneE164,
+        phone_raw: phone,
         code,
         store_name: storeName,
         store_id: storeId,
