@@ -96,6 +96,44 @@ export default function App() {
     return () => { if (cooldownRef.current) clearInterval(cooldownRef.current); };
   }, []);
 
+  // Restore session_id from sessionStorage on mount (CNA may reload page mid-flow)
+  useEffect(() => {
+    try {
+      const stored = sessionStorage.getItem("mb_session_id");
+      if (stored && !sessionIdRef.current) {
+        sessionIdRef.current = stored;
+        setSessionId(stored);
+      }
+    } catch { /* ignore */ }
+
+    const onErr = (msg: unknown, src?: unknown, line?: unknown) => {
+      try {
+        api.clientEvent({
+          session_id: sessionIdRef.current,
+          event: "window_error",
+          status: "error",
+          error_message: String(msg).slice(0, 200),
+          payload: { src: String(src).slice(0, 200), line: typeof line === "number" ? line : 0 },
+        });
+      } catch { /* ignore */ }
+    };
+    window.addEventListener("error", (e) => onErr(e.message, e.filename, e.lineno));
+    window.addEventListener("unhandledrejection", (e) => onErr(e.reason?.message || e.reason || "unhandledrejection"));
+  }, []);
+
+  // Telemetry on entering OTP step
+  useEffect(() => {
+    if (step === "otp") {
+      api.clientEvent({
+        session_id: sessionIdRef.current,
+        event: "otp_screen_mounted",
+        step: "otp",
+        status: "info",
+        payload: { has_session: !!sessionIdRef.current },
+      });
+    }
+  }, [step]);
+
   const startCooldown = (sec: number) => {
     setCooldown(sec);
     if (cooldownRef.current) clearInterval(cooldownRef.current);
