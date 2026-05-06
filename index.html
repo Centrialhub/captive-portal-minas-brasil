@@ -122,6 +122,13 @@
     (function(){
       'use strict';
 
+      // On /admin* routes, hide the captive fallback so React can render the dashboard cleanly.
+      if (location.pathname.indexOf('/admin') === 0) {
+        var fbEl = document.getElementById('fb');
+        if (fbEl) fbEl.style.display = 'none';
+        return;
+      }
+
       // ── Helpers ──
       var Y = new Date().getFullYear();
       var years = document.querySelectorAll('.year');
