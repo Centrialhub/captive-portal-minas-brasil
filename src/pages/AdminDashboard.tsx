@@ -67,13 +67,12 @@ export default function AdminDashboard() {
         return;
       }
       setUserEmail(data.session.user.email || "");
-      const { data: roleRow } = await supabase
-        .from("user_roles")
-        .select("role")
-        .eq("user_id", data.session.user.id)
-        .eq("role", "admin")
-        .maybeSingle();
-      setIsAdmin(!!roleRow);
+      const { data: hasAdmin, error: rpcErr } = await supabase.rpc("has_role", {
+        _user_id: data.session.user.id,
+        _role: "admin",
+      });
+      if (rpcErr) console.warn("has_role RPC error:", rpcErr.message);
+      setIsAdmin(!!hasAdmin);
     };
     init();
     const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
