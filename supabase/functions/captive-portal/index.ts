@@ -1282,15 +1282,29 @@ async function handleStart(req: Request): Promise<Response> {
 
   if (error) {
     console.error("Session insert error:", error.message);
+    logEvent(db, {
+      trace_id: traceId, store_id: detected.store_id,
+      event_type: "session_create_failed", step: "params", status: "error",
+      error_code: "SESSION_INSERT_ERROR", error_message: error.message,
+      latency_ms: Date.now() - t0, client_ip: clientIp, user_agent: ua,
+    });
     return errorResponse("Erro ao iniciar sessão", 500);
   }
 
-  await db.from("audit_logs").insert({
-    store_id: detected.store_id, entity: "session", entity_id: session.id,
-    action: "create", meta: { client_mac: mac, ip: clientIp, store_slug: detected.store_slug },
+  logEvent(db, {
+    session_id: session.id, trace_id: traceId, store_id: detected.store_id,
+    event_type: "session_created", step: "params", status: "success",
+    latency_ms: Date.now() - t0,
+    payload: { client_mac: mac, ap_mac: apMac, ssid: body.ssid, store_slug: detected.store_slug },
+    client_ip: clientIp, user_agent: ua,
   });
 
-  return jsonResponse({ session_id: session.id });
+  await db.from("audit_logs").insert({
+    store_id: detected.store_id, entity: "session", entity_id: session.id,
+    action: "create", meta: { client_mac: mac, ip: clientIp, store_slug: detected.store_slug, trace_id: traceId },
+  });
+
+  return jsonResponse({ session_id: session.id, trace_id: traceId });
 }
 
 async function handleSubmit(req: Request): Promise<Response> {
