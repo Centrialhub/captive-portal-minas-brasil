@@ -1801,9 +1801,10 @@ async function handleSubmit(req: Request): Promise<Response> {
 // ========== Session Status (recovery endpoint) ==========
 async function handleSessionStatus(req: Request): Promise<Response> {
   const db = supabaseAdmin();
-  const body = await safeParseJson(req);
+  const url = new URL(req.url);
+  const body = req.method === "GET" ? {} : await safeParseJson(req);
   if (!body) return errorResponse("Invalid JSON body");
-  const sessionId = body.session_id;
+  const sessionId = url.searchParams.get("session_id") || body.session_id;
   if (!isValidUUID(sessionId)) return errorResponse("session_id inválido");
 
   const { data: session } = await db
