@@ -2949,8 +2949,10 @@ details p{padding:0 12px 12px;font-size:11px;color:#888;line-height:1.5}
 </div>
 <script>
 (function(){
-var API='${API_BASE}';
-var FALLBACK_API=(location.pathname.indexOf('/functions/v1/captive-portal')<0)?'/api/captive-portal':'${API_BASE}';
+var DIRECT_API='${API_BASE}';
+var SAME_ORIGIN_API='/api/captive-portal';
+var API=location.pathname.indexOf('/functions/v1/captive-portal')>=0?DIRECT_API:SAME_ORIGIN_API;
+var FALLBACK_API=API===DIRECT_API?SAME_ORIGIN_API:DIRECT_API;
 var clientMac='${clientMac}';
 var apMac='${apMac}';
 var ssid='${ssidParam}';
