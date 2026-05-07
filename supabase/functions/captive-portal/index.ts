@@ -1282,23 +1282,57 @@ async function handleStart(req: Request): Promise<Response> {
     client_ip: clientIp, user_agent: ua,
   });
 
+  // Allow the frontend to supply a session_id (UUID generated client-side)
+  // so /start and /submit can converge on the same row.
+  const suppliedSessionId = isValidUUID(body.session_id) ? (body.session_id as string) : null;
+
+  if (suppliedSessionId) {
+    const { data: existing } = await db
+      .from("captive_sessions")
+      .select("id")
+      .eq("id", suppliedSessionId)
+      .maybeSingle();
+    if (existing) {
+      await db.from("captive_sessions").update({
+        client_mac: mac,
+        ap_mac: apMac,
+        ssid: sanitizeString(body.ssid, 64),
+        redirect_url: sanitizeString(body.redirect_url, 2000),
+        captive_timestamp: captiveTimestamp,
+        original_unifi_url_params: originalUnifiParams,
+        trace_id: traceId,
+        params_received_at: new Date().toISOString(),
+        last_step: "params",
+      }).eq("id", suppliedSessionId);
+      logEvent(db, {
+        session_id: suppliedSessionId, trace_id: traceId, store_id: detected.store_id,
+        event_type: "session_recovered", step: "params", status: "success",
+        latency_ms: Date.now() - t0, client_ip: clientIp, user_agent: ua,
+      });
+      return jsonResponse({ session_id: suppliedSessionId, trace_id: traceId, recovered: true });
+    }
+  }
+
+  const insertPayload: Record<string, unknown> = {
+    store_id: detected.store_id,
+    client_mac: mac,
+    client_ip: sanitizeString(body.client_ip, 45) || clientIp,
+    ap_mac: apMac,
+    ssid: sanitizeString(body.ssid, 64),
+    user_agent: sanitizeString(body.user_agent, 500) || ua,
+    redirect_url: sanitizeString(body.redirect_url, 2000),
+    captive_timestamp: captiveTimestamp,
+    original_unifi_url_params: originalUnifiParams,
+    status: "started",
+    trace_id: traceId,
+    params_received_at: new Date().toISOString(),
+    last_step: "params",
+  };
+  if (suppliedSessionId) insertPayload.id = suppliedSessionId;
+
   const { data: session, error } = await db
     .from("captive_sessions")
-    .insert({
-      store_id: detected.store_id,
-      client_mac: mac,
-      client_ip: sanitizeString(body.client_ip, 45) || clientIp,
-      ap_mac: apMac,
-      ssid: sanitizeString(body.ssid, 64),
-      user_agent: sanitizeString(body.user_agent, 500) || ua,
-      redirect_url: sanitizeString(body.redirect_url, 2000),
-      captive_timestamp: captiveTimestamp,
-      original_unifi_url_params: originalUnifiParams,
-      status: "started",
-      trace_id: traceId,
-      params_received_at: new Date().toISOString(),
-      last_step: "params",
-    })
+    .insert(insertPayload)
     .select("id")
     .single();
 
