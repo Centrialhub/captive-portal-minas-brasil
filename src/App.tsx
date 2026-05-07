@@ -16,6 +16,8 @@ async function recoverAfterSubmitNetworkError(sid: string) {
       const status = await api.sessionStatus(sid);
       if (status?.requires_verification) return status;
       if (status?.authorized) return status;
+      if (status?.use_hotspot_redirect) return status;
+      if (status?.verified) return status;
     } catch { /* keep trying */ }
   }
   return null;
