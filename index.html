@@ -242,9 +242,12 @@
           if(idx >= BASES.length){ cb('Sem resposta do servidor. Verifique sua conexão.'); return; }
           var base = BASES[idx++];
           var x = new XMLHttpRequest();
-          try { x.open(method||'GET', buildUrl(base,path), true); }
+          var fullUrl = buildUrl(base, path);
+          var isCross = false;
+          try { isCross = new URL(fullUrl, location.href).origin !== location.origin; } catch(e) {}
+          try { x.open(method||'GET', fullUrl, true); }
           catch(e){ attempt(); return; }
-          if(body) x.setRequestHeader('Content-Type','application/json');
+          if(body) x.setRequestHeader('Content-Type', isCross ? 'text/plain;charset=UTF-8' : 'application/json');
           x.timeout = timeoutMs;
           x.onload = function(){
             var s = x.status;
@@ -258,6 +261,30 @@
           catch(e){ if(idx<BASES.length) attempt(); else cb('Não foi possível enviar a requisição.'); }
         }
         attempt();
+      }
+
+      function persistSession(){
+        try {
+          sessionStorage.setItem('mb_session_id', state.session_id);
+          sessionStorage.setItem('mb_session_fingerprint', fp);
+          sessionStorage.setItem('mb_session_created_at', String(Date.now()));
+        } catch(e) {}
+      }
+
+      function recoverSubmit(cb){
+        if(!state.session_id) return cb(null);
+        var waits = [500, 1200, 2500];
+        var i = 0;
+        function next(){
+          if(i >= waits.length) return cb(null);
+          setTimeout(function(){
+            apiFetch('/session-status','POST',{session_id: state.session_id},function(err,data){
+              if(!err && data && (data.requires_verification || data.authorized)) return cb(data);
+              i++; next();
+            }, 8000);
+          }, waits[i]);
+        }
+        next();
       }
 
       // ── Switch step ──
