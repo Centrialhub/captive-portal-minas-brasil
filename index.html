@@ -473,6 +473,21 @@
 
         clientEvent('verify_attempt_started','info',{step:'otp'});
 
+        function applyVerifyResult(data){
+          if(data.use_hotspot_redirect && data.redirect_url){
+            state.redirect_url = data.redirect_url;
+            showSuccess(data.message||'Finalizando liberação do Wi-Fi...');
+            setTimeout(function(){ window.location.href = data.redirect_url; }, 800);
+            return true;
+          }
+          if(data.authorized){
+            if(data.redirect_url) state.redirect_url = data.redirect_url;
+            showSuccess(data.message||'Conectado com sucesso!');
+            return true;
+          }
+          return false;
+        }
+
         apiFetch('/verify-code','POST',{session_id:state.session_id,code:codeInp.value},function(err,data){
           btn.textContent='Verificar código';
           btn.disabled=codeInp.value.length!==6;
@@ -483,23 +498,24 @@
             payload: { has_error: !!(err||(data&&data.error)), authorized: !!(data&&data.authorized), use_hotspot_redirect: !!(data&&data.use_hotspot_redirect) }
           });
 
-          if(err){showErr('fb-otp-err',err);codeInp.value='';btn.disabled=true;return;}
-          if(data.error){showErr('fb-otp-err',data.error);codeInp.value='';btn.disabled=true;return;}
-
-          if(data.use_hotspot_redirect && data.redirect_url){
-            state.redirect_url = data.redirect_url;
-            showSuccess(data.message||'Finalizando liberação do Wi-Fi...');
-            setTimeout(function(){ window.location.href = data.redirect_url; }, 800);
+          if(err){
+            // Backup transport (sendBeacon + iframe form) for captive assistants
+            // that drop the XHR POST response of /verify-code.
+            try { simplePostBackup('/verify-code', {session_id:state.session_id, code:codeInp.value, backup_transport:'simple_post'}); } catch(e){}
+            recoverSubmit(function(rec){
+              if(rec && applyVerifyResult(rec)){
+                clientEvent('verify_recovery_success','success',{step:'otp'});
+                return;
+              }
+              clientEvent('verify_recovery_failed','error',{step:'otp'});
+              showErr('fb-otp-err',err);codeInp.value='';btn.disabled=true;
+            });
             return;
           }
-
-          if(!data.authorized){
-            showErr('fb-otp-err', data.message||'Cadastro confirmado, mas o UniFi não confirmou a liberação. Desconecte e conecte novamente à rede.');
-            codeInp.value='';btn.disabled=true;return;
-          }
-
-          if(data.redirect_url) state.redirect_url = data.redirect_url;
-          showSuccess(data.message||'Conectado com sucesso!');
+          if(data.error){showErr('fb-otp-err',data.error);codeInp.value='';btn.disabled=true;return;}
+          if(applyVerifyResult(data)) return;
+          showErr('fb-otp-err', data.message||'Cadastro confirmado, mas o UniFi não confirmou a liberação. Desconecte e conecte novamente à rede.');
+          codeInp.value='';btn.disabled=true;
         }, 30000);
       });
 
