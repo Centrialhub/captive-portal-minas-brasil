@@ -353,8 +353,11 @@
         function field(n){ return fd ? (fd.get(n)||'') : ((formEl.elements[n]&&formEl.elements[n].value)||''); }
         state.phone = field('phone');
 
+          if(!state.session_id) state.session_id = uuid();
+          persistSession();
+
           var payload = {
-            session_id: state.session_id || (state.session_id = uuid()),
+            session_id: state.session_id,
             name: field('name'),
             email: field('email'),
             phone: state.phone,
@@ -370,11 +373,15 @@
             user_agent: navigator.userAgent
           };
 
+          clientEvent('submit_attempt_started','info',{
+            step:'form',
+            payload:{ host: location.hostname, bases: BASES, has_client_mac: !!params.client_mac, has_ap_mac: !!params.ap_mac, ssid: params.ssid || null }
+          });
+
           apiFetch('/submit','POST',payload,function(err,data){
             function ok(d){
               if(d.redirect_url) state.redirect_url = d.redirect_url;
-              if(d.session_id) state.session_id = d.session_id;
-              try { if(state.session_id) sessionStorage.setItem('mb_session_id', state.session_id); } catch(e){}
+              if(d.session_id){ state.session_id = d.session_id; persistSession(); }
               if(d.requires_verification){
                 $('fb-otp-phone').textContent = state.phone;
                 goStep('otp');
@@ -385,9 +392,29 @@
               }
             }
             if(err){
-              showErr('fb-form-err', err);
-              subBtn.textContent='Conectar ao Wi-Fi';
-              subBtn.disabled=!chk.checked;
+              clientEvent('submit_attempt_failed','error',{step:'form',error_message:err,payload:{host:location.hostname,bases:BASES}});
+              recoverSubmit(function(recovered){
+                if(recovered && recovered.requires_verification){
+                  clientEvent('submit_recovery_success','success',{step:'form'});
+                  if(recovered.redirect_url) state.redirect_url = recovered.redirect_url;
+                  $('fb-otp-phone').textContent = state.phone;
+                  goStep('otp');
+                  startCooldown(60);
+                  subBtn.textContent='Conectar ao Wi-Fi';
+                  subBtn.disabled=!chk.checked;
+                  return;
+                }
+                if(recovered && recovered.authorized){
+                  clientEvent('submit_recovery_success','success',{step:'form'});
+                  if(recovered.redirect_url) state.redirect_url = recovered.redirect_url;
+                  showSuccess(recovered.message || 'Conectado com sucesso!');
+                  return;
+                }
+                clientEvent('submit_recovery_failed','error',{step:'form'});
+                showErr('fb-form-err', err);
+                subBtn.textContent='Conectar ao Wi-Fi';
+                subBtn.disabled=!chk.checked;
+              });
               return;
             }
             subBtn.textContent='Conectar ao Wi-Fi';
