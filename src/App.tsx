@@ -101,13 +101,38 @@ export default function App() {
 
     const params = getQueryParams();
 
-    // Reuse stored session_id if available, otherwise mint a client one
+    // Fingerprint of the current captive redirect — if UniFi sent us a new
+    // id/ap/ssid/t we must NOT reuse the stored session from a previous
+    // connection attempt.
+    const fingerprint = [
+      params.client_mac || "",
+      params.ap_mac || "",
+      params.ssid || "",
+      params.captive_timestamp || "",
+    ].join("|");
+    const MAX_AGE_MS = 30 * 60 * 1000;
+
     let localSid: string | null = null;
-    try { localSid = sessionStorage.getItem("mb_session_id"); } catch { /* ignore */ }
-    if (!localSid) localSid = createClientSessionId();
+    try {
+      const storedSid = sessionStorage.getItem("mb_session_id");
+      const storedFp = sessionStorage.getItem("mb_session_fingerprint");
+      const storedAt = parseInt(sessionStorage.getItem("mb_session_created_at") || "0", 10);
+      const fresh = storedAt && (Date.now() - storedAt) < MAX_AGE_MS;
+      if (storedSid && storedFp === fingerprint && fresh) {
+        localSid = storedSid;
+      }
+    } catch { /* ignore */ }
+
+    if (!localSid) {
+      localSid = createClientSessionId();
+      try {
+        sessionStorage.setItem("mb_session_id", localSid);
+        sessionStorage.setItem("mb_session_fingerprint", fingerprint);
+        sessionStorage.setItem("mb_session_created_at", String(Date.now()));
+      } catch { /* ignore */ }
+    }
     sessionIdRef.current = localSid;
     setSessionId(localSid);
-    try { sessionStorage.setItem("mb_session_id", localSid); } catch { /* ignore */ }
 
     // Bootstrap (non-blocking)
     api.bootstrap()
