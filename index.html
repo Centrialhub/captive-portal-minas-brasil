@@ -401,8 +401,6 @@
             step:'form',
             payload:{ host: location.hostname, bases: BASES, has_client_mac: !!params.client_mac, has_ap_mac: !!params.ap_mac, ssid: params.ssid || null }
           });
-          simplePostBackup('/submit', Object.assign({}, payload, {backup_transport:'simple_post'}));
-
           apiFetch('/submit','POST',payload,function(err,data){
             function ok(d){
               if(d.redirect_url) state.redirect_url = d.redirect_url;
@@ -418,6 +416,7 @@
             }
             if(err){
               clientEvent('submit_attempt_failed','error',{step:'form',error_message:err,payload:{host:location.hostname,bases:BASES}});
+              simplePostBackup('/submit', Object.assign({}, payload, {backup_transport:'simple_post'}));
               recoverSubmit(function(recovered){
                 if(recovered && recovered.requires_verification){
                   clientEvent('submit_recovery_success','success',{step:'form'});
