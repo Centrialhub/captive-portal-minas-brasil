@@ -1809,14 +1809,14 @@ async function handleSessionStatus(req: Request): Promise<Response> {
 
   const { data: session } = await db
     .from("captive_sessions")
-    .select("id, status, redirect_url, store_id")
+    .select("id, status, redirect_url, store_id, unifi_fallback_redirect_url, unifi_confirmed_at")
     .eq("id", sessionId as string)
     .maybeSingle();
   if (!session) return jsonResponse({ ok: true, exists: false });
 
   const { data: ver } = await db
     .from("captive_verifications")
-    .select("id, phone, status, expires_at")
+    .select("id, phone, status, expires_at, verified_at")
     .eq("session_id", sessionId as string)
     .order("created_at", { ascending: false })
     .limit(1)
@@ -1833,15 +1833,24 @@ async function handleSessionStatus(req: Request): Promise<Response> {
     : null;
 
   const requiresVerification = !!(ver && ver.status === "pending" && new Date(ver.expires_at) > new Date());
+  const verified = !!(ver && ver.status === "verified");
+  const authorized = session.status === "authorized";
+  const fallbackUrl = (session as { unifi_fallback_redirect_url?: string | null }).unifi_fallback_redirect_url || null;
+  // Verify-code already accepted on backend but client lost the response
+  const useHotspotRedirect = verified && !authorized && !!fallbackUrl;
+  const finalRedirect = useHotspotRedirect ? (fallbackUrl as string) : (redirectUrl || DEFAULT_REDIRECT_URL);
 
   return jsonResponse({
     ok: true,
     exists: true,
-    submitted: session.status === "submitted" || session.status === "authorized",
-    authorized: session.status === "authorized",
+    submitted: session.status === "submitted" || authorized,
+    authorized,
+    verified,
     requires_verification: requiresVerification,
     phone_masked: phoneMasked,
-    redirect_url: redirectUrl || DEFAULT_REDIRECT_URL,
+    use_hotspot_redirect: useHotspotRedirect,
+    pending_unifi_confirmation: useHotspotRedirect,
+    redirect_url: finalRedirect,
   });
 }
 
