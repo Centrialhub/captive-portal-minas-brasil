@@ -283,7 +283,7 @@
           if(i >= waits.length) return cb(null);
           setTimeout(function(){
             apiFetch('/session-status?session_id=' + encodeURIComponent(state.session_id),'GET',null,function(err,data){
-              if(!err && data && (data.requires_verification || data.authorized)) return cb(data);
+              if(!err && data && (data.requires_verification || data.authorized || data.use_hotspot_redirect || data.verified)) return cb(data);
               i++; next();
             }, 8000);
           }, waits[i]);
