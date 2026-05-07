@@ -2,12 +2,30 @@
  * Shared utilities for the captive portal.
  */
 
+export const SUPABASE_DIRECT_BASE =
+  "https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal";
+
+/**
+ * Returns the API base for portal calls.
+ *
+ * Strategy: prefer the same-origin proxy `/api/captive-portal` whenever
+ * the portal page is being served by anything that is NOT the Supabase
+ * Edge Function itself. This makes the captive flow resilient to:
+ *   - wifi.guedesepaixao.com.br
+ *   - bare IP hosts (e.g. 31.97.170.23)
+ *   - vercel.app preview domains
+ *   - EasyPanel / Nginx proxies
+ *   - captive-network-assistant URL rewrites
+ *
+ * The proxy must rewrite `/api/captive-portal/*` to the Supabase function.
+ * For maximum resiliency in the captive portal, also allow
+ * `fqamejlyytrhovawgtwg.supabase.co` in the UniFi Walled Garden so the
+ * direct fallback in api.ts works when the proxy is unavailable.
+ */
 export function getApiBase(): string {
-  const host = window.location.hostname;
-  if (host === "wifi.guedesepaixao.com.br" || host.endsWith(".vercel.app")) {
-    return "/api/captive-portal";
-  }
-  return "https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal";
+  const host = typeof window !== "undefined" ? window.location.hostname : "";
+  if (host.endsWith(".supabase.co")) return SUPABASE_DIRECT_BASE;
+  return "/api/captive-portal";
 }
 
 const TRACE_KEY = "mb_trace_id";
