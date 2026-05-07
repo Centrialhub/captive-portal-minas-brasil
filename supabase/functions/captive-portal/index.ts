@@ -139,8 +139,45 @@ function isValidIp(ip: string): boolean {
   return false;
 }
 
-function safeParseJson(req: Request): Promise<Record<string, unknown> | null> {
-  return req.json().catch(() => null);
+async function safeParseJson(req: Request): Promise<Record<string, unknown> | null> {
+  try {
+    const ct = req.headers.get("content-type") || "";
+    if (ct.includes("application/json")) {
+      return await req.json();
+    }
+    // Accept text/plain (used by client to avoid CORS preflight in cross-origin
+    // fallback) and any unknown content-type that might still carry JSON.
+    const text = await req.text();
+    if (!text) return {};
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Idempotent upsert of a captive_sessions row by id.
+ * Use this from /start and /submit when a client-supplied session_id is present
+ * to eliminate the duplicate-key race when both run concurrently.
+ *
+ * Pass `protect: true` (used from /start) to avoid overwriting fields that
+ * /submit may already have set (status authorized, submitted_at, etc.).
+ */
+async function upsertCaptiveSession(
+  db: ReturnType<typeof supabaseAdmin>,
+  payload: Record<string, unknown>,
+): Promise<{ error: { message: string; code?: string } | null }> {
+  const { error } = await db
+    .from("captive_sessions")
+    .upsert(payload, { onConflict: "id", ignoreDuplicates: false });
+  if (error) return { error: { message: error.message, code: (error as any).code } };
+  return { error: null };
+}
+
+function isDuplicateKeyError(msg?: string | null): boolean {
+  if (!msg) return false;
+  const m = msg.toLowerCase();
+  return m.includes("duplicate key") || m.includes("23505");
 }
 
 // ========== Trace ID + Event Logging ==========
