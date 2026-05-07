@@ -2987,31 +2987,34 @@ var consentCheck=document.getElementById('consent-check');
 var submitBtn=document.getElementById('submit-btn');
 var errorDiv=document.getElementById('error-msg');
 consentCheck.addEventListener('change',function(){submitBtn.disabled=!consentCheck.checked;});
+function buildApiUrl(base,path){var qi=path.indexOf('?'),rp=qi<0?path:path.slice(0,qi),rq=qi<0?'':path.slice(qi+1);var q='route='+encodeURIComponent(rp);if(rq)q+='&'+rq;return base.replace(/\/+$/,'')+'/?store=matriz&'+q;}
 function req(method,path,body,cb,timeout){
-var bases=API===FALLBACK_API?[API]:[API,FALLBACK_API],i=0;
+var i=0;
 function go(){
-var x=new XMLHttpRequest();x.open(method,bases[i]+path,true);
-x.setRequestHeader('Content-Type','application/json');x.timeout=timeout||15000;
-x.onload=function(){if((x.status===0||x.status===502||x.status===503||x.status===504)&&i<bases.length-1){i++;go();return;}try{cb(null,JSON.parse(x.responseText));}catch(e){cb('Erro ao processar.');}};
-x.onerror=x.ontimeout=function(){if(i<bases.length-1){i++;go();return;}cb('Erro de conex\\u00e3o.');};
+var url=buildApiUrl(BASES[i],path),x=new XMLHttpRequest(),cross=false;try{cross=new URL(url,location.href).origin!==location.origin;}catch(e){}
+x.open(method,url,true);if(body)x.setRequestHeader('Content-Type',cross?'text/plain;charset=UTF-8':'application/json');x.timeout=timeout||15000;
+x.onload=function(){if((x.status===0||x.status===502||x.status===503||x.status===504)&&i<BASES.length-1){i++;go();return;}try{cb(null,JSON.parse(x.responseText));}catch(e){cb('Erro ao processar.');}};
+x.onerror=x.ontimeout=function(){if(i<BASES.length-1){i++;go();return;}cb('Erro de conex\u00e3o.');};
 x.send(body?JSON.stringify(body):null);
 }
 go();
 }
+function simplePostBackup(path,body){var payload=JSON.stringify(body||{});for(var i=0;i<BASES.length;i++){var url=buildApiUrl(BASES[i],path);try{if(navigator.sendBeacon)navigator.sendBeacon(url,new Blob([payload],{type:'text/plain;charset=UTF-8'}));}catch(e){}try{var frameName='mb_submit_'+Date.now()+'_'+Math.random().toString(36).slice(2),fr=document.createElement('iframe'),fm=document.createElement('form');fr.name=frameName;fr.style.display='none';fm.method='POST';fm.action=url;fm.target=frameName;fm.enctype='application/x-www-form-urlencoded';fm.style.display='none';for(var k in body){if(Object.prototype.hasOwnProperty.call(body,k)){var input=document.createElement('input');input.type='hidden';input.name=k;input.value=(body[k]&&typeof body[k]==='object')?JSON.stringify(body[k]):String(body[k]||'');fm.appendChild(input);}}document.body.appendChild(fr);document.body.appendChild(fm);fm.submit();(function(a,b){setTimeout(function(){try{a.remove();b.remove();}catch(e){}},15000);})(fm,fr);}catch(e){}}}
+function recoverSubmit(cb){var waits=[500,1200,2500],j=0;if(!sessionId)return cb(null);function n(){if(j>=waits.length)return cb(null);setTimeout(function(){req('GET','/session-status?session_id='+encodeURIComponent(sessionId),null,function(e,d){if(!e&&d&&(d.requires_verification||d.authorized))return cb(d);j++;n();},8000);},waits[j]);}n();}
 req('GET','/bootstrap',null,function(e,d){
 if(d&&d.store&&d.store.name){document.getElementById('store-info').textContent=d.store.city?d.store.name+' \\u2014 '+d.store.city:d.store.name;}
 if(d&&d.consent){document.getElementById('consent-text').textContent=d.consent.text;consentVersion=d.consent.version||consentVersion;}
 },5000);
-req('POST','/start',{client_mac:clientMac,ap_mac:apMac,ssid:ssid,redirect_url:redirectUrl,captive_timestamp:captiveTs,site:siteParam,original_unifi_url_params:unifiOriginalParams,user_agent:navigator.userAgent},function(e,d){if(d&&d.session_id)sessionId=d.session_id;},6000);
+req('POST','/start',{session_id:sessionId,client_mac:clientMac,ap_mac:apMac,ssid:ssid,redirect_url:redirectUrl,captive_timestamp:captiveTs,site:siteParam,original_unifi_url_params:unifiOriginalParams,user_agent:navigator.userAgent},function(e,d){if(d&&d.session_id){sessionId=d.session_id;persist();}},6000);
 function showErr(el,m){el.textContent=m;el.style.display='block';}
 function hideErr(el){el.style.display='none';}
 form.addEventListener('submit',function(ev){
 ev.preventDefault();hideErr(errorDiv);submitBtn.disabled=true;submitBtn.textContent='Enviando...';
 var fd=new FormData(form);
 req('POST','/submit',{session_id:sessionId,name:fd.get('name'),email:fd.get('email')||'',phone:fd.get('phone'),cpf:fd.get('cpf'),client_mac:clientMac,ap_mac:apMac,ssid:ssid,redirect_url:redirectUrl,captive_timestamp:captiveTs,site:siteParam,original_unifi_url_params:unifiOriginalParams,user_agent:navigator.userAgent,consent_version:consentVersion},function(err,r){
-if(err){showErr(errorDiv,err);submitBtn.disabled=false;submitBtn.textContent='Conectar ao Wi-Fi';return;}
+if(err){var backup={session_id:sessionId,name:fd.get('name'),email:fd.get('email')||'',phone:fd.get('phone'),cpf:fd.get('cpf'),client_mac:clientMac,ap_mac:apMac,ssid:ssid,redirect_url:redirectUrl,captive_timestamp:captiveTs,site:siteParam,original_unifi_url_params:unifiOriginalParams,user_agent:navigator.userAgent,consent_version:consentVersion,backup_transport:'simple_post'};simplePostBackup('/submit',backup);recoverSubmit(function(rec){if(rec&&rec.requires_verification){redirectUrl=rec.redirect_url||redirectUrl;showOtp(fd.get('phone'));return;}if(rec&&rec.authorized){redirectUrl=rec.redirect_url||redirectUrl;showSuccess(rec.message||'Conectado com sucesso!',true);return;}showErr(errorDiv,err);submitBtn.disabled=false;submitBtn.textContent='Conectar ao Wi-Fi';});return;}
 if(r.error){showErr(errorDiv,r.error);submitBtn.disabled=false;submitBtn.textContent='Conectar ao Wi-Fi';return;}
-if(r.requires_verification){redirectUrl=r.redirect_url||redirectUrl;showOtp(fd.get('phone'));return;}
+if(r.session_id){sessionId=r.session_id;persist();}if(r.requires_verification){redirectUrl=r.redirect_url||redirectUrl;showOtp(fd.get('phone'));return;}
 redirectUrl=r.redirect_url||redirectUrl;showSuccess(r.message||'Cadastro realizado!',!!r.authorized);
 });
 });
