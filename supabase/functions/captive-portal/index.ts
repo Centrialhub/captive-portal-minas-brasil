@@ -145,6 +145,19 @@ async function safeParseJson(req: Request): Promise<Record<string, unknown> | nu
     if (ct.includes("application/json")) {
       return await req.json();
     }
+    if (ct.includes("application/x-www-form-urlencoded") || ct.includes("multipart/form-data")) {
+      const data = await req.formData();
+      const out: Record<string, unknown> = {};
+      for (const [key, value] of data.entries()) {
+        const text = typeof value === "string" ? value : value.name;
+        if ((key === "original_unifi_url_params" || key === "payload") && text.trim().startsWith("{")) {
+          try { out[key] = JSON.parse(text); } catch { out[key] = text; }
+        } else {
+          out[key] = text;
+        }
+      }
+      return out;
+    }
     // Accept text/plain (used by client to avoid CORS preflight in cross-origin
     // fallback) and any unknown content-type that might still carry JSON.
     const text = await req.text();
@@ -1788,9 +1801,10 @@ async function handleSubmit(req: Request): Promise<Response> {
 // ========== Session Status (recovery endpoint) ==========
 async function handleSessionStatus(req: Request): Promise<Response> {
   const db = supabaseAdmin();
-  const body = await safeParseJson(req);
+  const url = new URL(req.url);
+  const body = req.method === "GET" ? {} : await safeParseJson(req);
   if (!body) return errorResponse("Invalid JSON body");
-  const sessionId = body.session_id;
+  const sessionId = url.searchParams.get("session_id") || body.session_id;
   if (!isValidUUID(sessionId)) return errorResponse("session_id inválido");
 
   const { data: session } = await db
@@ -2951,8 +2965,7 @@ details p{padding:0 12px 12px;font-size:11px;color:#888;line-height:1.5}
 (function(){
 var DIRECT_API='${API_BASE}';
 var SAME_ORIGIN_API='/api/captive-portal';
-var API=location.pathname.indexOf('/functions/v1/captive-portal')>=0?DIRECT_API:SAME_ORIGIN_API;
-var FALLBACK_API=API===DIRECT_API?SAME_ORIGIN_API:DIRECT_API;
+var BASES=location.hostname.indexOf('supabase.co')>=0?[DIRECT_API]:[SAME_ORIGIN_API,DIRECT_API];
 var clientMac='${clientMac}';
 var apMac='${apMac}';
 var ssid='${ssidParam}';
@@ -2960,7 +2973,12 @@ var captiveTs='${tParam}';
 var siteParam='${siteParam}';
 var rawQuery='${rawQuery}';
 var unifiOriginalParams={id:clientMac,ap:apMac,ssid:ssid,url:'${redirectParam}',t:captiveTs,site:siteParam,raw_query:rawQuery};
+var fp=[clientMac||'',apMac||'',ssid||'',captiveTs||''].join('|');
 var sessionId=null;
+try{var oldSid=sessionStorage.getItem('mb_session_id'),oldFp=sessionStorage.getItem('mb_session_fingerprint'),oldAt=parseInt(sessionStorage.getItem('mb_session_created_at')||'0',10);if(oldSid&&oldFp===fp&&oldAt&&(Date.now()-oldAt)<1800000)sessionId=oldSid;}catch(e){}
+function uuid(){if(crypto&&crypto.randomUUID)return crypto.randomUUID();return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,function(c){var r=Math.random()*16|0,v=c==='x'?r:(r&3|8);return v.toString(16);});}
+function persist(){try{sessionStorage.setItem('mb_session_id',sessionId);sessionStorage.setItem('mb_session_fingerprint',fp);sessionStorage.setItem('mb_session_created_at',String(Date.now()));}catch(e){}}
+if(!sessionId){sessionId=uuid();persist();}
 var consentVersion='offline-fallback';
 var redirectUrl='${redirectParam}'||null;
 var resendTimer=null,resendSeconds=0;
@@ -2969,31 +2987,34 @@ var consentCheck=document.getElementById('consent-check');
 var submitBtn=document.getElementById('submit-btn');
 var errorDiv=document.getElementById('error-msg');
 consentCheck.addEventListener('change',function(){submitBtn.disabled=!consentCheck.checked;});
+function buildApiUrl(base,path){var qi=path.indexOf('?'),rp=qi<0?path:path.slice(0,qi),rq=qi<0?'':path.slice(qi+1);var q='route='+encodeURIComponent(rp);if(rq)q+='&'+rq;return base.replace(/\/+$/,'')+'/?store=matriz&'+q;}
 function req(method,path,body,cb,timeout){
-var bases=API===FALLBACK_API?[API]:[API,FALLBACK_API],i=0;
+var i=0;
 function go(){
-var x=new XMLHttpRequest();x.open(method,bases[i]+path,true);
-x.setRequestHeader('Content-Type','application/json');x.timeout=timeout||15000;
-x.onload=function(){if((x.status===0||x.status===502||x.status===503||x.status===504)&&i<bases.length-1){i++;go();return;}try{cb(null,JSON.parse(x.responseText));}catch(e){cb('Erro ao processar.');}};
-x.onerror=x.ontimeout=function(){if(i<bases.length-1){i++;go();return;}cb('Erro de conex\\u00e3o.');};
+var url=buildApiUrl(BASES[i],path),x=new XMLHttpRequest(),cross=false;try{cross=new URL(url,location.href).origin!==location.origin;}catch(e){}
+x.open(method,url,true);if(body)x.setRequestHeader('Content-Type',cross?'text/plain;charset=UTF-8':'application/json');x.timeout=timeout||15000;
+x.onload=function(){if((x.status===0||x.status===502||x.status===503||x.status===504)&&i<BASES.length-1){i++;go();return;}try{cb(null,JSON.parse(x.responseText));}catch(e){cb('Erro ao processar.');}};
+x.onerror=x.ontimeout=function(){if(i<BASES.length-1){i++;go();return;}cb('Erro de conex\u00e3o.');};
 x.send(body?JSON.stringify(body):null);
 }
 go();
 }
+function simplePostBackup(path,body){var payload=JSON.stringify(body||{});for(var i=0;i<BASES.length;i++){var url=buildApiUrl(BASES[i],path);try{if(navigator.sendBeacon)navigator.sendBeacon(url,new Blob([payload],{type:'text/plain;charset=UTF-8'}));}catch(e){}try{var frameName='mb_submit_'+Date.now()+'_'+Math.random().toString(36).slice(2),fr=document.createElement('iframe'),fm=document.createElement('form');fr.name=frameName;fr.style.display='none';fm.method='POST';fm.action=url;fm.target=frameName;fm.enctype='application/x-www-form-urlencoded';fm.style.display='none';for(var k in body){if(Object.prototype.hasOwnProperty.call(body,k)){var input=document.createElement('input');input.type='hidden';input.name=k;input.value=(body[k]&&typeof body[k]==='object')?JSON.stringify(body[k]):String(body[k]||'');fm.appendChild(input);}}document.body.appendChild(fr);document.body.appendChild(fm);fm.submit();(function(a,b){setTimeout(function(){try{a.remove();b.remove();}catch(e){}},15000);})(fm,fr);}catch(e){}}}
+function recoverSubmit(cb){var waits=[500,1200,2500],j=0;if(!sessionId)return cb(null);function n(){if(j>=waits.length)return cb(null);setTimeout(function(){req('GET','/session-status?session_id='+encodeURIComponent(sessionId),null,function(e,d){if(!e&&d&&(d.requires_verification||d.authorized))return cb(d);j++;n();},8000);},waits[j]);}n();}
 req('GET','/bootstrap',null,function(e,d){
 if(d&&d.store&&d.store.name){document.getElementById('store-info').textContent=d.store.city?d.store.name+' \\u2014 '+d.store.city:d.store.name;}
 if(d&&d.consent){document.getElementById('consent-text').textContent=d.consent.text;consentVersion=d.consent.version||consentVersion;}
 },5000);
-req('POST','/start',{client_mac:clientMac,ap_mac:apMac,ssid:ssid,redirect_url:redirectUrl,captive_timestamp:captiveTs,site:siteParam,original_unifi_url_params:unifiOriginalParams,user_agent:navigator.userAgent},function(e,d){if(d&&d.session_id)sessionId=d.session_id;},6000);
+req('POST','/start',{session_id:sessionId,client_mac:clientMac,ap_mac:apMac,ssid:ssid,redirect_url:redirectUrl,captive_timestamp:captiveTs,site:siteParam,original_unifi_url_params:unifiOriginalParams,user_agent:navigator.userAgent},function(e,d){if(d&&d.session_id){sessionId=d.session_id;persist();}},6000);
 function showErr(el,m){el.textContent=m;el.style.display='block';}
 function hideErr(el){el.style.display='none';}
 form.addEventListener('submit',function(ev){
 ev.preventDefault();hideErr(errorDiv);submitBtn.disabled=true;submitBtn.textContent='Enviando...';
 var fd=new FormData(form);
 req('POST','/submit',{session_id:sessionId,name:fd.get('name'),email:fd.get('email')||'',phone:fd.get('phone'),cpf:fd.get('cpf'),client_mac:clientMac,ap_mac:apMac,ssid:ssid,redirect_url:redirectUrl,captive_timestamp:captiveTs,site:siteParam,original_unifi_url_params:unifiOriginalParams,user_agent:navigator.userAgent,consent_version:consentVersion},function(err,r){
-if(err){showErr(errorDiv,err);submitBtn.disabled=false;submitBtn.textContent='Conectar ao Wi-Fi';return;}
+if(err){var backup={session_id:sessionId,name:fd.get('name'),email:fd.get('email')||'',phone:fd.get('phone'),cpf:fd.get('cpf'),client_mac:clientMac,ap_mac:apMac,ssid:ssid,redirect_url:redirectUrl,captive_timestamp:captiveTs,site:siteParam,original_unifi_url_params:unifiOriginalParams,user_agent:navigator.userAgent,consent_version:consentVersion,backup_transport:'simple_post'};simplePostBackup('/submit',backup);recoverSubmit(function(rec){if(rec&&rec.requires_verification){redirectUrl=rec.redirect_url||redirectUrl;showOtp(fd.get('phone'));return;}if(rec&&rec.authorized){redirectUrl=rec.redirect_url||redirectUrl;showSuccess(rec.message||'Conectado com sucesso!',true);return;}showErr(errorDiv,err);submitBtn.disabled=false;submitBtn.textContent='Conectar ao Wi-Fi';});return;}
 if(r.error){showErr(errorDiv,r.error);submitBtn.disabled=false;submitBtn.textContent='Conectar ao Wi-Fi';return;}
-if(r.requires_verification){redirectUrl=r.redirect_url||redirectUrl;showOtp(fd.get('phone'));return;}
+if(r.session_id){sessionId=r.session_id;persist();}if(r.requires_verification){redirectUrl=r.redirect_url||redirectUrl;showOtp(fd.get('phone'));return;}
 redirectUrl=r.redirect_url||redirectUrl;showSuccess(r.message||'Cadastro realizado!',!!r.authorized);
 });
 });
@@ -3123,7 +3144,7 @@ Deno.serve(async (req: Request) => {
     if (path === "/bootstrap" && req.method === "GET") return await handleBootstrap(req);
     if (path === "/start" && req.method === "POST") return await handleStart(req);
     if (path === "/submit" && req.method === "POST") return await handleSubmit(req);
-    if (path === "/session-status" && req.method === "POST") return await handleSessionStatus(req);
+    if (path === "/session-status" && (req.method === "POST" || req.method === "GET")) return await handleSessionStatus(req);
     if (path === "/request-code" && req.method === "POST") return await handleRequestCode(req);
     if (path === "/verify-code" && req.method === "POST") return await handleVerifyCode(req);
     if (path === "/client-event" && req.method === "POST") return await handleClientEvent(req);

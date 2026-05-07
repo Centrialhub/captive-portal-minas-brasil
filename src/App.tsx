@@ -316,6 +316,22 @@ export default function App() {
           api_base: API_BASE_FOR_TELEMETRY,
         },
       });
+      const backupPayload = buildSubmitPayload({
+        session_id: sid,
+        name, email, phone, cpf,
+        client_mac: params.client_mac,
+        consent_version: boot.consent?.version || "1.0",
+      });
+      Object.assign(backupPayload, {
+        ap_mac: params.ap_mac,
+        ssid: params.ssid,
+        redirect_url: params.redirect_url,
+        captive_timestamp: params.captive_timestamp,
+        site: params.site,
+        original_unifi_url_params: { id: params.client_mac, ap: params.ap_mac, ssid: params.ssid, url: params.redirect_url, t: params.captive_timestamp, site: params.site, raw_query: params.raw_query },
+        user_agent: navigator.userAgent,
+      });
+      api.submitLeadBackup(backupPayload as Record<string, unknown>);
 
       // Recovery: backend may have processed /submit even if the response
       // never made it back. Poll /session-status with backoff.
