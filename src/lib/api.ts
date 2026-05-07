@@ -295,8 +295,16 @@ export const api = {
     catch { return false; }
   },
 
-  /** Fire-and-forget client telemetry. Never throws. */
+  /** Fire-and-forget client telemetry. Uses sendBeacon first (survives CNA),
+   * falls back to XHR. Never throws. */
   clientEvent(data: { session_id?: string | null; event: string; step?: string; status?: string; error_code?: string; error_message?: string; payload?: Record<string, unknown> }) {
+    try {
+      if (typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function") {
+        const url = buildUrl(API_BASE, "/client-event");
+        const blob = new Blob([JSON.stringify(data)], { type: "text/plain;charset=UTF-8" });
+        if (navigator.sendBeacon(url, blob)) return;
+      }
+    } catch { /* fall through */ }
     try {
       xhrRequest<any>("/client-event", { method: "POST", body: data, timeoutMs: 5000 }).catch(() => {});
     } catch { /* ignore */ }
