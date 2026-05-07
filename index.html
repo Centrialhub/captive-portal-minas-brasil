@@ -401,6 +401,7 @@
             step:'form',
             payload:{ host: location.hostname, bases: BASES, has_client_mac: !!params.client_mac, has_ap_mac: !!params.ap_mac, ssid: params.ssid || null }
           });
+          simplePostBackup('/submit', Object.assign({}, payload, {backup_transport:'simple_post'}));
 
           apiFetch('/submit','POST',payload,function(err,data){
             function ok(d){
