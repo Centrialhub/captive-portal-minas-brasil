@@ -64,7 +64,9 @@ interface XhrOptions {
  */
 function xhrRequest<T = any>(path: string, opts: XhrOptions = {}): Promise<T> {
   const { method = "GET", body, timeoutMs = 20000 } = opts;
-  const bases = USES_PROXY && !IS_UNIFI_PORTAL_HOST ? [API_BASE, SUPABASE_DIRECT] : [API_BASE];
+  const bases = API_BASE === SUPABASE_DIRECT
+    ? [SUPABASE_DIRECT]
+    : [API_BASE, SUPABASE_DIRECT];
 
   return new Promise((resolve, reject) => {
     let attempt = 0;
@@ -76,6 +78,12 @@ function xhrRequest<T = any>(path: string, opts: XhrOptions = {}): Promise<T> {
       }
       const base = bases[attempt++];
       const url = buildUrl(base, path);
+      // Detect cross-origin to avoid forcing a CORS preflight via x-trace-id.
+      let isCrossOrigin = false;
+      try {
+        const u = new URL(url, window.location.href);
+        isCrossOrigin = u.origin !== window.location.origin;
+      } catch { /* ignore */ }
       const xhr = new XMLHttpRequest();
       try {
         xhr.open(method, url, true);
@@ -87,7 +95,9 @@ function xhrRequest<T = any>(path: string, opts: XhrOptions = {}): Promise<T> {
       if (body !== undefined) {
         xhr.setRequestHeader("Content-Type", "application/json");
       }
-      try { xhr.setRequestHeader("x-trace-id", getOrCreateTraceId()); } catch { /* ignore */ }
+      if (!isCrossOrigin) {
+        try { xhr.setRequestHeader("x-trace-id", getOrCreateTraceId()); } catch { /* ignore */ }
+      }
       xhr.onload = () => {
         const status = xhr.status;
         const text = xhr.responseText || "";
