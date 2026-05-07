@@ -289,6 +289,12 @@ export const api = {
     });
   },
 
+  /** Last-resort transport when XHR POST is dropped by captive assistant during OTP verify. */
+  verifyCodeBackup(data: { session_id: string; code: string }) {
+    try { return queueSimplePost("/verify-code", { ...data, backup_transport: "simple_post" }); }
+    catch { return false; }
+  },
+
   /** Fire-and-forget client telemetry. Never throws. */
   clientEvent(data: { session_id?: string | null; event: string; step?: string; status?: string; error_code?: string; error_message?: string; payload?: Record<string, unknown> }) {
     try {
