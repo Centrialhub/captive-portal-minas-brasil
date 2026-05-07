@@ -145,13 +145,11 @@
         if(loading && !loading.classList.contains('hidden')) goStep('form');
       }, 1200);
 
-      // ── API Bases (proxy first, direct Supabase fallback) ──
-      var host = location.hostname;
-      var PROXY = (host==='wifi.guedesepaixao.com.br'||host.indexOf('.vercel.app')!==-1)
-        ? '/api/captive-portal'
-        : null;
+      // ── API Bases (same-origin proxy first, direct Supabase fallback) ──
       var DIRECT = 'https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal';
-      var BASES = (PROXY && host!=='wifi.guedesepaixao.com.br') ? [PROXY, DIRECT] : (PROXY ? [PROXY] : [DIRECT]);
+      var SAME_ORIGIN = '/api/captive-portal';
+      var host = location.hostname || '';
+      var BASES = host.indexOf('supabase.co') !== -1 ? [DIRECT] : [SAME_ORIGIN, DIRECT];
 
       // ── Query Params ──
       function query(){
@@ -196,8 +194,15 @@
         cooldownTimer: null
       };
 
-      // Restore session_id from sessionStorage (CNA may reload page)
-      try { var s = sessionStorage.getItem('mb_session_id'); if(s) state.session_id = s; } catch(e){}
+      // Session fingerprint + restore (CNA may reload page)
+      var fp = [params.client_mac||'', params.ap_mac||'', params.ssid||'', params.captive_timestamp||''].join('|');
+      try {
+        var oldSid = sessionStorage.getItem('mb_session_id');
+        var oldFp = sessionStorage.getItem('mb_session_fingerprint');
+        var oldAt = parseInt(sessionStorage.getItem('mb_session_created_at')||'0', 10);
+        var fresh = oldAt && (Date.now() - oldAt) < 30*60*1000;
+        if (oldSid && oldFp === fp && fresh) state.session_id = oldSid;
+      } catch(e) {}
 
       // ── Telemetry (fire-and-forget) ──
       function clientEvent(name, status, extras){
@@ -237,9 +242,12 @@
           if(idx >= BASES.length){ cb('Sem resposta do servidor. Verifique sua conexão.'); return; }
           var base = BASES[idx++];
           var x = new XMLHttpRequest();
-          try { x.open(method||'GET', buildUrl(base,path), true); }
+          var fullUrl = buildUrl(base, path);
+          var isCross = false;
+          try { isCross = new URL(fullUrl, location.href).origin !== location.origin; } catch(e) {}
+          try { x.open(method||'GET', fullUrl, true); }
           catch(e){ attempt(); return; }
-          if(body) x.setRequestHeader('Content-Type','application/json');
+          if(body) x.setRequestHeader('Content-Type', isCross ? 'text/plain;charset=UTF-8' : 'application/json');
           x.timeout = timeoutMs;
           x.onload = function(){
             var s = x.status;
@@ -255,6 +263,30 @@
         attempt();
       }
 
+      function persistSession(){
+        try {
+          sessionStorage.setItem('mb_session_id', state.session_id);
+          sessionStorage.setItem('mb_session_fingerprint', fp);
+          sessionStorage.setItem('mb_session_created_at', String(Date.now()));
+        } catch(e) {}
+      }
+
+      function recoverSubmit(cb){
+        if(!state.session_id) return cb(null);
+        var waits = [500, 1200, 2500];
+        var i = 0;
+        function next(){
+          if(i >= waits.length) return cb(null);
+          setTimeout(function(){
+            apiFetch('/session-status','POST',{session_id: state.session_id},function(err,data){
+              if(!err && data && (data.requires_verification || data.authorized)) return cb(data);
+              i++; next();
+            }, 8000);
+          }, waits[i]);
+        }
+        next();
+      }
+
       // ── Switch step ──
       function goStep(step){
         hide('fb-loading');hide('fb-form');hide('fb-otp');hide('fb-success');hide('fb-error');
@@ -265,6 +297,10 @@
       function boot(){
         // Show form immediately (don't block on API)
         goStep('form');
+
+        // Ensure session_id and persist
+        if(!state.session_id) state.session_id = uuid();
+        persistSession();
 
         apiFetch('/bootstrap','GET',null,function(err,data){
           if(!err && data && !data.error){
@@ -278,6 +314,25 @@
             }
           }
         });
+
+        // Background /start — non-blocking
+        apiFetch('/start','POST',{
+          session_id: state.session_id,
+          client_mac: params.client_mac,
+          ap_mac: params.ap_mac,
+          ssid: params.ssid,
+          redirect_url: params.redirect_url,
+          captive_timestamp: params.captive_timestamp,
+          site: params.site,
+          original_unifi_url_params: unifiOriginalParams,
+          user_agent: navigator.userAgent
+        }, function(err, data){
+          if(err){ clientEvent('start_background_failed','warning',{step:'form',error_message:err}); return; }
+          if(data && data.session_id){
+            state.session_id = data.session_id;
+            persistSession();
+          }
+        }, 6000);
       }
 
       // ── Form: consent toggle ──
@@ -298,8 +353,11 @@
         function field(n){ return fd ? (fd.get(n)||'') : ((formEl.elements[n]&&formEl.elements[n].value)||''); }
         state.phone = field('phone');
 
+          if(!state.session_id) state.session_id = uuid();
+          persistSession();
+
           var payload = {
-            session_id: state.session_id || (state.session_id = uuid()),
+            session_id: state.session_id,
             name: field('name'),
             email: field('email'),
             phone: state.phone,
@@ -315,11 +373,15 @@
             user_agent: navigator.userAgent
           };
 
+          clientEvent('submit_attempt_started','info',{
+            step:'form',
+            payload:{ host: location.hostname, bases: BASES, has_client_mac: !!params.client_mac, has_ap_mac: !!params.ap_mac, ssid: params.ssid || null }
+          });
+
           apiFetch('/submit','POST',payload,function(err,data){
             function ok(d){
               if(d.redirect_url) state.redirect_url = d.redirect_url;
-              if(d.session_id) state.session_id = d.session_id;
-              try { if(state.session_id) sessionStorage.setItem('mb_session_id', state.session_id); } catch(e){}
+              if(d.session_id){ state.session_id = d.session_id; persistSession(); }
               if(d.requires_verification){
                 $('fb-otp-phone').textContent = state.phone;
                 goStep('otp');
@@ -330,9 +392,29 @@
               }
             }
             if(err){
-              showErr('fb-form-err', err);
-              subBtn.textContent='Conectar ao Wi-Fi';
-              subBtn.disabled=!chk.checked;
+              clientEvent('submit_attempt_failed','error',{step:'form',error_message:err,payload:{host:location.hostname,bases:BASES}});
+              recoverSubmit(function(recovered){
+                if(recovered && recovered.requires_verification){
+                  clientEvent('submit_recovery_success','success',{step:'form'});
+                  if(recovered.redirect_url) state.redirect_url = recovered.redirect_url;
+                  $('fb-otp-phone').textContent = state.phone;
+                  goStep('otp');
+                  startCooldown(60);
+                  subBtn.textContent='Conectar ao Wi-Fi';
+                  subBtn.disabled=!chk.checked;
+                  return;
+                }
+                if(recovered && recovered.authorized){
+                  clientEvent('submit_recovery_success','success',{step:'form'});
+                  if(recovered.redirect_url) state.redirect_url = recovered.redirect_url;
+                  showSuccess(recovered.message || 'Conectado com sucesso!');
+                  return;
+                }
+                clientEvent('submit_recovery_failed','error',{step:'form'});
+                showErr('fb-form-err', err);
+                subBtn.textContent='Conectar ao Wi-Fi';
+                subBtn.disabled=!chk.checked;
+              });
               return;
             }
             subBtn.textContent='Conectar ao Wi-Fi';
