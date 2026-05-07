@@ -1,8 +1,25 @@
 import { useState, useEffect, useRef } from "react";
 import { api, createClientSessionId } from "./lib/api";
-import { getQueryParams, buildSubmitPayload, type PortalStep } from "./lib/portal-utils";
+import { getApiBase, getQueryParams, buildSubmitPayload, type PortalStep } from "./lib/portal-utils";
 import logoMinasBrasil from "./assets/logo-minas-brasil.png";
 import "./index.css";
+
+const API_BASE_FOR_TELEMETRY = (() => {
+  try { return getApiBase(); } catch { return ""; }
+})();
+
+async function recoverAfterSubmitNetworkError(sid: string) {
+  const waits = [500, 1200, 2500];
+  for (const w of waits) {
+    await new Promise(r => setTimeout(r, w));
+    try {
+      const status = await api.sessionStatus(sid);
+      if (status?.requires_verification) return status;
+      if (status?.authorized) return status;
+    } catch { /* keep trying */ }
+  }
+  return null;
+}
 
 interface BootstrapData {
   store: { slug: string | null; name: string; city?: string | null };
@@ -74,7 +91,7 @@ export default function App() {
     return id;
   };
 
-  // Boot: show form immediately, fetch bootstrap/start in background
+  // Boot: show form immediately, fetch bootstrap + start in background
   useEffect(() => {
     setStep("form");
 
@@ -84,12 +101,40 @@ export default function App() {
 
     const params = getQueryParams();
 
-    (async () => {
-      try {
-        const data = await api.bootstrap();
-        if (!data.error) setBoot(data);
-      } catch { /* use fallback */ }
-    })();
+    // Reuse stored session_id if available, otherwise mint a client one
+    let localSid: string | null = null;
+    try { localSid = sessionStorage.getItem("mb_session_id"); } catch { /* ignore */ }
+    if (!localSid) localSid = createClientSessionId();
+    sessionIdRef.current = localSid;
+    setSessionId(localSid);
+    try { sessionStorage.setItem("mb_session_id", localSid); } catch { /* ignore */ }
+
+    // Bootstrap (non-blocking)
+    api.bootstrap()
+      .then(data => { if (data && !data.error) setBoot(data); })
+      .catch(() => { /* use fallback */ });
+
+    // /start in background — does not block the form
+    startPromiseRef.current = api.startSession({
+      ...params,
+      session_id: localSid,
+    } as any).then(s => {
+      const id = (s && s.session_id) || localSid!;
+      sessionIdRef.current = id;
+      setSessionId(id);
+      try { sessionStorage.setItem("mb_session_id", id); } catch { /* ignore */ }
+      return id;
+    }).catch(err => {
+      api.clientEvent({
+        session_id: localSid,
+        event: "start_background_failed",
+        step: "params",
+        status: "warning",
+        error_code: err?.kind || "unknown",
+        error_message: err?.message?.slice(0, 200),
+      });
+      return localSid;
+    });
   }, []);
 
   useEffect(() => {
@@ -152,9 +197,32 @@ export default function App() {
     setError("");
 
     const params = getQueryParams();
-    let sid: string | null = sessionIdRef.current || sessionId || createClientSessionId();
+
+    // Prefer session id from background /start; fall back to local one.
+    let sid: string;
+    try {
+      sid = await ensureSession();
+    } catch {
+      sid = sessionIdRef.current || sessionId || createClientSessionId();
+    }
     sessionIdRef.current = sid;
     setSessionId(sid);
+    try { sessionStorage.setItem("mb_session_id", sid); } catch { /* ignore */ }
+
+    api.clientEvent({
+      session_id: sid,
+      event: "submit_attempt_started",
+      step: "form",
+      status: "info",
+      payload: {
+        host: typeof window !== "undefined" ? window.location.hostname : "",
+        api_base: API_BASE_FOR_TELEMETRY,
+        has_client_mac: !!params.client_mac,
+        has_ap_mac: !!params.ap_mac,
+        ssid: params.ssid || null,
+      },
+    });
+
     try {
       const payload = buildSubmitPayload({
         session_id: sid,
@@ -185,9 +253,15 @@ export default function App() {
         sessionIdRef.current = result.session_id;
         setSessionId(result.session_id);
         try { sessionStorage.setItem("mb_session_id", result.session_id); } catch { /* ignore */ }
-      } else if (sid) {
-        try { sessionStorage.setItem("mb_session_id", sid); } catch { /* ignore */ }
       }
+
+      api.clientEvent({
+        session_id: sid,
+        event: "submit_attempt_finished",
+        step: "form",
+        status: result?.error ? "error" : "success",
+        payload: { has_error: !!result?.error, requires_verification: !!result?.requires_verification, ok: !!result?.ok },
+      });
 
       if (result?.error) {
         setError(result.error);
@@ -204,21 +278,41 @@ export default function App() {
       }
     } catch (err) {
       console.error("[portal] submit error:", err);
-      // Recovery: if submit failed at the network layer but the backend
-      // may have processed the request, check session status.
-      if (sid) {
-        try {
-          const status = await api.sessionStatus(sid);
-          if (status?.requires_verification) {
-            setRedirectUrl(status.redirect_url || null);
-            setStep("otp");
-            startCooldown(60);
-            setSubmitting(false);
-            return;
-          }
-        } catch { /* ignore */ }
-      }
       const e2 = err as { kind?: string; message?: string };
+      api.clientEvent({
+        session_id: sid,
+        event: "submit_attempt_failed",
+        step: "form",
+        status: "error",
+        error_code: e2?.kind || "unknown",
+        error_message: e2?.message?.slice(0, 200),
+        payload: {
+          host: typeof window !== "undefined" ? window.location.hostname : "",
+          api_base: API_BASE_FOR_TELEMETRY,
+        },
+      });
+
+      // Recovery: backend may have processed /submit even if the response
+      // never made it back. Poll /session-status with backoff.
+      const recovered = await recoverAfterSubmitNetworkError(sid);
+      if (recovered?.requires_verification) {
+        api.clientEvent({ session_id: sid, event: "submit_recovery_success", step: "form", status: "success", payload: { outcome: "otp" } });
+        setRedirectUrl(recovered.redirect_url || null);
+        setStep("otp");
+        startCooldown(60);
+        setSubmitting(false);
+        return;
+      }
+      if (recovered?.authorized) {
+        api.clientEvent({ session_id: sid, event: "submit_recovery_success", step: "form", status: "success", payload: { outcome: "authorized" } });
+        setSuccessMsg(recovered.message || "Conectado com sucesso!");
+        setRedirectUrl(recovered.redirect_url || null);
+        setStep("success");
+        setSubmitting(false);
+        return;
+      }
+      api.clientEvent({ session_id: sid, event: "submit_recovery_failed", step: "form", status: "error" });
+
       const friendly =
         e2?.kind === "timeout" ? "Tempo esgotado. Verifique o sinal e tente novamente." :
         e2?.kind === "network" ? "Falha de conexão. Verifique sua rede e tente novamente." :

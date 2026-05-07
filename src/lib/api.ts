@@ -1,9 +1,10 @@
-import { getApiBase, getOrCreateTraceId } from "./portal-utils";
+import { getApiBase, getOrCreateTraceId, SUPABASE_DIRECT_BASE } from "./portal-utils";
 
 const API_BASE = getApiBase();
-const SUPABASE_DIRECT = "https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal";
-const USES_PROXY = API_BASE !== SUPABASE_DIRECT;
-const IS_UNIFI_PORTAL_HOST = typeof window !== "undefined" && window.location.hostname === "wifi.guedesepaixao.com.br";
+const SUPABASE_DIRECT = SUPABASE_DIRECT_BASE;
+// Resilience: try same-origin proxy first; fall back to Supabase direct
+// (requires fqamejlyytrhovawgtwg.supabase.co to be allowed in the UniFi
+// Walled Garden, otherwise the fallback will simply fail too).
 
 /** Forward ?store= param from the landing URL to API calls */
 function getStoreParam(): string {
@@ -63,7 +64,9 @@ interface XhrOptions {
  */
 function xhrRequest<T = any>(path: string, opts: XhrOptions = {}): Promise<T> {
   const { method = "GET", body, timeoutMs = 20000 } = opts;
-  const bases = USES_PROXY && !IS_UNIFI_PORTAL_HOST ? [API_BASE, SUPABASE_DIRECT] : [API_BASE];
+  const bases = API_BASE === SUPABASE_DIRECT
+    ? [SUPABASE_DIRECT]
+    : [API_BASE, SUPABASE_DIRECT];
 
   return new Promise((resolve, reject) => {
     let attempt = 0;
@@ -75,6 +78,12 @@ function xhrRequest<T = any>(path: string, opts: XhrOptions = {}): Promise<T> {
       }
       const base = bases[attempt++];
       const url = buildUrl(base, path);
+      // Detect cross-origin to avoid forcing a CORS preflight via x-trace-id.
+      let isCrossOrigin = false;
+      try {
+        const u = new URL(url, window.location.href);
+        isCrossOrigin = u.origin !== window.location.origin;
+      } catch { /* ignore */ }
       const xhr = new XMLHttpRequest();
       try {
         xhr.open(method, url, true);
@@ -86,7 +95,9 @@ function xhrRequest<T = any>(path: string, opts: XhrOptions = {}): Promise<T> {
       if (body !== undefined) {
         xhr.setRequestHeader("Content-Type", "application/json");
       }
-      try { xhr.setRequestHeader("x-trace-id", getOrCreateTraceId()); } catch { /* ignore */ }
+      if (!isCrossOrigin) {
+        try { xhr.setRequestHeader("x-trace-id", getOrCreateTraceId()); } catch { /* ignore */ }
+      }
       xhr.onload = () => {
         const status = xhr.status;
         const text = xhr.responseText || "";
