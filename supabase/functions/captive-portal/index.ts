@@ -145,6 +145,19 @@ async function safeParseJson(req: Request): Promise<Record<string, unknown> | nu
     if (ct.includes("application/json")) {
       return await req.json();
     }
+    if (ct.includes("application/x-www-form-urlencoded") || ct.includes("multipart/form-data")) {
+      const data = await req.formData();
+      const out: Record<string, unknown> = {};
+      for (const [key, value] of data.entries()) {
+        const text = typeof value === "string" ? value : value.name;
+        if ((key === "original_unifi_url_params" || key === "payload") && text.trim().startsWith("{")) {
+          try { out[key] = JSON.parse(text); } catch { out[key] = text; }
+        } else {
+          out[key] = text;
+        }
+      }
+      return out;
+    }
     // Accept text/plain (used by client to avoid CORS preflight in cross-origin
     // fallback) and any unknown content-type that might still carry JSON.
     const text = await req.text();
