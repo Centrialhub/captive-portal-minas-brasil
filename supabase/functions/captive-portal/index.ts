@@ -3042,12 +3042,24 @@ function checkOtp(){document.getElementById('verify-btn').disabled=getOtp().leng
 document.getElementById('verify-btn').addEventListener('click',function(){
 var code=getOtp();if(!sessionId||code.length!==6)return;var btn=this;btn.disabled=true;btn.textContent='Verificando...';
 var oe=document.getElementById('otp-error');hideErr(oe);
+function applyVerifyResult(r){
+if(r.use_hotspot_redirect&&r.redirect_url){redirectUrl=r.redirect_url;showSuccess(r.message||'Finalizando libera\\u00e7\\u00e3o do Wi-Fi...',true);setTimeout(function(){location.replace(r.redirect_url);},800);return true;}
+if(r.authorized){redirectUrl=r.redirect_url||redirectUrl;showSuccess(r.message||'Conectado com sucesso!',true);return true;}
+return false;
+}
 req('POST','/verify-code',{session_id:sessionId,code:code},function(err,r){
-if(err){showErr(oe,err);btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';return;}
+if(err){
+// Backup transport + recovery via /session-status
+try{simplePostBackup('/verify-code',{session_id:sessionId,code:code,backup_transport:'simple_post'});}catch(e){}
+recoverSubmit(function(rec){
+if(rec&&applyVerifyResult(rec))return;
+showErr(oe,err);btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';
+});
+return;
+}
 if(r.error){showErr(oe,r.error);btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';document.querySelectorAll('.otp-input').forEach(function(i){i.value='';});document.querySelector('.otp-input').focus();return;}
-if(r.use_hotspot_redirect&&r.redirect_url){redirectUrl=r.redirect_url;showSuccess(r.message||'Finalizando libera\\u00e7\\u00e3o do Wi-Fi...',true);setTimeout(function(){location.replace(r.redirect_url);},800);return;}
-if(!r.authorized){showErr(oe,r.message||'Cadastro confirmado, mas o UniFi n\\u00e3o confirmou a libera\\u00e7\\u00e3o. Desconecte e conecte novamente \\u00e0 rede.');btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';document.querySelectorAll('.otp-input').forEach(function(i){i.value='';});document.querySelector('.otp-input').focus();return;}
-redirectUrl=r.redirect_url||redirectUrl;showSuccess(r.message||'Conectado com sucesso!',true);
+if(applyVerifyResult(r))return;
+showErr(oe,r.message||'Cadastro confirmado, mas o UniFi n\\u00e3o confirmou a libera\\u00e7\\u00e3o. Desconecte e conecte novamente \\u00e0 rede.');btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';document.querySelectorAll('.otp-input').forEach(function(i){i.value='';});document.querySelector('.otp-input').focus();
 });
 });
 document.getElementById('resend-btn').addEventListener('click',function(){
