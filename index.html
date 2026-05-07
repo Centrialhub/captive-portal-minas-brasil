@@ -145,13 +145,11 @@
         if(loading && !loading.classList.contains('hidden')) goStep('form');
       }, 1200);
 
-      // ── API Bases (proxy first, direct Supabase fallback) ──
-      var host = location.hostname;
-      var PROXY = (host==='wifi.guedesepaixao.com.br'||host.indexOf('.vercel.app')!==-1)
-        ? '/api/captive-portal'
-        : null;
+      // ── API Bases (same-origin proxy first, direct Supabase fallback) ──
       var DIRECT = 'https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal';
-      var BASES = (PROXY && host!=='wifi.guedesepaixao.com.br') ? [PROXY, DIRECT] : (PROXY ? [PROXY] : [DIRECT]);
+      var SAME_ORIGIN = '/api/captive-portal';
+      var host = location.hostname || '';
+      var BASES = host.indexOf('supabase.co') !== -1 ? [DIRECT] : [SAME_ORIGIN, DIRECT];
 
       // ── Query Params ──
       function query(){
