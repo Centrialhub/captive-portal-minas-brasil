@@ -1323,50 +1323,96 @@ async function handleStart(req: Request): Promise<Response> {
   // so /start and /submit can converge on the same row.
   const suppliedSessionId = isValidUUID(body.session_id) ? (body.session_id as string) : null;
 
-  if (suppliedSessionId) {
-    const { data: existing } = await db
-      .from("captive_sessions")
-      .select("id")
-      .eq("id", suppliedSessionId)
-      .maybeSingle();
-    if (existing) {
-      await db.from("captive_sessions").update({
-        client_mac: mac,
-        ap_mac: apMac,
-        ssid: sanitizeString(body.ssid, 64),
-        redirect_url: sanitizeString(body.redirect_url, 2000),
-        captive_timestamp: captiveTimestamp,
-        original_unifi_url_params: originalUnifiParams,
-        trace_id: traceId,
-        params_received_at: new Date().toISOString(),
-        last_step: "params",
-      }).eq("id", suppliedSessionId);
-      logEvent(db, {
-        session_id: suppliedSessionId, trace_id: traceId, store_id: detected.store_id,
-        event_type: "session_recovered", step: "params", status: "success",
-        latency_ms: Date.now() - t0, client_ip: clientIp, user_agent: ua,
-      });
-      return jsonResponse({ session_id: suppliedSessionId, trace_id: traceId, recovered: true });
-    }
-  }
-
-  const insertPayload: Record<string, unknown> = {
-    store_id: detected.store_id,
+  const paramFields: Record<string, unknown> = {
     client_mac: mac,
-    client_ip: sanitizeString(body.client_ip, 45) || clientIp,
     ap_mac: apMac,
     ssid: sanitizeString(body.ssid, 64),
     user_agent: sanitizeString(body.user_agent, 500) || ua,
     redirect_url: sanitizeString(body.redirect_url, 2000),
     captive_timestamp: captiveTimestamp,
     original_unifi_url_params: originalUnifiParams,
-    status: "started",
     trace_id: traceId,
     params_received_at: new Date().toISOString(),
     last_step: "params",
+    client_ip: sanitizeString(body.client_ip, 45) || clientIp,
   };
-  if (suppliedSessionId) insertPayload.id = suppliedSessionId;
 
+  logEvent(db, {
+    session_id: suppliedSessionId, trace_id: traceId, store_id: detected.store_id,
+    event_type: "session_upsert_started", step: "params", status: "info",
+    client_ip: clientIp, user_agent: ua,
+  });
+
+  if (suppliedSessionId) {
+    // Check if already exists; if so, only update parameter fields and don't
+    // overwrite advanced fields (status, submitted_at, authorized_at, ...).
+    const { data: existing } = await db
+      .from("captive_sessions")
+      .select("id, status, submitted_at, authorized_at")
+      .eq("id", suppliedSessionId)
+      .maybeSingle();
+
+    if (existing) {
+      const { error: upErr } = await db
+        .from("captive_sessions")
+        .update(paramFields)
+        .eq("id", suppliedSessionId);
+      if (upErr) {
+        logEvent(db, {
+          session_id: suppliedSessionId, trace_id: traceId, store_id: detected.store_id,
+          event_type: "session_upsert_failed", step: "params", status: "error",
+          error_code: "SESSION_UPDATE_ERROR", error_message: upErr.message,
+          latency_ms: Date.now() - t0, client_ip: clientIp, user_agent: ua,
+        });
+      } else {
+        logEvent(db, {
+          session_id: suppliedSessionId, trace_id: traceId, store_id: detected.store_id,
+          event_type: "session_upsert_success", step: "params", status: "success",
+          payload: { recovered: true },
+          latency_ms: Date.now() - t0, client_ip: clientIp, user_agent: ua,
+        });
+      }
+      return jsonResponse({ session_id: suppliedSessionId, trace_id: traceId, recovered: true });
+    }
+
+    // Doesn't exist yet — try idempotent upsert (handles race with /submit).
+    const insertPayload = {
+      id: suppliedSessionId,
+      store_id: detected.store_id,
+      status: "started",
+      ...paramFields,
+    };
+    const { error: upsertErr } = await upsertCaptiveSession(db, insertPayload);
+    if (upsertErr) {
+      const code = isDuplicateKeyError(upsertErr.message) ? "SESSION_DUPLICATE_RACE" : "SESSION_UPSERT_ERROR";
+      logEvent(db, {
+        session_id: suppliedSessionId, trace_id: traceId, store_id: detected.store_id,
+        event_type: "session_upsert_failed", step: "params", status: "error",
+        error_code: code, error_message: upsertErr.message,
+        latency_ms: Date.now() - t0, client_ip: clientIp, user_agent: ua,
+      });
+      // Still return the supplied id — /submit will be the source of truth.
+      return jsonResponse({ session_id: suppliedSessionId, trace_id: traceId, recovered: code === "SESSION_DUPLICATE_RACE" });
+    }
+    logEvent(db, {
+      session_id: suppliedSessionId, trace_id: traceId, store_id: detected.store_id,
+      event_type: "session_upsert_success", step: "params", status: "success",
+      payload: { created: true, store_slug: detected.store_slug },
+      latency_ms: Date.now() - t0, client_ip: clientIp, user_agent: ua,
+    });
+    await db.from("audit_logs").insert({
+      store_id: detected.store_id, entity: "session", entity_id: suppliedSessionId,
+      action: "create", meta: { client_mac: mac, ip: clientIp, store_slug: detected.store_slug, trace_id: traceId },
+    });
+    return jsonResponse({ session_id: suppliedSessionId, trace_id: traceId });
+  }
+
+  // No supplied id — let DB generate one (legacy path).
+  const insertPayload: Record<string, unknown> = {
+    store_id: detected.store_id,
+    status: "started",
+    ...paramFields,
+  };
   const { data: session, error } = await db
     .from("captive_sessions")
     .insert(insertPayload)
@@ -1377,7 +1423,7 @@ async function handleStart(req: Request): Promise<Response> {
     console.error("Session insert error:", error.message);
     logEvent(db, {
       trace_id: traceId, store_id: detected.store_id,
-      event_type: "session_create_failed", step: "params", status: "error",
+      event_type: "session_upsert_failed", step: "params", status: "error",
       error_code: "SESSION_INSERT_ERROR", error_message: error.message,
       latency_ms: Date.now() - t0, client_ip: clientIp, user_agent: ua,
     });
@@ -1386,7 +1432,7 @@ async function handleStart(req: Request): Promise<Response> {
 
   logEvent(db, {
     session_id: session.id, trace_id: traceId, store_id: detected.store_id,
-    event_type: "session_created", step: "params", status: "success",
+    event_type: "session_upsert_success", step: "params", status: "success",
     latency_ms: Date.now() - t0,
     payload: { client_mac: mac, ap_mac: apMac, ssid: body.ssid, store_slug: detected.store_slug },
     client_ip: clientIp, user_agent: ua,
