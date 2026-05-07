@@ -180,9 +180,32 @@ export default function App() {
     setError("");
 
     const params = getQueryParams();
-    let sid: string | null = sessionIdRef.current || sessionId || createClientSessionId();
+
+    // Prefer session id from background /start; fall back to local one.
+    let sid: string;
+    try {
+      sid = await ensureSession();
+    } catch {
+      sid = sessionIdRef.current || sessionId || createClientSessionId();
+    }
     sessionIdRef.current = sid;
     setSessionId(sid);
+    try { sessionStorage.setItem("mb_session_id", sid); } catch { /* ignore */ }
+
+    api.clientEvent({
+      session_id: sid,
+      event: "submit_attempt_started",
+      step: "form",
+      status: "info",
+      payload: {
+        host: typeof window !== "undefined" ? window.location.hostname : "",
+        api_base: API_BASE_FOR_TELEMETRY,
+        has_client_mac: !!params.client_mac,
+        has_ap_mac: !!params.ap_mac,
+        ssid: params.ssid || null,
+      },
+    });
+
     try {
       const payload = buildSubmitPayload({
         session_id: sid,
@@ -213,9 +236,15 @@ export default function App() {
         sessionIdRef.current = result.session_id;
         setSessionId(result.session_id);
         try { sessionStorage.setItem("mb_session_id", result.session_id); } catch { /* ignore */ }
-      } else if (sid) {
-        try { sessionStorage.setItem("mb_session_id", sid); } catch { /* ignore */ }
       }
+
+      api.clientEvent({
+        session_id: sid,
+        event: "submit_attempt_finished",
+        step: "form",
+        status: result?.error ? "error" : "success",
+        payload: { has_error: !!result?.error, requires_verification: !!result?.requires_verification, ok: !!result?.ok },
+      });
 
       if (result?.error) {
         setError(result.error);
@@ -232,21 +261,41 @@ export default function App() {
       }
     } catch (err) {
       console.error("[portal] submit error:", err);
-      // Recovery: if submit failed at the network layer but the backend
-      // may have processed the request, check session status.
-      if (sid) {
-        try {
-          const status = await api.sessionStatus(sid);
-          if (status?.requires_verification) {
-            setRedirectUrl(status.redirect_url || null);
-            setStep("otp");
-            startCooldown(60);
-            setSubmitting(false);
-            return;
-          }
-        } catch { /* ignore */ }
-      }
       const e2 = err as { kind?: string; message?: string };
+      api.clientEvent({
+        session_id: sid,
+        event: "submit_attempt_failed",
+        step: "form",
+        status: "error",
+        error_code: e2?.kind || "unknown",
+        error_message: e2?.message?.slice(0, 200),
+        payload: {
+          host: typeof window !== "undefined" ? window.location.hostname : "",
+          api_base: API_BASE_FOR_TELEMETRY,
+        },
+      });
+
+      // Recovery: backend may have processed /submit even if the response
+      // never made it back. Poll /session-status with backoff.
+      const recovered = await recoverAfterSubmitNetworkError(sid);
+      if (recovered?.requires_verification) {
+        api.clientEvent({ session_id: sid, event: "submit_recovery_success", step: "form", status: "success", payload: { outcome: "otp" } });
+        setRedirectUrl(recovered.redirect_url || null);
+        setStep("otp");
+        startCooldown(60);
+        setSubmitting(false);
+        return;
+      }
+      if (recovered?.authorized) {
+        api.clientEvent({ session_id: sid, event: "submit_recovery_success", step: "form", status: "success", payload: { outcome: "authorized" } });
+        setSuccessMsg(recovered.message || "Conectado com sucesso!");
+        setRedirectUrl(recovered.redirect_url || null);
+        setStep("success");
+        setSubmitting(false);
+        return;
+      }
+      api.clientEvent({ session_id: sid, event: "submit_recovery_failed", step: "form", status: "error" });
+
       const friendly =
         e2?.kind === "timeout" ? "Tempo esgotado. Verifique o sinal e tente novamente." :
         e2?.kind === "network" ? "Falha de conexão. Verifique sua rede e tente novamente." :
