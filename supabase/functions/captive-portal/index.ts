@@ -2965,8 +2965,7 @@ details p{padding:0 12px 12px;font-size:11px;color:#888;line-height:1.5}
 (function(){
 var DIRECT_API='${API_BASE}';
 var SAME_ORIGIN_API='/api/captive-portal';
-var API=location.pathname.indexOf('/functions/v1/captive-portal')>=0?DIRECT_API:SAME_ORIGIN_API;
-var FALLBACK_API=API===DIRECT_API?SAME_ORIGIN_API:DIRECT_API;
+var BASES=location.hostname.indexOf('supabase.co')>=0?[DIRECT_API]:[SAME_ORIGIN_API,DIRECT_API];
 var clientMac='${clientMac}';
 var apMac='${apMac}';
 var ssid='${ssidParam}';
@@ -2974,7 +2973,12 @@ var captiveTs='${tParam}';
 var siteParam='${siteParam}';
 var rawQuery='${rawQuery}';
 var unifiOriginalParams={id:clientMac,ap:apMac,ssid:ssid,url:'${redirectParam}',t:captiveTs,site:siteParam,raw_query:rawQuery};
+var fp=[clientMac||'',apMac||'',ssid||'',captiveTs||''].join('|');
 var sessionId=null;
+try{var oldSid=sessionStorage.getItem('mb_session_id'),oldFp=sessionStorage.getItem('mb_session_fingerprint'),oldAt=parseInt(sessionStorage.getItem('mb_session_created_at')||'0',10);if(oldSid&&oldFp===fp&&oldAt&&(Date.now()-oldAt)<1800000)sessionId=oldSid;}catch(e){}
+function uuid(){if(crypto&&crypto.randomUUID)return crypto.randomUUID();return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,function(c){var r=Math.random()*16|0,v=c==='x'?r:(r&3|8);return v.toString(16);});}
+function persist(){try{sessionStorage.setItem('mb_session_id',sessionId);sessionStorage.setItem('mb_session_fingerprint',fp);sessionStorage.setItem('mb_session_created_at',String(Date.now()));}catch(e){}}
+if(!sessionId){sessionId=uuid();persist();}
 var consentVersion='offline-fallback';
 var redirectUrl='${redirectParam}'||null;
 var resendTimer=null,resendSeconds=0;
