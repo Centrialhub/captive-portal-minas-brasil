@@ -74,7 +74,7 @@ export default function App() {
     return id;
   };
 
-  // Boot: show form immediately, fetch bootstrap/start in background
+  // Boot: show form immediately, fetch bootstrap + start in background
   useEffect(() => {
     setStep("form");
 
@@ -84,12 +84,40 @@ export default function App() {
 
     const params = getQueryParams();
 
-    (async () => {
-      try {
-        const data = await api.bootstrap();
-        if (!data.error) setBoot(data);
-      } catch { /* use fallback */ }
-    })();
+    // Reuse stored session_id if available, otherwise mint a client one
+    let localSid: string | null = null;
+    try { localSid = sessionStorage.getItem("mb_session_id"); } catch { /* ignore */ }
+    if (!localSid) localSid = createClientSessionId();
+    sessionIdRef.current = localSid;
+    setSessionId(localSid);
+    try { sessionStorage.setItem("mb_session_id", localSid); } catch { /* ignore */ }
+
+    // Bootstrap (non-blocking)
+    api.bootstrap()
+      .then(data => { if (data && !data.error) setBoot(data); })
+      .catch(() => { /* use fallback */ });
+
+    // /start in background — does not block the form
+    startPromiseRef.current = api.startSession({
+      ...params,
+      session_id: localSid,
+    } as any).then(s => {
+      const id = (s && s.session_id) || localSid!;
+      sessionIdRef.current = id;
+      setSessionId(id);
+      try { sessionStorage.setItem("mb_session_id", id); } catch { /* ignore */ }
+      return id;
+    }).catch(err => {
+      api.clientEvent({
+        session_id: localSid,
+        event: "start_background_failed",
+        step: "params",
+        status: "warning",
+        error_code: err?.kind || "unknown",
+        error_message: err?.message?.slice(0, 200),
+      });
+      return localSid;
+    });
   }, []);
 
   useEffect(() => {
