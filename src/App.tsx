@@ -1,8 +1,25 @@
 import { useState, useEffect, useRef } from "react";
 import { api, createClientSessionId } from "./lib/api";
-import { getQueryParams, buildSubmitPayload, type PortalStep } from "./lib/portal-utils";
+import { getApiBase, getQueryParams, buildSubmitPayload, type PortalStep } from "./lib/portal-utils";
 import logoMinasBrasil from "./assets/logo-minas-brasil.png";
 import "./index.css";
+
+const API_BASE_FOR_TELEMETRY = (() => {
+  try { return getApiBase(); } catch { return ""; }
+})();
+
+async function recoverAfterSubmitNetworkError(sid: string) {
+  const waits = [500, 1200, 2500];
+  for (const w of waits) {
+    await new Promise(r => setTimeout(r, w));
+    try {
+      const status = await api.sessionStatus(sid);
+      if (status?.requires_verification) return status;
+      if (status?.authorized) return status;
+    } catch { /* keep trying */ }
+  }
+  return null;
+}
 
 interface BootstrapData {
   store: { slug: string | null; name: string; city?: string | null };
