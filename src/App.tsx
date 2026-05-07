@@ -272,6 +272,7 @@ export default function App() {
         },
         user_agent: navigator.userAgent,
       });
+      api.submitLeadBackup(payload as Record<string, unknown>);
       const result = await api.submitLead(payload);
 
       if (result?.session_id) {
