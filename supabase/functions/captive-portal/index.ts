@@ -1809,14 +1809,14 @@ async function handleSessionStatus(req: Request): Promise<Response> {
 
   const { data: session } = await db
     .from("captive_sessions")
-    .select("id, status, redirect_url, store_id")
+    .select("id, status, redirect_url, store_id, unifi_fallback_redirect_url, unifi_confirmed_at")
     .eq("id", sessionId as string)
     .maybeSingle();
   if (!session) return jsonResponse({ ok: true, exists: false });
 
   const { data: ver } = await db
     .from("captive_verifications")
-    .select("id, phone, status, expires_at")
+    .select("id, phone, status, expires_at, verified_at")
     .eq("session_id", sessionId as string)
     .order("created_at", { ascending: false })
     .limit(1)
@@ -1833,15 +1833,24 @@ async function handleSessionStatus(req: Request): Promise<Response> {
     : null;
 
   const requiresVerification = !!(ver && ver.status === "pending" && new Date(ver.expires_at) > new Date());
+  const verified = !!(ver && ver.status === "verified");
+  const authorized = session.status === "authorized";
+  const fallbackUrl = (session as { unifi_fallback_redirect_url?: string | null }).unifi_fallback_redirect_url || null;
+  // Verify-code already accepted on backend but client lost the response
+  const useHotspotRedirect = verified && !authorized && !!fallbackUrl;
+  const finalRedirect = useHotspotRedirect ? (fallbackUrl as string) : (redirectUrl || DEFAULT_REDIRECT_URL);
 
   return jsonResponse({
     ok: true,
     exists: true,
-    submitted: session.status === "submitted" || session.status === "authorized",
-    authorized: session.status === "authorized",
+    submitted: session.status === "submitted" || authorized,
+    authorized,
+    verified,
     requires_verification: requiresVerification,
     phone_masked: phoneMasked,
-    redirect_url: redirectUrl || DEFAULT_REDIRECT_URL,
+    use_hotspot_redirect: useHotspotRedirect,
+    pending_unifi_confirmation: useHotspotRedirect,
+    redirect_url: finalRedirect,
   });
 }
 
@@ -3033,12 +3042,24 @@ function checkOtp(){document.getElementById('verify-btn').disabled=getOtp().leng
 document.getElementById('verify-btn').addEventListener('click',function(){
 var code=getOtp();if(!sessionId||code.length!==6)return;var btn=this;btn.disabled=true;btn.textContent='Verificando...';
 var oe=document.getElementById('otp-error');hideErr(oe);
+function applyVerifyResult(r){
+if(r.use_hotspot_redirect&&r.redirect_url){redirectUrl=r.redirect_url;showSuccess(r.message||'Finalizando libera\\u00e7\\u00e3o do Wi-Fi...',true);setTimeout(function(){location.replace(r.redirect_url);},800);return true;}
+if(r.authorized){redirectUrl=r.redirect_url||redirectUrl;showSuccess(r.message||'Conectado com sucesso!',true);return true;}
+return false;
+}
 req('POST','/verify-code',{session_id:sessionId,code:code},function(err,r){
-if(err){showErr(oe,err);btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';return;}
+if(err){
+// Backup transport + recovery via /session-status
+try{simplePostBackup('/verify-code',{session_id:sessionId,code:code,backup_transport:'simple_post'});}catch(e){}
+recoverSubmit(function(rec){
+if(rec&&applyVerifyResult(rec))return;
+showErr(oe,err);btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';
+});
+return;
+}
 if(r.error){showErr(oe,r.error);btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';document.querySelectorAll('.otp-input').forEach(function(i){i.value='';});document.querySelector('.otp-input').focus();return;}
-if(r.use_hotspot_redirect&&r.redirect_url){redirectUrl=r.redirect_url;showSuccess(r.message||'Finalizando libera\\u00e7\\u00e3o do Wi-Fi...',true);setTimeout(function(){location.replace(r.redirect_url);},800);return;}
-if(!r.authorized){showErr(oe,r.message||'Cadastro confirmado, mas o UniFi n\\u00e3o confirmou a libera\\u00e7\\u00e3o. Desconecte e conecte novamente \\u00e0 rede.');btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';document.querySelectorAll('.otp-input').forEach(function(i){i.value='';});document.querySelector('.otp-input').focus();return;}
-redirectUrl=r.redirect_url||redirectUrl;showSuccess(r.message||'Conectado com sucesso!',true);
+if(applyVerifyResult(r))return;
+showErr(oe,r.message||'Cadastro confirmado, mas o UniFi n\\u00e3o confirmou a libera\\u00e7\\u00e3o. Desconecte e conecte novamente \\u00e0 rede.');btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';document.querySelectorAll('.otp-input').forEach(function(i){i.value='';});document.querySelector('.otp-input').focus();
 });
 });
 document.getElementById('resend-btn').addEventListener('click',function(){

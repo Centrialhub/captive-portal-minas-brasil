@@ -432,7 +432,32 @@ export default function App() {
         error_code: e2?.kind || "unknown",
         error_message: e2?.message?.slice(0, 200),
       });
-      setError("Erro ao verificar código.");
+      // Backup transport: captive assistants frequently drop the XHR POST response
+      // for /verify-code. Fire a sendBeacon/iframe POST and poll /session-status
+      // to recover the verify result.
+      try { api.verifyCodeBackup({ session_id: sid, code: otpCode }); } catch { /* ignore */ }
+      const recovered = await recoverAfterSubmitNetworkError(sid);
+      if (recovered) {
+        api.clientEvent({ session_id: sid, event: "verify_recovery_success", step: "otp", status: "success",
+          payload: { authorized: !!recovered.authorized, use_hotspot_redirect: !!recovered.use_hotspot_redirect } });
+        if (recovered.use_hotspot_redirect && recovered.redirect_url) {
+          setSuccessMsg("Finalizando liberação do Wi-Fi...");
+          setRedirectUrl(recovered.redirect_url);
+          setStep("success");
+          setTimeout(() => { window.location.href = recovered.redirect_url; }, 800);
+          setVerifying(false);
+          return;
+        }
+        if (recovered.authorized) {
+          setSuccessMsg("Conectado com sucesso!");
+          setRedirectUrl(recovered.redirect_url || redirectUrl);
+          setStep("success");
+          setVerifying(false);
+          return;
+        }
+      }
+      api.clientEvent({ session_id: sid, event: "verify_recovery_failed", step: "otp", status: "error" });
+      setError("Erro ao verificar código. Tente novamente.");
     }
     setVerifying(false);
   };
