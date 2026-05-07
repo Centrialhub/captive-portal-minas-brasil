@@ -93,7 +93,14 @@ function xhrRequest<T = any>(path: string, opts: XhrOptions = {}): Promise<T> {
       }
       xhr.timeout = timeoutMs;
       if (body !== undefined) {
-        xhr.setRequestHeader("Content-Type", "application/json");
+        // Cross-origin requests use text/plain to skip the CORS preflight,
+        // which often fails inside captive-network assistants / Walled Garden.
+        // The edge function's safeParseJson() accepts text/plain too.
+        if (isCrossOrigin) {
+          xhr.setRequestHeader("Content-Type", "text/plain;charset=UTF-8");
+        } else {
+          xhr.setRequestHeader("Content-Type", "application/json");
+        }
       }
       if (!isCrossOrigin) {
         try { xhr.setRequestHeader("x-trace-id", getOrCreateTraceId()); } catch { /* ignore */ }
