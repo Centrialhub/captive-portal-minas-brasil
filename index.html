@@ -211,6 +211,15 @@
           if(extras&&extras.payload) body.payload = extras.payload;
           if(extras&&extras.error_message) body.error_message = String(extras.error_message).slice(0,200);
           if(extras&&extras.error_code) body.error_code = extras.error_code;
+          // Prefer sendBeacon: survives Captive Network Assistant filters that
+          // routinely drop XHR POSTs while letting beacons through.
+          try {
+            if(navigator.sendBeacon){
+              var url = buildUrl(BASES[0], '/client-event');
+              var blob = new Blob([JSON.stringify(body)], {type:'text/plain;charset=UTF-8'});
+              if(navigator.sendBeacon(url, blob)) return;
+            }
+          } catch(e){}
           apiFetch('/client-event','POST',body,function(){}, 5000);
         } catch(e){}
       }
@@ -472,6 +481,9 @@
         btn.disabled=true;btn.textContent='Verificando...';
 
         clientEvent('verify_attempt_started','info',{step:'otp'});
+
+        // Proactive backup transport in parallel with the XHR — survives CNA drops.
+        try { simplePostBackup('/verify-code', {session_id:state.session_id, code:codeInp.value, backup_transport:'simple_post_proactive'}); } catch(e){}
 
         function applyVerifyResult(data){
           if(data.use_hotspot_redirect && data.redirect_url){
