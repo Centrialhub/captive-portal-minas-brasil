@@ -194,8 +194,15 @@
         cooldownTimer: null
       };
 
-      // Restore session_id from sessionStorage (CNA may reload page)
-      try { var s = sessionStorage.getItem('mb_session_id'); if(s) state.session_id = s; } catch(e){}
+      // Session fingerprint + restore (CNA may reload page)
+      var fp = [params.client_mac||'', params.ap_mac||'', params.ssid||'', params.captive_timestamp||''].join('|');
+      try {
+        var oldSid = sessionStorage.getItem('mb_session_id');
+        var oldFp = sessionStorage.getItem('mb_session_fingerprint');
+        var oldAt = parseInt(sessionStorage.getItem('mb_session_created_at')||'0', 10);
+        var fresh = oldAt && (Date.now() - oldAt) < 30*60*1000;
+        if (oldSid && oldFp === fp && fresh) state.session_id = oldSid;
+      } catch(e) {}
 
       // ── Telemetry (fire-and-forget) ──
       function clientEvent(name, status, extras){
