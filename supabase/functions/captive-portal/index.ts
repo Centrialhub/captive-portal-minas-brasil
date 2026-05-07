@@ -2970,7 +2970,7 @@ var submitBtn=document.getElementById('submit-btn');
 var errorDiv=document.getElementById('error-msg');
 consentCheck.addEventListener('change',function(){submitBtn.disabled=!consentCheck.checked;});
 function req(method,path,body,cb,timeout){
-var bases=[API,FALLBACK_API],i=0;
+var bases=API===FALLBACK_API?[API]:[API,FALLBACK_API],i=0;
 function go(){
 var x=new XMLHttpRequest();x.open(method,bases[i]+path,true);
 x.setRequestHeader('Content-Type','application/json');x.timeout=timeout||15000;
