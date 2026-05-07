@@ -139,8 +139,45 @@ function isValidIp(ip: string): boolean {
   return false;
 }
 
-function safeParseJson(req: Request): Promise<Record<string, unknown> | null> {
-  return req.json().catch(() => null);
+async function safeParseJson(req: Request): Promise<Record<string, unknown> | null> {
+  try {
+    const ct = req.headers.get("content-type") || "";
+    if (ct.includes("application/json")) {
+      return await req.json();
+    }
+    // Accept text/plain (used by client to avoid CORS preflight in cross-origin
+    // fallback) and any unknown content-type that might still carry JSON.
+    const text = await req.text();
+    if (!text) return {};
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Idempotent upsert of a captive_sessions row by id.
+ * Use this from /start and /submit when a client-supplied session_id is present
+ * to eliminate the duplicate-key race when both run concurrently.
+ *
+ * Pass `protect: true` (used from /start) to avoid overwriting fields that
+ * /submit may already have set (status authorized, submitted_at, etc.).
+ */
+async function upsertCaptiveSession(
+  db: ReturnType<typeof supabaseAdmin>,
+  payload: Record<string, unknown>,
+): Promise<{ error: { message: string; code?: string } | null }> {
+  const { error } = await db
+    .from("captive_sessions")
+    .upsert(payload, { onConflict: "id", ignoreDuplicates: false });
+  if (error) return { error: { message: error.message, code: (error as any).code } };
+  return { error: null };
+}
+
+function isDuplicateKeyError(msg?: string | null): boolean {
+  if (!msg) return false;
+  const m = msg.toLowerCase();
+  return m.includes("duplicate key") || m.includes("23505");
 }
 
 // ========== Trace ID + Event Logging ==========
@@ -1286,50 +1323,96 @@ async function handleStart(req: Request): Promise<Response> {
   // so /start and /submit can converge on the same row.
   const suppliedSessionId = isValidUUID(body.session_id) ? (body.session_id as string) : null;
 
-  if (suppliedSessionId) {
-    const { data: existing } = await db
-      .from("captive_sessions")
-      .select("id")
-      .eq("id", suppliedSessionId)
-      .maybeSingle();
-    if (existing) {
-      await db.from("captive_sessions").update({
-        client_mac: mac,
-        ap_mac: apMac,
-        ssid: sanitizeString(body.ssid, 64),
-        redirect_url: sanitizeString(body.redirect_url, 2000),
-        captive_timestamp: captiveTimestamp,
-        original_unifi_url_params: originalUnifiParams,
-        trace_id: traceId,
-        params_received_at: new Date().toISOString(),
-        last_step: "params",
-      }).eq("id", suppliedSessionId);
-      logEvent(db, {
-        session_id: suppliedSessionId, trace_id: traceId, store_id: detected.store_id,
-        event_type: "session_recovered", step: "params", status: "success",
-        latency_ms: Date.now() - t0, client_ip: clientIp, user_agent: ua,
-      });
-      return jsonResponse({ session_id: suppliedSessionId, trace_id: traceId, recovered: true });
-    }
-  }
-
-  const insertPayload: Record<string, unknown> = {
-    store_id: detected.store_id,
+  const paramFields: Record<string, unknown> = {
     client_mac: mac,
-    client_ip: sanitizeString(body.client_ip, 45) || clientIp,
     ap_mac: apMac,
     ssid: sanitizeString(body.ssid, 64),
     user_agent: sanitizeString(body.user_agent, 500) || ua,
     redirect_url: sanitizeString(body.redirect_url, 2000),
     captive_timestamp: captiveTimestamp,
     original_unifi_url_params: originalUnifiParams,
-    status: "started",
     trace_id: traceId,
     params_received_at: new Date().toISOString(),
     last_step: "params",
+    client_ip: sanitizeString(body.client_ip, 45) || clientIp,
   };
-  if (suppliedSessionId) insertPayload.id = suppliedSessionId;
 
+  logEvent(db, {
+    session_id: suppliedSessionId, trace_id: traceId, store_id: detected.store_id,
+    event_type: "session_upsert_started", step: "params", status: "info",
+    client_ip: clientIp, user_agent: ua,
+  });
+
+  if (suppliedSessionId) {
+    // Check if already exists; if so, only update parameter fields and don't
+    // overwrite advanced fields (status, submitted_at, authorized_at, ...).
+    const { data: existing } = await db
+      .from("captive_sessions")
+      .select("id, status, submitted_at, authorized_at")
+      .eq("id", suppliedSessionId)
+      .maybeSingle();
+
+    if (existing) {
+      const { error: upErr } = await db
+        .from("captive_sessions")
+        .update(paramFields)
+        .eq("id", suppliedSessionId);
+      if (upErr) {
+        logEvent(db, {
+          session_id: suppliedSessionId, trace_id: traceId, store_id: detected.store_id,
+          event_type: "session_upsert_failed", step: "params", status: "error",
+          error_code: "SESSION_UPDATE_ERROR", error_message: upErr.message,
+          latency_ms: Date.now() - t0, client_ip: clientIp, user_agent: ua,
+        });
+      } else {
+        logEvent(db, {
+          session_id: suppliedSessionId, trace_id: traceId, store_id: detected.store_id,
+          event_type: "session_upsert_success", step: "params", status: "success",
+          payload: { recovered: true },
+          latency_ms: Date.now() - t0, client_ip: clientIp, user_agent: ua,
+        });
+      }
+      return jsonResponse({ session_id: suppliedSessionId, trace_id: traceId, recovered: true });
+    }
+
+    // Doesn't exist yet — try idempotent upsert (handles race with /submit).
+    const insertPayload = {
+      id: suppliedSessionId,
+      store_id: detected.store_id,
+      status: "started",
+      ...paramFields,
+    };
+    const { error: upsertErr } = await upsertCaptiveSession(db, insertPayload);
+    if (upsertErr) {
+      const code = isDuplicateKeyError(upsertErr.message) ? "SESSION_DUPLICATE_RACE" : "SESSION_UPSERT_ERROR";
+      logEvent(db, {
+        session_id: suppliedSessionId, trace_id: traceId, store_id: detected.store_id,
+        event_type: "session_upsert_failed", step: "params", status: "error",
+        error_code: code, error_message: upsertErr.message,
+        latency_ms: Date.now() - t0, client_ip: clientIp, user_agent: ua,
+      });
+      // Still return the supplied id — /submit will be the source of truth.
+      return jsonResponse({ session_id: suppliedSessionId, trace_id: traceId, recovered: code === "SESSION_DUPLICATE_RACE" });
+    }
+    logEvent(db, {
+      session_id: suppliedSessionId, trace_id: traceId, store_id: detected.store_id,
+      event_type: "session_upsert_success", step: "params", status: "success",
+      payload: { created: true, store_slug: detected.store_slug },
+      latency_ms: Date.now() - t0, client_ip: clientIp, user_agent: ua,
+    });
+    await db.from("audit_logs").insert({
+      store_id: detected.store_id, entity: "session", entity_id: suppliedSessionId,
+      action: "create", meta: { client_mac: mac, ip: clientIp, store_slug: detected.store_slug, trace_id: traceId },
+    });
+    return jsonResponse({ session_id: suppliedSessionId, trace_id: traceId });
+  }
+
+  // No supplied id — let DB generate one (legacy path).
+  const insertPayload: Record<string, unknown> = {
+    store_id: detected.store_id,
+    status: "started",
+    ...paramFields,
+  };
   const { data: session, error } = await db
     .from("captive_sessions")
     .insert(insertPayload)
@@ -1340,7 +1423,7 @@ async function handleStart(req: Request): Promise<Response> {
     console.error("Session insert error:", error.message);
     logEvent(db, {
       trace_id: traceId, store_id: detected.store_id,
-      event_type: "session_create_failed", step: "params", status: "error",
+      event_type: "session_upsert_failed", step: "params", status: "error",
       error_code: "SESSION_INSERT_ERROR", error_message: error.message,
       latency_ms: Date.now() - t0, client_ip: clientIp, user_agent: ua,
     });
@@ -1349,7 +1432,7 @@ async function handleStart(req: Request): Promise<Response> {
 
   logEvent(db, {
     session_id: session.id, trace_id: traceId, store_id: detected.store_id,
-    event_type: "session_created", step: "params", status: "success",
+    event_type: "session_upsert_success", step: "params", status: "success",
     latency_ms: Date.now() - t0,
     payload: { client_mac: mac, ap_mac: apMac, ssid: body.ssid, store_slug: detected.store_slug },
     client_ip: clientIp, user_agent: ua,
@@ -1419,48 +1502,41 @@ async function handleSubmit(req: Request): Promise<Response> {
   console.log(`[portal-params] (submit) id=${clientMac} ap=${normalizeMac(body.ap_mac)} ssid=${body.ssid} url=${body.redirect_url} t=${submitCaptiveTs}`);
 
   // Captive assistants can lose API responses. /submit is therefore the source
-  // of truth: if the frontend supplied a UUID, guarantee that session exists;
-  // otherwise create one here so the OTP table can be reached.
+  // of truth: if the frontend supplied a UUID, guarantee that session exists
+  // via idempotent upsert (avoids races with the background /start).
+  logEvent(db, {
+    session_id: sessionId && isValidUUID(sessionId) ? sessionId : null,
+    trace_id: traceId, store_id: storeId,
+    event_type: "submit_session_upsert_started", step: "form", status: "info",
+    client_ip: clientIp, user_agent: ua,
+  });
+
+  const submitParamFields: Record<string, unknown> = {
+    store_id: storeId,
+    client_mac: clientMac,
+    client_ip: clientIpStr,
+    ap_mac: normalizeMac(body.ap_mac),
+    ssid: sanitizeString(body.ssid, 64),
+    user_agent: sanitizeString(body.user_agent, 500) || ua,
+    redirect_url: sanitizeString(body.redirect_url, 2000),
+    captive_timestamp: submitCaptiveTs,
+    original_unifi_url_params: submitUnifiParams,
+    trace_id: traceId,
+    last_step: "form",
+  };
+
   if (sessionId) {
+    // Idempotent upsert by id. Don't overwrite advanced fields if a row
+    // already exists (status, submitted_at, authorized_at).
     const { data: existingSession } = await db
       .from("captive_sessions")
-      .select("id")
+      .select("id, status, submitted_at, authorized_at")
       .eq("id", sessionId)
       .maybeSingle();
 
-    if (!existingSession) {
-      const { error: sessionError } = await db
-        .from("captive_sessions")
-        .insert({
-          id: sessionId,
-          store_id: storeId,
-          client_mac: clientMac,
-          client_ip: clientIpStr,
-          ap_mac: normalizeMac(body.ap_mac),
-          ssid: sanitizeString(body.ssid, 64),
-          user_agent: sanitizeString(body.user_agent, 500) || ua,
-          redirect_url: sanitizeString(body.redirect_url, 2000),
-          captive_timestamp: submitCaptiveTs,
-          original_unifi_url_params: submitUnifiParams,
-          status: "started",
-          trace_id: traceId,
-          params_received_at: new Date().toISOString(),
-          last_step: "form",
-        });
-      if (sessionError) {
-        console.error("[submit] Supplied session insert error:", sessionError.message);
-        logEvent(db, {
-          session_id: sessionId, trace_id: traceId, store_id: storeId,
-          event_type: "session_create_failed", step: "form", status: "error",
-          error_code: "SUPPLIED_INSERT_ERROR", error_message: sessionError.message,
-          client_ip: clientIp, user_agent: ua,
-        });
-        return errorResponse("Erro ao iniciar sessão. Tente novamente.", 500);
-      }
-      console.log(`[submit] created supplied session=${sessionId}`);
-    } else {
-      // Backfill UniFi fields if the existing session was created without them.
-      const updateFields: Record<string, unknown> = { trace_id: traceId };
+    if (existingSession) {
+      // Backfill only safe fields; never downgrade status/timeline.
+      const updateFields: Record<string, unknown> = { trace_id: traceId, last_step: "form" };
       if (clientMac) updateFields.client_mac = clientMac;
       const apMacNorm = normalizeMac(body.ap_mac);
       if (apMacNorm) updateFields.ap_mac = apMacNorm;
@@ -1468,25 +1544,56 @@ async function handleSubmit(req: Request): Promise<Response> {
       if (body.redirect_url) updateFields.redirect_url = sanitizeString(body.redirect_url, 2000);
       if (submitCaptiveTs) updateFields.captive_timestamp = submitCaptiveTs;
       if (submitUnifiParams) updateFields.original_unifi_url_params = submitUnifiParams;
-      await db.from("captive_sessions").update(updateFields).eq("id", sessionId).then(() => {}, () => {});
+      const { error: upErr } = await db.from("captive_sessions").update(updateFields).eq("id", sessionId);
+      if (upErr) {
+        logEvent(db, {
+          session_id: sessionId, trace_id: traceId, store_id: storeId,
+          event_type: "submit_session_upsert_failed", step: "form", status: "warning",
+          error_code: "SUPPLIED_UPDATE_ERROR", error_message: upErr.message,
+          client_ip: clientIp, user_agent: ua,
+        });
+      } else {
+        logEvent(db, {
+          session_id: sessionId, trace_id: traceId, store_id: storeId,
+          event_type: "submit_session_upsert_success", step: "form", status: "success",
+          payload: { recovered: true }, client_ip: clientIp, user_agent: ua,
+        });
+      }
+    } else {
+      const insertPayload = {
+        id: sessionId,
+        status: "started",
+        params_received_at: new Date().toISOString(),
+        ...submitParamFields,
+      };
+      const { error: upsertErr } = await upsertCaptiveSession(db, insertPayload);
+      if (upsertErr) {
+        const isRace = isDuplicateKeyError(upsertErr.message);
+        const code = isRace ? "SESSION_DUPLICATE_RACE" : "SUPPLIED_UPSERT_ERROR";
+        logEvent(db, {
+          session_id: sessionId, trace_id: traceId, store_id: storeId,
+          event_type: "submit_session_upsert_failed", step: "form", status: isRace ? "warning" : "error",
+          error_code: code, error_message: upsertErr.message,
+          client_ip: clientIp, user_agent: ua,
+        });
+        if (!isRace) return errorResponse("Erro ao iniciar sessão. Tente novamente.", 500);
+        // On race, the row exists thanks to /start — proceed.
+      } else {
+        logEvent(db, {
+          session_id: sessionId, trace_id: traceId, store_id: storeId,
+          event_type: "submit_session_upsert_success", step: "form", status: "success",
+          payload: { created: true }, client_ip: clientIp, user_agent: ua,
+        });
+      }
+      console.log(`[submit] upserted supplied session=${sessionId}`);
     }
   } else {
     const { data: recoveredSession, error: sessionError } = await db
       .from("captive_sessions")
       .insert({
-        store_id: storeId,
-        client_mac: clientMac,
-        client_ip: clientIpStr,
-        ap_mac: normalizeMac(body.ap_mac),
-        ssid: sanitizeString(body.ssid, 64),
-        user_agent: sanitizeString(body.user_agent, 500) || ua,
-        redirect_url: sanitizeString(body.redirect_url, 2000),
-        captive_timestamp: submitCaptiveTs,
-        original_unifi_url_params: submitUnifiParams,
         status: "started",
-        trace_id: traceId,
         params_received_at: new Date().toISOString(),
-        last_step: "form",
+        ...submitParamFields,
       })
       .select("id")
       .single();
@@ -1494,13 +1601,18 @@ async function handleSubmit(req: Request): Promise<Response> {
       console.error("[submit] Recovery session insert error:", sessionError?.message);
       logEvent(db, {
         trace_id: traceId, store_id: storeId,
-        event_type: "session_create_failed", step: "form", status: "error",
+        event_type: "submit_session_upsert_failed", step: "form", status: "error",
         error_code: "RECOVERY_INSERT_ERROR", error_message: sessionError?.message || "unknown",
         client_ip: clientIp, user_agent: ua,
       });
       return errorResponse("Erro ao iniciar sessão. Tente novamente.", 500);
     }
     sessionId = recoveredSession.id;
+    logEvent(db, {
+      session_id: sessionId, trace_id: traceId, store_id: storeId,
+      event_type: "submit_session_upsert_success", step: "form", status: "success",
+      payload: { created_no_id: true }, client_ip: clientIp, user_agent: ua,
+    });
     console.log(`[submit] recovered missing session=${sessionId}`);
   }
 
@@ -2837,8 +2949,10 @@ details p{padding:0 12px 12px;font-size:11px;color:#888;line-height:1.5}
 </div>
 <script>
 (function(){
-var API='${API_BASE}';
-var FALLBACK_API=(location.pathname.indexOf('/functions/v1/captive-portal')<0)?'/api/captive-portal':'${API_BASE}';
+var DIRECT_API='${API_BASE}';
+var SAME_ORIGIN_API='/api/captive-portal';
+var API=location.pathname.indexOf('/functions/v1/captive-portal')>=0?DIRECT_API:SAME_ORIGIN_API;
+var FALLBACK_API=API===DIRECT_API?SAME_ORIGIN_API:DIRECT_API;
 var clientMac='${clientMac}';
 var apMac='${apMac}';
 var ssid='${ssidParam}';
@@ -2856,7 +2970,7 @@ var submitBtn=document.getElementById('submit-btn');
 var errorDiv=document.getElementById('error-msg');
 consentCheck.addEventListener('change',function(){submitBtn.disabled=!consentCheck.checked;});
 function req(method,path,body,cb,timeout){
-var bases=[API,FALLBACK_API],i=0;
+var bases=API===FALLBACK_API?[API]:[API,FALLBACK_API],i=0;
 function go(){
 var x=new XMLHttpRequest();x.open(method,bases[i]+path,true);
 x.setRequestHeader('Content-Type','application/json');x.timeout=timeout||15000;

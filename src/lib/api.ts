@@ -93,17 +93,42 @@ function xhrRequest<T = any>(path: string, opts: XhrOptions = {}): Promise<T> {
       }
       xhr.timeout = timeoutMs;
       if (body !== undefined) {
-        xhr.setRequestHeader("Content-Type", "application/json");
+        // Cross-origin requests use text/plain to skip the CORS preflight,
+        // which often fails inside captive-network assistants / Walled Garden.
+        // The edge function's safeParseJson() accepts text/plain too.
+        if (isCrossOrigin) {
+          xhr.setRequestHeader("Content-Type", "text/plain;charset=UTF-8");
+        } else {
+          xhr.setRequestHeader("Content-Type", "application/json");
+        }
       }
       if (!isCrossOrigin) {
         try { xhr.setRequestHeader("x-trace-id", getOrCreateTraceId()); } catch { /* ignore */ }
       }
+      const fallbackTelemetry = (reason: "network" | "http" | "timeout", failedBase: string) => {
+        try {
+          const nextBase = attempt < bases.length ? bases[attempt] : null;
+          if (!nextBase) return;
+          // Fire-and-forget; never blocks the request.
+          const tx = new XMLHttpRequest();
+          const telUrl = buildUrl(API_BASE, "/client-event");
+          tx.open("POST", telUrl, true);
+          tx.setRequestHeader("Content-Type", "application/json");
+          tx.send(JSON.stringify({
+            event: "api_fallback_used",
+            step: "system",
+            status: "warning",
+            payload: { path, failed_base: failedBase, next_base: nextBase, reason },
+          }));
+        } catch { /* ignore */ }
+      };
       xhr.onload = () => {
         const status = xhr.status;
         const text = xhr.responseText || "";
         // Retry on transient gateway errors via fallback base
         if ((status === 0 || status === 502 || status === 503 || status === 504) && attempt < bases.length) {
           console.warn(`[api] ${path} HTTP ${status} on ${base}, falling back`);
+          fallbackTelemetry("http", base);
           tryBase();
           return;
         }
@@ -125,18 +150,18 @@ function xhrRequest<T = any>(path: string, opts: XhrOptions = {}): Promise<T> {
       };
       xhr.onerror = () => {
         console.warn(`[api] ${path} network error on ${base}`);
-        if (attempt < bases.length) tryBase();
+        if (attempt < bases.length) { fallbackTelemetry("network", base); tryBase(); }
         else reject(new ApiError("network", "Erro de conexão. Verifique sua rede."));
       };
       xhr.ontimeout = () => {
         console.warn(`[api] ${path} timeout on ${base}`);
-        if (attempt < bases.length) tryBase();
+        if (attempt < bases.length) { fallbackTelemetry("timeout", base); tryBase(); }
         else reject(new ApiError("timeout", "Tempo esgotado. Tente novamente."));
       };
       try {
         xhr.send(body !== undefined ? JSON.stringify(body) : null);
       } catch (e) {
-        if (attempt < bases.length) tryBase();
+        if (attempt < bases.length) { fallbackTelemetry("network", base); tryBase(); }
         else reject(new ApiError("network", "Não foi possível enviar a requisição."));
       }
     };
