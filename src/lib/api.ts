@@ -20,13 +20,17 @@ function buildUrl(base: string, path: string): string {
   const qs = getStoreParam();
   const normalizedBase = base.replace(/\/+$/, "");
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  const queryIndex = normalizedPath.indexOf("?");
+  const routePath = queryIndex === -1 ? normalizedPath : normalizedPath.slice(0, queryIndex);
+  const routeQuery = queryIndex === -1 ? "" : normalizedPath.slice(queryIndex + 1);
 
   // Some external Nginx proxy builds only expose /api/captive-portal as the
   // Edge Function base and drop nested paths. Keep the call alive by encoding
   // the route as a query fallback that the proxy still forwards to Supabase.
-  const fallbackRoute = `route=${encodeURIComponent(normalizedPath)}`;
+  const fallbackRoute = `route=${encodeURIComponent(routePath)}`;
   const root = `${normalizedBase}/`;
-  return `${root}${qs ? `${qs}&${fallbackRoute}` : `?${fallbackRoute}`}`;
+  const extra = routeQuery ? `&${routeQuery}` : "";
+  return `${root}${qs ? `${qs}&${fallbackRoute}${extra}` : `?${fallbackRoute}${extra}`}`;
 }
 
 export class ApiError extends Error {
@@ -170,6 +174,54 @@ function xhrRequest<T = any>(path: string, opts: XhrOptions = {}): Promise<T> {
   });
 }
 
+function queueSimplePost(path: string, body: unknown): boolean {
+  const bases = API_BASE === SUPABASE_DIRECT
+    ? [SUPABASE_DIRECT]
+    : [API_BASE, SUPABASE_DIRECT];
+  let queued = false;
+  const payload = JSON.stringify(body);
+
+  for (const base of bases) {
+    const url = buildUrl(base, path);
+    try {
+      if (typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function") {
+        const blob = new Blob([payload], { type: "text/plain;charset=UTF-8" });
+        if (navigator.sendBeacon(url, blob)) {
+          queued = true;
+          continue;
+        }
+      }
+    } catch { /* fall through to form transport */ }
+
+    try {
+      const frameName = `mb_submit_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      const frame = document.createElement("iframe");
+      frame.name = frameName;
+      frame.style.display = "none";
+      const form = document.createElement("form");
+      form.method = "POST";
+      form.action = url;
+      form.target = frameName;
+      form.enctype = "application/x-www-form-urlencoded";
+      form.acceptCharset = "UTF-8";
+      form.style.display = "none";
+      Object.entries((body || {}) as Record<string, unknown>).forEach(([key, value]) => {
+        const input = document.createElement("input");
+        input.type = "hidden";
+        input.name = key;
+        input.value = value && typeof value === "object" ? JSON.stringify(value) : String(value ?? "");
+        form.appendChild(input);
+      });
+      document.body.appendChild(frame);
+      document.body.appendChild(form);
+      form.submit();
+      queued = true;
+      setTimeout(() => { try { form.remove(); frame.remove(); } catch { /* ignore */ } }, 15000);
+    } catch { /* ignore */ }
+  }
+  return queued;
+}
+
 export const api = {
   bootstrap() {
     return xhrRequest<any>("/bootstrap", { method: "GET", timeoutMs: 10000 });
@@ -209,11 +261,16 @@ export const api = {
   },
 
   sessionStatus(session_id: string) {
-    return xhrRequest<any>("/session-status", {
-      method: "POST",
-      body: { session_id },
+    return xhrRequest<any>(`/session-status?session_id=${encodeURIComponent(session_id)}`, {
+      method: "GET",
       timeoutMs: 8000,
     });
+  },
+
+  /** Last-resort simple POST for captive assistants that block XHR POST bodies. */
+  submitLeadBackup(data: Record<string, unknown>) {
+    try { return queueSimplePost("/submit", { ...data, backup_transport: "simple_post" }); }
+    catch { return false; }
   },
 
   requestCode(data: { session_id: string; phone: string }) {
