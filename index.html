@@ -298,6 +298,10 @@
         // Show form immediately (don't block on API)
         goStep('form');
 
+        // Ensure session_id and persist
+        if(!state.session_id) state.session_id = uuid();
+        persistSession();
+
         apiFetch('/bootstrap','GET',null,function(err,data){
           if(!err && data && !data.error){
             if(data.store && data.store.name){
@@ -310,6 +314,25 @@
             }
           }
         });
+
+        // Background /start — non-blocking
+        apiFetch('/start','POST',{
+          session_id: state.session_id,
+          client_mac: params.client_mac,
+          ap_mac: params.ap_mac,
+          ssid: params.ssid,
+          redirect_url: params.redirect_url,
+          captive_timestamp: params.captive_timestamp,
+          site: params.site,
+          original_unifi_url_params: unifiOriginalParams,
+          user_agent: navigator.userAgent
+        }, function(err, data){
+          if(err){ clientEvent('start_background_failed','warning',{step:'form',error_message:err}); return; }
+          if(data && data.session_id){
+            state.session_id = data.session_id;
+            persistSession();
+          }
+        }, 6000);
       }
 
       // ── Form: consent toggle ──
