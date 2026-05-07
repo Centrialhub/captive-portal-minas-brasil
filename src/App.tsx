@@ -272,7 +272,6 @@ export default function App() {
         },
         user_agent: navigator.userAgent,
       });
-      api.submitLeadBackup(payload as Record<string, unknown>);
       const result = await api.submitLead(payload);
 
       if (result?.session_id) {
@@ -317,6 +316,12 @@ export default function App() {
           api_base: API_BASE_FOR_TELEMETRY,
         },
       });
+      api.submitLeadBackup(buildSubmitPayload({
+        session_id: sid,
+        name, email, phone, cpf,
+        client_mac: params.client_mac,
+        consent_version: boot.consent?.version || "1.0",
+      }) as Record<string, unknown>);
 
       // Recovery: backend may have processed /submit even if the response
       // never made it back. Poll /session-status with backoff.
