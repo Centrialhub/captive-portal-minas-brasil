@@ -430,7 +430,7 @@
           });
           apiFetch('/submit','POST',payload,function(err,data){
             function ok(d){
-              if(d.redirect_url) state.redirect_url = d.redirect_url;
+              state.redirect_url = sanitizeCaptiveRedirect(d.redirect_url);
               if(d.session_id){ state.session_id = d.session_id; persistSession(); }
               if(d.requires_verification){
                 $('fb-otp-phone').textContent = state.phone;
@@ -447,7 +447,7 @@
               recoverSubmit(function(recovered){
                 if(recovered && recovered.requires_verification){
                   clientEvent('submit_recovery_success','success',{step:'form'});
-                  if(recovered.redirect_url) state.redirect_url = recovered.redirect_url;
+                  state.redirect_url = sanitizeCaptiveRedirect(recovered.redirect_url);
                   $('fb-otp-phone').textContent = state.phone;
                   goStep('otp');
                   startCooldown(60);
@@ -457,7 +457,7 @@
                 }
                 if(recovered && recovered.authorized){
                   clientEvent('submit_recovery_success','success',{step:'form'});
-                  if(recovered.redirect_url) state.redirect_url = recovered.redirect_url;
+                  state.redirect_url = sanitizeCaptiveRedirect(recovered.redirect_url);
                   showSuccess(recovered.message || 'Conectado com sucesso!');
                   return;
                 }
