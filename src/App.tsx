@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { api, createClientSessionId } from "./lib/api";
-import { getApiBase, getQueryParams, buildSubmitPayload, type PortalStep } from "./lib/portal-utils";
+import { getApiBase, getQueryParams, buildSubmitPayload, sanitizeCaptiveRedirect, type PortalStep } from "./lib/portal-utils";
 import logoMinasBrasil from "./assets/logo-minas-brasil.png";
 import "./index.css";
 
