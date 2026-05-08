@@ -1,10 +1,9 @@
-import { getApiBase, getOrCreateTraceId, SUPABASE_DIRECT_BASE } from "./portal-utils";
+import { getApiBase, getOrCreateTraceId } from "./portal-utils";
 
 const API_BASE = getApiBase();
-const SUPABASE_DIRECT = SUPABASE_DIRECT_BASE;
-// Resilience: try same-origin proxy first; fall back to Supabase direct
-// (requires fqamejlyytrhovawgtwg.supabase.co to be allowed in the UniFi
-// Walled Garden, otherwise the fallback will simply fail too).
+// Captive flow MUST stay on HTTP same-origin. The previous direct
+// HTTPS Supabase fallback was removed — it triggered Android CNA
+// certificate errors before the user was authorized.
 
 /** Forward ?store= param from the landing URL to API calls */
 function getStoreParam(): string {
