@@ -76,7 +76,7 @@ RUN printf 'server {\n\
 \n\
     # Redirect do captive portal UniFi (IP) para dominio com SSL valido\n\
     # Quando o UniFi redireciona para https://31.97.170.23/guest/s/default/?ap=...&id=...\n\
-    # este bloco faz 302 para https://wifi.guedesepaixao.com.br com todos os params\n\
+    # este bloco faz 302 para http://wifi.guedesepaixao.com.br com todos os params (HTTP only — Android CNA cert safety)\n\
     location /guest/s/default/ {\n\
         return 302 http://wifi.guedesepaixao.com.br/?store=matriz&$args;\n\
     }\n\
