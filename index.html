@@ -505,13 +505,14 @@
 
         function applyVerifyResult(data){
           if(data.use_hotspot_redirect && data.redirect_url){
-            state.redirect_url = data.redirect_url;
+            var safe = sanitizeCaptiveRedirect(data.redirect_url);
+            state.redirect_url = safe;
             showSuccess(data.message||'Finalizando liberação do Wi-Fi...');
-            setTimeout(function(){ window.location.href = data.redirect_url; }, 800);
+            setTimeout(function(){ window.location.href = safe; }, 800);
             return true;
           }
           if(data.authorized){
-            if(data.redirect_url) state.redirect_url = data.redirect_url;
+            state.redirect_url = sanitizeCaptiveRedirect(data.redirect_url);
             showSuccess(data.message||'Conectado com sucesso!');
             return true;
           }
