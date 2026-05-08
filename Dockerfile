@@ -27,7 +27,7 @@ RUN printf 'server {\n\
         proxy_set_header Host fqamejlyytrhovawgtwg.supabase.co;\n\
         proxy_set_header X-Real-IP $remote_addr;\n\
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
-        proxy_set_header X-Forwarded-Proto https;\n\
+        proxy_set_header X-Forwarded-Proto http;\n\
         proxy_ssl_server_name on;\n\
         proxy_ssl_protocols TLSv1.2 TLSv1.3;\n\
         proxy_http_version 1.1;\n\
