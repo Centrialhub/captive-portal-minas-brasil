@@ -172,9 +172,7 @@ function xhrRequest<T = any>(path: string, opts: XhrOptions = {}): Promise<T> {
 }
 
 function queueSimplePost(path: string, body: unknown): boolean {
-  const bases = API_BASE === SUPABASE_DIRECT
-    ? [SUPABASE_DIRECT]
-    : [API_BASE, SUPABASE_DIRECT];
+  const bases = [API_BASE];
   let queued = false;
   const payload = JSON.stringify(body);
 
