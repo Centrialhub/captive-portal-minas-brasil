@@ -2,30 +2,59 @@
  * Shared utilities for the captive portal.
  */
 
+/**
+ * Public HTTP base URL for the captive portal.
+ *
+ * The Android Captive Network Assistant aborts with a certificate error if
+ * we redirect the client to HTTPS during the captive flow. We MUST keep the
+ * client in HTTP same-origin while the user is being authorized.
+ */
+export const PUBLIC_CAPTIVE_BASE_URL = "http://wifi.guedesepaixao.com.br";
+
+/** Kept exported for backward-compat. NOT used as a client fallback anymore. */
 export const SUPABASE_DIRECT_BASE =
   "https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal";
 
 /**
  * Returns the API base for portal calls.
  *
- * Strategy: prefer the same-origin proxy `/api/captive-portal` whenever
- * the portal page is being served by anything that is NOT the Supabase
- * Edge Function itself. This makes the captive flow resilient to:
- *   - wifi.guedesepaixao.com.br
- *   - bare IP hosts (e.g. 31.97.170.23)
- *   - vercel.app preview domains
- *   - EasyPanel / Nginx proxies
- *   - captive-network-assistant URL rewrites
- *
- * The proxy must rewrite `/api/captive-portal/*` to the Supabase function.
- * For maximum resiliency in the captive portal, also allow
- * `fqamejlyytrhovawgtwg.supabase.co` in the UniFi Walled Garden so the
- * direct fallback in api.ts works when the proxy is unavailable.
+ * Always uses the same-origin proxy `/api/captive-portal`. The previous
+ * HTTPS Supabase fallback was removed because it forced the captive
+ * assistant onto an HTTPS host before the user was authorized, triggering
+ * certificate errors on Android.
  */
 export function getApiBase(): string {
-  const host = typeof window !== "undefined" ? window.location.hostname : "";
-  if (host.endsWith(".supabase.co")) return SUPABASE_DIRECT_BASE;
   return "/api/captive-portal";
+}
+
+/**
+ * Returns a safe HTTP URL that we can hand to `window.location.href` during
+ * the captive flow. Blocks HTTPS, controller hosts, raw IPs and Supabase
+ * direct URLs — anything that would trigger the Android CNA cert error.
+ */
+export function sanitizeCaptiveRedirect(url: string | null | undefined): string {
+  const store = (() => {
+    try {
+      return new URLSearchParams(window.location.search).get("store") || "matriz";
+    } catch { return "matriz"; }
+  })();
+  const safeFallback = `${PUBLIC_CAPTIVE_BASE_URL}/?success=1&store=${encodeURIComponent(store)}`;
+  if (!url) return safeFallback;
+  try {
+    const u = new URL(url, PUBLIC_CAPTIVE_BASE_URL);
+    if (u.protocol !== "http:") return safeFallback;
+    const h = u.hostname.toLowerCase();
+    if (
+      h === "31.97.170.23" ||
+      h.indexOf("rwificontroller") !== -1 ||
+      h.endsWith("supabase.co") ||
+      h.endsWith(".supabase.co")
+    ) return safeFallback;
+    if (u.port === "8443") return safeFallback;
+    return u.toString();
+  } catch {
+    return safeFallback;
+  }
 }
 
 const TRACE_KEY = "mb_trace_id";
