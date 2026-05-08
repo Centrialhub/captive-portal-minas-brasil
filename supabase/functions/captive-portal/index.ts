@@ -3032,10 +3032,10 @@ form.addEventListener('submit',function(ev){
 ev.preventDefault();hideErr(errorDiv);submitBtn.disabled=true;submitBtn.textContent='Enviando...';
 var fd=new FormData(form);
 req('POST','/submit',{session_id:sessionId,name:fd.get('name'),email:fd.get('email')||'',phone:fd.get('phone'),cpf:fd.get('cpf'),client_mac:clientMac,ap_mac:apMac,ssid:ssid,redirect_url:redirectUrl,captive_timestamp:captiveTs,site:siteParam,original_unifi_url_params:unifiOriginalParams,user_agent:navigator.userAgent,consent_version:consentVersion},function(err,r){
-if(err){var backup={session_id:sessionId,name:fd.get('name'),email:fd.get('email')||'',phone:fd.get('phone'),cpf:fd.get('cpf'),client_mac:clientMac,ap_mac:apMac,ssid:ssid,redirect_url:redirectUrl,captive_timestamp:captiveTs,site:siteParam,original_unifi_url_params:unifiOriginalParams,user_agent:navigator.userAgent,consent_version:consentVersion,backup_transport:'simple_post'};simplePostBackup('/submit',backup);recoverSubmit(function(rec){if(rec&&rec.requires_verification){redirectUrl=rec.redirect_url||redirectUrl;showOtp(fd.get('phone'));return;}if(rec&&rec.authorized){redirectUrl=rec.redirect_url||redirectUrl;showSuccess(rec.message||'Conectado com sucesso!',true);return;}showErr(errorDiv,err);submitBtn.disabled=false;submitBtn.textContent='Conectar ao Wi-Fi';});return;}
+if(err){var backup={session_id:sessionId,name:fd.get('name'),email:fd.get('email')||'',phone:fd.get('phone'),cpf:fd.get('cpf'),client_mac:clientMac,ap_mac:apMac,ssid:ssid,redirect_url:redirectUrl,captive_timestamp:captiveTs,site:siteParam,original_unifi_url_params:unifiOriginalParams,user_agent:navigator.userAgent,consent_version:consentVersion,backup_transport:'simple_post'};simplePostBackup('/submit',backup);recoverSubmit(function(rec){if(rec&&rec.requires_verification){redirectUrl=sanitizeCaptiveRedirect(rec.redirect_url||redirectUrl);showOtp(fd.get('phone'));return;}if(rec&&rec.authorized){redirectUrl=sanitizeCaptiveRedirect(rec.redirect_url||redirectUrl);showSuccess(rec.message||'Conectado com sucesso!',true);return;}showErr(errorDiv,err);submitBtn.disabled=false;submitBtn.textContent='Conectar ao Wi-Fi';});return;}
 if(r.error){showErr(errorDiv,r.error);submitBtn.disabled=false;submitBtn.textContent='Conectar ao Wi-Fi';return;}
-if(r.session_id){sessionId=r.session_id;persist();}if(r.requires_verification){redirectUrl=r.redirect_url||redirectUrl;showOtp(fd.get('phone'));return;}
-redirectUrl=r.redirect_url||redirectUrl;showSuccess(r.message||'Cadastro realizado!',!!r.authorized);
+if(r.session_id){sessionId=r.session_id;persist();}if(r.requires_verification){redirectUrl=sanitizeCaptiveRedirect(r.redirect_url||redirectUrl);showOtp(fd.get('phone'));return;}
+redirectUrl=sanitizeCaptiveRedirect(r.redirect_url||redirectUrl);showSuccess(r.message||'Cadastro realizado!',!!r.authorized);
 });
 });
 function showOtp(phone){
@@ -3054,8 +3054,8 @@ document.getElementById('verify-btn').addEventListener('click',function(){
 var code=getOtp();if(!sessionId||code.length!==6)return;var btn=this;btn.disabled=true;btn.textContent='Verificando...';
 var oe=document.getElementById('otp-error');hideErr(oe);
 function applyVerifyResult(r){
-if(r.use_hotspot_redirect&&r.redirect_url){redirectUrl=r.redirect_url;showSuccess(r.message||'Finalizando libera\\u00e7\\u00e3o do Wi-Fi...',true);setTimeout(function(){location.replace(r.redirect_url);},800);return true;}
-if(r.authorized){redirectUrl=r.redirect_url||redirectUrl;showSuccess(r.message||'Conectado com sucesso!',true);return true;}
+if(r.use_hotspot_redirect&&r.redirect_url){redirectUrl=sanitizeCaptiveRedirect(r.redirect_url);showSuccess(r.message||'Finalizando libera\\u00e7\\u00e3o do Wi-Fi...',true);setTimeout(function(){location.replace(redirectUrl);},800);return true;}
+if(r.authorized){redirectUrl=sanitizeCaptiveRedirect(r.redirect_url||redirectUrl);showSuccess(r.message||'Conectado com sucesso!',true);return true;}
 return false;
 }
 req('POST','/verify-code',{session_id:sessionId,code:code},function(err,r){
@@ -3089,7 +3089,7 @@ resendTimer=setInterval(function(){resendSeconds--;if(resendSeconds<=0){clearInt
 function showSuccess(msg,auth){
 document.getElementById('form-view').style.display='none';document.getElementById('otp-view').style.display='none';document.getElementById('success-view').style.display='block';
 document.getElementById('success-title').textContent=auth?'Conectado!':'Cadastro realizado!';document.getElementById('success-msg').textContent=msg;
-if(redirectUrl){document.getElementById('success-redirect').style.display='block';document.getElementById('redirect-link').href=redirectUrl;if(auth)setTimeout(function(){location.replace(redirectUrl);},1500);}
+if(redirectUrl){document.getElementById('success-redirect').style.display='block';document.getElementById('redirect-link').href=redirectUrl;if(auth)setTimeout(function(){location.replace(sanitizeCaptiveRedirect(redirectUrl));},1500);}
 }
 })();
 </script>
