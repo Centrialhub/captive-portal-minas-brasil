@@ -145,11 +145,29 @@
         if(loading && !loading.classList.contains('hidden')) goStep('form');
       }, 1200);
 
-      // ── API Bases (same-origin proxy first, direct Supabase fallback) ──
-      var DIRECT = 'https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal';
+      // ── API Bases ──
+      // Captive flow MUST stay HTTP same-origin. The previous HTTPS Supabase
+      // direct fallback was removed: it triggered Android CNA cert errors.
       var SAME_ORIGIN = '/api/captive-portal';
-      var host = location.hostname || '';
-      var BASES = host.indexOf('supabase.co') !== -1 ? [DIRECT] : [SAME_ORIGIN, DIRECT];
+      var BASES = [SAME_ORIGIN];
+
+      // Public HTTP base for any client redirect during captive flow.
+      var PUBLIC_CAPTIVE_BASE_URL = 'http://wifi.guedesepaixao.com.br';
+      function sanitizeCaptiveRedirect(url){
+        var store = 'matriz';
+        try { var s = new URLSearchParams(location.search).get('store'); if(s) store = s; } catch(e){}
+        var safe = PUBLIC_CAPTIVE_BASE_URL + '/?success=1&store=' + encodeURIComponent(store);
+        if(!url) return safe;
+        try {
+          var u = new URL(url, PUBLIC_CAPTIVE_BASE_URL);
+          if(u.protocol !== 'http:') return safe;
+          var h = (u.hostname||'').toLowerCase();
+          if(h === '31.97.170.23' || h.indexOf('rwificontroller') !== -1 ||
+             h === 'supabase.co' || h.indexOf('.supabase.co') !== -1) return safe;
+          if(u.port === '8443') return safe;
+          return u.toString();
+        } catch(e){ return safe; }
+      }
 
       // ── Query Params ──
       function query(){
