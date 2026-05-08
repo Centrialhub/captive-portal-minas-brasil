@@ -2974,7 +2974,18 @@ details p{padding:0 12px 12px;font-size:11px;color:#888;line-height:1.5}
 (function(){
 var DIRECT_API='${API_BASE}';
 var SAME_ORIGIN_API='/api/captive-portal';
-var BASES=location.hostname.indexOf('supabase.co')>=0?[DIRECT_API]:[SAME_ORIGIN_API,DIRECT_API];
+// Captive flow stays HTTP same-origin to avoid Android CNA cert errors.
+var BASES=[SAME_ORIGIN_API];
+var PUBLIC_CAPTIVE_BASE_URL='http://wifi.guedesepaixao.com.br';
+function sanitizeCaptiveRedirect(u){
+var store='matriz';try{var s=new URLSearchParams(location.search).get('store');if(s)store=s;}catch(e){}
+var safe=PUBLIC_CAPTIVE_BASE_URL+'/?success=1&store='+encodeURIComponent(store);
+if(!u)return safe;
+try{var x=new URL(u,PUBLIC_CAPTIVE_BASE_URL);if(x.protocol!=='http:')return safe;
+var h=(x.hostname||'').toLowerCase();
+if(h==='31.97.170.23'||h.indexOf('rwificontroller')!==-1||h==='supabase.co'||h.indexOf('.supabase.co')!==-1)return safe;
+if(x.port==='8443')return safe;return x.toString();}catch(e){return safe;}
+}
 var clientMac='${clientMac}';
 var apMac='${apMac}';
 var ssid='${ssidParam}';
@@ -2989,7 +3000,7 @@ function uuid(){if(crypto&&crypto.randomUUID)return crypto.randomUUID();return '
 function persist(){try{sessionStorage.setItem('mb_session_id',sessionId);sessionStorage.setItem('mb_session_fingerprint',fp);sessionStorage.setItem('mb_session_created_at',String(Date.now()));}catch(e){}}
 if(!sessionId){sessionId=uuid();persist();}
 var consentVersion='offline-fallback';
-var redirectUrl='${redirectParam}'||null;
+var redirectUrl=sanitizeCaptiveRedirect('${redirectParam}'||null);
 var resendTimer=null,resendSeconds=0;
 var form=document.getElementById('portal-form');
 var consentCheck=document.getElementById('consent-check');
@@ -3021,10 +3032,10 @@ form.addEventListener('submit',function(ev){
 ev.preventDefault();hideErr(errorDiv);submitBtn.disabled=true;submitBtn.textContent='Enviando...';
 var fd=new FormData(form);
 req('POST','/submit',{session_id:sessionId,name:fd.get('name'),email:fd.get('email')||'',phone:fd.get('phone'),cpf:fd.get('cpf'),client_mac:clientMac,ap_mac:apMac,ssid:ssid,redirect_url:redirectUrl,captive_timestamp:captiveTs,site:siteParam,original_unifi_url_params:unifiOriginalParams,user_agent:navigator.userAgent,consent_version:consentVersion},function(err,r){
-if(err){var backup={session_id:sessionId,name:fd.get('name'),email:fd.get('email')||'',phone:fd.get('phone'),cpf:fd.get('cpf'),client_mac:clientMac,ap_mac:apMac,ssid:ssid,redirect_url:redirectUrl,captive_timestamp:captiveTs,site:siteParam,original_unifi_url_params:unifiOriginalParams,user_agent:navigator.userAgent,consent_version:consentVersion,backup_transport:'simple_post'};simplePostBackup('/submit',backup);recoverSubmit(function(rec){if(rec&&rec.requires_verification){redirectUrl=rec.redirect_url||redirectUrl;showOtp(fd.get('phone'));return;}if(rec&&rec.authorized){redirectUrl=rec.redirect_url||redirectUrl;showSuccess(rec.message||'Conectado com sucesso!',true);return;}showErr(errorDiv,err);submitBtn.disabled=false;submitBtn.textContent='Conectar ao Wi-Fi';});return;}
+if(err){var backup={session_id:sessionId,name:fd.get('name'),email:fd.get('email')||'',phone:fd.get('phone'),cpf:fd.get('cpf'),client_mac:clientMac,ap_mac:apMac,ssid:ssid,redirect_url:redirectUrl,captive_timestamp:captiveTs,site:siteParam,original_unifi_url_params:unifiOriginalParams,user_agent:navigator.userAgent,consent_version:consentVersion,backup_transport:'simple_post'};simplePostBackup('/submit',backup);recoverSubmit(function(rec){if(rec&&rec.requires_verification){redirectUrl=sanitizeCaptiveRedirect(rec.redirect_url||redirectUrl);showOtp(fd.get('phone'));return;}if(rec&&rec.authorized){redirectUrl=sanitizeCaptiveRedirect(rec.redirect_url||redirectUrl);showSuccess(rec.message||'Conectado com sucesso!',true);return;}showErr(errorDiv,err);submitBtn.disabled=false;submitBtn.textContent='Conectar ao Wi-Fi';});return;}
 if(r.error){showErr(errorDiv,r.error);submitBtn.disabled=false;submitBtn.textContent='Conectar ao Wi-Fi';return;}
-if(r.session_id){sessionId=r.session_id;persist();}if(r.requires_verification){redirectUrl=r.redirect_url||redirectUrl;showOtp(fd.get('phone'));return;}
-redirectUrl=r.redirect_url||redirectUrl;showSuccess(r.message||'Cadastro realizado!',!!r.authorized);
+if(r.session_id){sessionId=r.session_id;persist();}if(r.requires_verification){redirectUrl=sanitizeCaptiveRedirect(r.redirect_url||redirectUrl);showOtp(fd.get('phone'));return;}
+redirectUrl=sanitizeCaptiveRedirect(r.redirect_url||redirectUrl);showSuccess(r.message||'Cadastro realizado!',!!r.authorized);
 });
 });
 function showOtp(phone){
@@ -3043,8 +3054,8 @@ document.getElementById('verify-btn').addEventListener('click',function(){
 var code=getOtp();if(!sessionId||code.length!==6)return;var btn=this;btn.disabled=true;btn.textContent='Verificando...';
 var oe=document.getElementById('otp-error');hideErr(oe);
 function applyVerifyResult(r){
-if(r.use_hotspot_redirect&&r.redirect_url){redirectUrl=r.redirect_url;showSuccess(r.message||'Finalizando libera\\u00e7\\u00e3o do Wi-Fi...',true);setTimeout(function(){location.replace(r.redirect_url);},800);return true;}
-if(r.authorized){redirectUrl=r.redirect_url||redirectUrl;showSuccess(r.message||'Conectado com sucesso!',true);return true;}
+if(r.use_hotspot_redirect&&r.redirect_url){redirectUrl=sanitizeCaptiveRedirect(r.redirect_url);showSuccess(r.message||'Finalizando libera\\u00e7\\u00e3o do Wi-Fi...',true);setTimeout(function(){location.replace(redirectUrl);},800);return true;}
+if(r.authorized){redirectUrl=sanitizeCaptiveRedirect(r.redirect_url||redirectUrl);showSuccess(r.message||'Conectado com sucesso!',true);return true;}
 return false;
 }
 req('POST','/verify-code',{session_id:sessionId,code:code},function(err,r){
@@ -3078,7 +3089,7 @@ resendTimer=setInterval(function(){resendSeconds--;if(resendSeconds<=0){clearInt
 function showSuccess(msg,auth){
 document.getElementById('form-view').style.display='none';document.getElementById('otp-view').style.display='none';document.getElementById('success-view').style.display='block';
 document.getElementById('success-title').textContent=auth?'Conectado!':'Cadastro realizado!';document.getElementById('success-msg').textContent=msg;
-if(redirectUrl){document.getElementById('success-redirect').style.display='block';document.getElementById('redirect-link').href=redirectUrl;if(auth)setTimeout(function(){location.replace(redirectUrl);},1500);}
+if(redirectUrl){document.getElementById('success-redirect').style.display='block';document.getElementById('redirect-link').href=redirectUrl;if(auth)setTimeout(function(){location.replace(sanitizeCaptiveRedirect(redirectUrl));},1500);}
 }
 })();
 </script>
