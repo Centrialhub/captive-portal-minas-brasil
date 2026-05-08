@@ -3000,7 +3000,7 @@ function uuid(){if(crypto&&crypto.randomUUID)return crypto.randomUUID();return '
 function persist(){try{sessionStorage.setItem('mb_session_id',sessionId);sessionStorage.setItem('mb_session_fingerprint',fp);sessionStorage.setItem('mb_session_created_at',String(Date.now()));}catch(e){}}
 if(!sessionId){sessionId=uuid();persist();}
 var consentVersion='offline-fallback';
-var redirectUrl='${redirectParam}'||null;
+var redirectUrl=sanitizeCaptiveRedirect('${redirectParam}'||null);
 var resendTimer=null,resendSeconds=0;
 var form=document.getElementById('portal-form');
 var consentCheck=document.getElementById('consent-check');
