@@ -293,12 +293,12 @@ export default function App() {
       if (result?.error) {
         setError(result.error);
       } else if (result?.requires_verification) {
-        setRedirectUrl(result.redirect_url || null);
+        setRedirectUrl(sanitizeCaptiveRedirect(result.redirect_url));
         setStep("otp");
         startCooldown(60);
       } else if (result?.ok) {
         setSuccessMsg(result.message || "Cadastro realizado! Você já pode navegar.");
-        setRedirectUrl(result.redirect_url || null);
+        setRedirectUrl(sanitizeCaptiveRedirect(result.redirect_url));
         setStep("success");
       } else {
         setError("Resposta inesperada do servidor. Tente novamente.");
