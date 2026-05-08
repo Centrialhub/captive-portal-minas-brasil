@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { api, createClientSessionId } from "./lib/api";
-import { getApiBase, getQueryParams, buildSubmitPayload, type PortalStep } from "./lib/portal-utils";
+import { getApiBase, getQueryParams, buildSubmitPayload, sanitizeCaptiveRedirect, type PortalStep } from "./lib/portal-utils";
 import logoMinasBrasil from "./assets/logo-minas-brasil.png";
 import "./index.css";
 
@@ -293,12 +293,12 @@ export default function App() {
       if (result?.error) {
         setError(result.error);
       } else if (result?.requires_verification) {
-        setRedirectUrl(result.redirect_url || null);
+        setRedirectUrl(sanitizeCaptiveRedirect(result.redirect_url));
         setStep("otp");
         startCooldown(60);
       } else if (result?.ok) {
         setSuccessMsg(result.message || "Cadastro realizado! Você já pode navegar.");
-        setRedirectUrl(result.redirect_url || null);
+        setRedirectUrl(sanitizeCaptiveRedirect(result.redirect_url));
         setStep("success");
       } else {
         setError("Resposta inesperada do servidor. Tente novamente.");
@@ -340,7 +340,7 @@ export default function App() {
       const recovered = await recoverAfterSubmitNetworkError(sid);
       if (recovered?.requires_verification) {
         api.clientEvent({ session_id: sid, event: "submit_recovery_success", step: "form", status: "success", payload: { outcome: "otp" } });
-        setRedirectUrl(recovered.redirect_url || null);
+        setRedirectUrl(sanitizeCaptiveRedirect(recovered.redirect_url));
         setStep("otp");
         startCooldown(60);
         setSubmitting(false);
@@ -349,7 +349,7 @@ export default function App() {
       if (recovered?.authorized) {
         api.clientEvent({ session_id: sid, event: "submit_recovery_success", step: "form", status: "success", payload: { outcome: "authorized" } });
         setSuccessMsg(recovered.message || "Conectado com sucesso!");
-        setRedirectUrl(recovered.redirect_url || null);
+        setRedirectUrl(sanitizeCaptiveRedirect(recovered.redirect_url));
         setStep("success");
         setSubmitting(false);
         return;
@@ -413,17 +413,23 @@ export default function App() {
       // Hotspot redirect has PRIORITY over authorized flag — backend already
       // accepted the OTP, and the UniFi controller will finalize liberation
       // when the browser hits /guest/s/<site>/.
+      // Hotspot redirect: backend may try to send the user to the UniFi
+      // controller (HTTPS, port 8443, raw IP). During the captive flow that
+      // breaks the Android Captive Network Assistant with a cert error.
+      // We sanitize: only HTTP same-domain redirects are allowed; otherwise
+      // we keep the user on the in-app success screen.
       if (result.use_hotspot_redirect && result.redirect_url) {
+        const safe = sanitizeCaptiveRedirect(result.redirect_url);
         setSuccessMsg(result.message || "Finalizando liberação do Wi-Fi...");
-        setRedirectUrl(result.redirect_url);
+        setRedirectUrl(safe);
         setStep("success");
-        setTimeout(() => { window.location.href = result.redirect_url; }, 800);
+        setTimeout(() => { window.location.href = safe; }, 800);
         return;
       }
 
       if (result.authorized) {
         setSuccessMsg(result.message || "Conectado com sucesso!");
-        const finalUrl = result.redirect_url || redirectUrl;
+        const finalUrl = sanitizeCaptiveRedirect(result.redirect_url || redirectUrl);
         setRedirectUrl(finalUrl);
         setStep("success");
       } else {
@@ -449,16 +455,17 @@ export default function App() {
         api.clientEvent({ session_id: sid, event: "verify_recovery_success", step: "otp", status: "success",
           payload: { authorized: !!recovered.authorized, use_hotspot_redirect: !!recovered.use_hotspot_redirect } });
         if (recovered.use_hotspot_redirect && recovered.redirect_url) {
+          const safe = sanitizeCaptiveRedirect(recovered.redirect_url);
           setSuccessMsg("Finalizando liberação do Wi-Fi...");
-          setRedirectUrl(recovered.redirect_url);
+          setRedirectUrl(safe);
           setStep("success");
-          setTimeout(() => { window.location.href = recovered.redirect_url; }, 800);
+          setTimeout(() => { window.location.href = safe; }, 800);
           setVerifying(false);
           return;
         }
         if (recovered.authorized) {
           setSuccessMsg("Conectado com sucesso!");
-          setRedirectUrl(recovered.redirect_url || redirectUrl);
+          setRedirectUrl(sanitizeCaptiveRedirect(recovered.redirect_url || redirectUrl));
           setStep("success");
           setVerifying(false);
           return;

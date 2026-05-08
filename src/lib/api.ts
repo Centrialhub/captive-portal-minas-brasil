@@ -1,10 +1,9 @@
-import { getApiBase, getOrCreateTraceId, SUPABASE_DIRECT_BASE } from "./portal-utils";
+import { getApiBase, getOrCreateTraceId } from "./portal-utils";
 
 const API_BASE = getApiBase();
-const SUPABASE_DIRECT = SUPABASE_DIRECT_BASE;
-// Resilience: try same-origin proxy first; fall back to Supabase direct
-// (requires fqamejlyytrhovawgtwg.supabase.co to be allowed in the UniFi
-// Walled Garden, otherwise the fallback will simply fail too).
+// Captive flow MUST stay on HTTP same-origin. The previous direct
+// HTTPS Supabase fallback was removed — it triggered Android CNA
+// certificate errors before the user was authorized.
 
 /** Forward ?store= param from the landing URL to API calls */
 function getStoreParam(): string {
@@ -68,9 +67,7 @@ interface XhrOptions {
  */
 function xhrRequest<T = any>(path: string, opts: XhrOptions = {}): Promise<T> {
   const { method = "GET", body, timeoutMs = 20000 } = opts;
-  const bases = API_BASE === SUPABASE_DIRECT
-    ? [SUPABASE_DIRECT]
-    : [API_BASE, SUPABASE_DIRECT];
+  const bases = [API_BASE];
 
   return new Promise((resolve, reject) => {
     let attempt = 0;
@@ -175,9 +172,7 @@ function xhrRequest<T = any>(path: string, opts: XhrOptions = {}): Promise<T> {
 }
 
 function queueSimplePost(path: string, body: unknown): boolean {
-  const bases = API_BASE === SUPABASE_DIRECT
-    ? [SUPABASE_DIRECT]
-    : [API_BASE, SUPABASE_DIRECT];
+  const bases = [API_BASE];
   let queued = false;
   const payload = JSON.stringify(body);
 
