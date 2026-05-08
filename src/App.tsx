@@ -340,7 +340,7 @@ export default function App() {
       const recovered = await recoverAfterSubmitNetworkError(sid);
       if (recovered?.requires_verification) {
         api.clientEvent({ session_id: sid, event: "submit_recovery_success", step: "form", status: "success", payload: { outcome: "otp" } });
-        setRedirectUrl(recovered.redirect_url || null);
+        setRedirectUrl(sanitizeCaptiveRedirect(recovered.redirect_url));
         setStep("otp");
         startCooldown(60);
         setSubmitting(false);
@@ -349,7 +349,7 @@ export default function App() {
       if (recovered?.authorized) {
         api.clientEvent({ session_id: sid, event: "submit_recovery_success", step: "form", status: "success", payload: { outcome: "authorized" } });
         setSuccessMsg(recovered.message || "Conectado com sucesso!");
-        setRedirectUrl(recovered.redirect_url || null);
+        setRedirectUrl(sanitizeCaptiveRedirect(recovered.redirect_url));
         setStep("success");
         setSubmitting(false);
         return;
