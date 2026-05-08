@@ -455,16 +455,17 @@ export default function App() {
         api.clientEvent({ session_id: sid, event: "verify_recovery_success", step: "otp", status: "success",
           payload: { authorized: !!recovered.authorized, use_hotspot_redirect: !!recovered.use_hotspot_redirect } });
         if (recovered.use_hotspot_redirect && recovered.redirect_url) {
+          const safe = sanitizeCaptiveRedirect(recovered.redirect_url);
           setSuccessMsg("Finalizando liberação do Wi-Fi...");
-          setRedirectUrl(recovered.redirect_url);
+          setRedirectUrl(safe);
           setStep("success");
-          setTimeout(() => { window.location.href = recovered.redirect_url; }, 800);
+          setTimeout(() => { window.location.href = safe; }, 800);
           setVerifying(false);
           return;
         }
         if (recovered.authorized) {
           setSuccessMsg("Conectado com sucesso!");
-          setRedirectUrl(recovered.redirect_url || redirectUrl);
+          setRedirectUrl(sanitizeCaptiveRedirect(recovered.redirect_url || redirectUrl));
           setStep("success");
           setVerifying(false);
           return;
