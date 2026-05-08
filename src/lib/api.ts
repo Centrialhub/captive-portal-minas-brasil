@@ -67,9 +67,7 @@ interface XhrOptions {
  */
 function xhrRequest<T = any>(path: string, opts: XhrOptions = {}): Promise<T> {
   const { method = "GET", body, timeoutMs = 20000 } = opts;
-  const bases = API_BASE === SUPABASE_DIRECT
-    ? [SUPABASE_DIRECT]
-    : [API_BASE, SUPABASE_DIRECT];
+  const bases = [API_BASE];
 
   return new Promise((resolve, reject) => {
     let attempt = 0;
