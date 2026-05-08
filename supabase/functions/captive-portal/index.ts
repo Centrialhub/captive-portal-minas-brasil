@@ -2974,7 +2974,18 @@ details p{padding:0 12px 12px;font-size:11px;color:#888;line-height:1.5}
 (function(){
 var DIRECT_API='${API_BASE}';
 var SAME_ORIGIN_API='/api/captive-portal';
-var BASES=location.hostname.indexOf('supabase.co')>=0?[DIRECT_API]:[SAME_ORIGIN_API,DIRECT_API];
+// Captive flow stays HTTP same-origin to avoid Android CNA cert errors.
+var BASES=[SAME_ORIGIN_API];
+var PUBLIC_CAPTIVE_BASE_URL='http://wifi.guedesepaixao.com.br';
+function sanitizeCaptiveRedirect(u){
+var store='matriz';try{var s=new URLSearchParams(location.search).get('store');if(s)store=s;}catch(e){}
+var safe=PUBLIC_CAPTIVE_BASE_URL+'/?success=1&store='+encodeURIComponent(store);
+if(!u)return safe;
+try{var x=new URL(u,PUBLIC_CAPTIVE_BASE_URL);if(x.protocol!=='http:')return safe;
+var h=(x.hostname||'').toLowerCase();
+if(h==='31.97.170.23'||h.indexOf('rwificontroller')!==-1||h==='supabase.co'||h.indexOf('.supabase.co')!==-1)return safe;
+if(x.port==='8443')return safe;return x.toString();}catch(e){return safe;}
+}
 var clientMac='${clientMac}';
 var apMac='${apMac}';
 var ssid='${ssidParam}';
