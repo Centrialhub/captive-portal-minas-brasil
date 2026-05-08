@@ -413,17 +413,23 @@ export default function App() {
       // Hotspot redirect has PRIORITY over authorized flag — backend already
       // accepted the OTP, and the UniFi controller will finalize liberation
       // when the browser hits /guest/s/<site>/.
+      // Hotspot redirect: backend may try to send the user to the UniFi
+      // controller (HTTPS, port 8443, raw IP). During the captive flow that
+      // breaks the Android Captive Network Assistant with a cert error.
+      // We sanitize: only HTTP same-domain redirects are allowed; otherwise
+      // we keep the user on the in-app success screen.
       if (result.use_hotspot_redirect && result.redirect_url) {
+        const safe = sanitizeCaptiveRedirect(result.redirect_url);
         setSuccessMsg(result.message || "Finalizando liberação do Wi-Fi...");
-        setRedirectUrl(result.redirect_url);
+        setRedirectUrl(safe);
         setStep("success");
-        setTimeout(() => { window.location.href = result.redirect_url; }, 800);
+        setTimeout(() => { window.location.href = safe; }, 800);
         return;
       }
 
       if (result.authorized) {
         setSuccessMsg(result.message || "Conectado com sucesso!");
-        const finalUrl = result.redirect_url || redirectUrl;
+        const finalUrl = sanitizeCaptiveRedirect(result.redirect_url || redirectUrl);
         setRedirectUrl(finalUrl);
         setStep("success");
       } else {
