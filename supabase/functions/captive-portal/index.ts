@@ -1733,7 +1733,7 @@ async function handleSubmit(req: Request): Promise<Response> {
       error_code: "VERIFICATION_INSERT_ERROR", error_message: verError.message,
       client_ip: clientIp, user_agent: ua,
     });
-    return errorResponse("Erro ao gerar código de verificação. Tente novamente.", 500);
+    return jsonResponse({ error: "Erro ao gerar código de verificação. Tente novamente.", code: "VERIFICATION_INSERT_ERROR" }, 500);
   }
 
   // Everything else runs in background — keep response fast.
