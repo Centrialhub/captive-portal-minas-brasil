@@ -1601,7 +1601,7 @@ async function handleSubmit(req: Request): Promise<Response> {
           error_code: code, error_message: upsertErr.message,
           client_ip: clientIp, user_agent: ua,
         });
-        if (!isRace) return errorResponse("Erro ao iniciar sessão. Tente novamente.", 500);
+        if (!isRace) return jsonResponse({ error: "Erro ao iniciar sessão. Tente novamente.", code: "SESSION_UPSERT_ERROR" }, 500);
         // On race, the row exists thanks to /start — proceed.
       } else {
         logEvent(db, {
