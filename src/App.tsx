@@ -250,30 +250,30 @@ export default function App() {
       },
     });
 
+    const payload = buildSubmitPayload({
+      session_id: sid,
+      name, email, phone, cpf,
+      client_mac: params.client_mac,
+      consent_version: boot.consent?.version || "1.0",
+    });
+
+    api.clientEvent({
+      session_id: sid,
+      event: "submit_payload_ready",
+      step: "form",
+      status: "info",
+      payload: {
+        has_session: !!payload.session_id,
+        has_client_mac: !!payload.client_mac,
+        has_ap_mac: !!payload.ap_mac,
+        has_redirect_url: !!payload.redirect_url,
+        has_captive_timestamp: !!payload.captive_timestamp,
+        phone_length: payload.phone.length,
+        cpf_length: payload.cpf.length,
+      },
+    });
+
     try {
-      const payload = buildSubmitPayload({
-        session_id: sid,
-        name, email, phone, cpf,
-        client_mac: params.client_mac,
-        consent_version: boot.consent?.version || "1.0",
-      });
-      Object.assign(payload, {
-        ap_mac: params.ap_mac,
-        ssid: params.ssid,
-        redirect_url: params.redirect_url,
-        captive_timestamp: params.captive_timestamp,
-        site: params.site,
-        original_unifi_url_params: {
-          id: params.client_mac,
-          ap: params.ap_mac,
-          ssid: params.ssid,
-          url: params.redirect_url,
-          t: params.captive_timestamp,
-          site: params.site,
-          raw_query: params.raw_query,
-        },
-        user_agent: navigator.userAgent,
-      });
       const result = await api.submitLead(payload);
 
       if (result?.session_id) {
