@@ -1630,7 +1630,7 @@ async function handleSubmit(req: Request): Promise<Response> {
         error_code: "RECOVERY_INSERT_ERROR", error_message: sessionError?.message || "unknown",
         client_ip: clientIp, user_agent: ua,
       });
-      return errorResponse("Erro ao iniciar sessão. Tente novamente.", 500);
+      return jsonResponse({ error: "Erro ao iniciar sessão. Tente novamente.", code: "SESSION_UPSERT_ERROR" }, 500);
     }
     sessionId = recoveredSession.id;
     logEvent(db, {
