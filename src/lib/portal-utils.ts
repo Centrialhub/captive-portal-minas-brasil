@@ -98,6 +98,31 @@ export function getQueryParams(): UnifiQueryParams {
   };
 }
 
+export interface SubmitPayload {
+  session_id?: string;
+  name: string;
+  email: string;
+  phone: string;
+  cpf: string;
+  client_mac: string;
+  ap_mac: string;
+  ssid: string;
+  redirect_url: string;
+  captive_timestamp: string;
+  site: string;
+  original_unifi_url_params: {
+    id: string;
+    ap: string;
+    ssid: string;
+    url: string;
+    t: string;
+    site: string;
+    raw_query: string;
+  };
+  user_agent: string;
+  consent_version: string;
+}
+
 export function buildSubmitPayload(fields: {
   session_id?: string;
   name: string;
@@ -106,15 +131,40 @@ export function buildSubmitPayload(fields: {
   cpf: string;
   client_mac?: string;
   consent_version: string;
-}) {
+}): SubmitPayload {
   const q = getQueryParams();
+  const phoneDigits = (fields.phone || "").replace(/\D/g, "");
+  const cpfDigits = (fields.cpf || "").replace(/\D/g, "");
+  const clientMac = fields.client_mac || q.client_mac || "";
+  const apMac = q.ap_mac || "";
+  const ssid = q.ssid || "";
+  const redirectUrl = q.redirect_url || "";
+  const captiveTs = q.captive_timestamp || "";
+  const site = q.site || "";
+  const rawQuery = q.raw_query || "";
+  const ua = typeof navigator !== "undefined" ? navigator.userAgent : "";
   return {
     session_id: fields.session_id || undefined,
     name: fields.name,
     email: fields.email || "",
-    phone: fields.phone,
-    cpf: fields.cpf,
-    client_mac: fields.client_mac || q.client_mac || "",
+    phone: phoneDigits,
+    cpf: cpfDigits,
+    client_mac: clientMac,
+    ap_mac: apMac,
+    ssid,
+    redirect_url: redirectUrl,
+    captive_timestamp: captiveTs,
+    site,
+    original_unifi_url_params: {
+      id: clientMac,
+      ap: apMac,
+      ssid,
+      url: redirectUrl,
+      t: captiveTs,
+      site,
+      raw_query: rawQuery,
+    },
+    user_agent: ua,
     consent_version: fields.consent_version,
   };
 }
