@@ -1485,10 +1485,22 @@ async function handleSubmit(req: Request): Promise<Response> {
       trace_id: traceId,
       event_type: "form_validation_failed", step: "form", status: "error",
       error_code: code, error_message: msg,
-      payload: { has_name: !!name, has_phone: !!phone, has_cpf: !!cpf, has_email: !!email, consent_version: consentVersion },
+      payload: {
+        missing: {
+          name: !name, phone: !phone, cpf: !cpf, consent_version: !consentVersion,
+          email_invalid: !!(email && !isValidEmail(email)),
+          session_id_invalid: !!(sessionId && !isValidUUID(sessionId)),
+          phone_invalid: !!(phone && !isValidPhone(phone)),
+        },
+        has_name: !!name,
+        phone_length: phone ? phone.replace(/\D/g, "").length : 0,
+        cpf_length: cpf ? cpf.replace(/\D/g, "").length : 0,
+        has_email: !!email,
+        consent_version: consentVersion,
+      },
       client_ip: clientIp, user_agent: ua,
     });
-    return errorResponse(msg);
+    return jsonResponse({ error: msg, code: "VALIDATION_ERROR", validation_code: code }, 400);
   };
 
   if (!name) return failValidation("NAME_REQUIRED", "Nome é obrigatório");
@@ -1589,7 +1601,7 @@ async function handleSubmit(req: Request): Promise<Response> {
           error_code: code, error_message: upsertErr.message,
           client_ip: clientIp, user_agent: ua,
         });
-        if (!isRace) return errorResponse("Erro ao iniciar sessão. Tente novamente.", 500);
+        if (!isRace) return jsonResponse({ error: "Erro ao iniciar sessão. Tente novamente.", code: "SESSION_UPSERT_ERROR" }, 500);
         // On race, the row exists thanks to /start — proceed.
       } else {
         logEvent(db, {
@@ -1618,7 +1630,7 @@ async function handleSubmit(req: Request): Promise<Response> {
         error_code: "RECOVERY_INSERT_ERROR", error_message: sessionError?.message || "unknown",
         client_ip: clientIp, user_agent: ua,
       });
-      return errorResponse("Erro ao iniciar sessão. Tente novamente.", 500);
+      return jsonResponse({ error: "Erro ao iniciar sessão. Tente novamente.", code: "SESSION_UPSERT_ERROR" }, 500);
     }
     sessionId = recoveredSession.id;
     logEvent(db, {
@@ -1698,7 +1710,7 @@ async function handleSubmit(req: Request): Promise<Response> {
       error_code: "LEAD_INSERT_ERROR", error_message: leadError?.message || "unknown",
       client_ip: clientIp, user_agent: ua,
     });
-    return errorResponse("Erro ao salvar cadastro. Tente novamente.", 500);
+    return jsonResponse({ error: "Erro ao salvar cadastro. Tente novamente.", code: "LEAD_INSERT_ERROR" }, 500);
   }
   const leadId = lead.id;
 
@@ -1721,7 +1733,7 @@ async function handleSubmit(req: Request): Promise<Response> {
       error_code: "VERIFICATION_INSERT_ERROR", error_message: verError.message,
       client_ip: clientIp, user_agent: ua,
     });
-    return errorResponse("Erro ao gerar código de verificação. Tente novamente.", 500);
+    return jsonResponse({ error: "Erro ao gerar código de verificação. Tente novamente.", code: "VERIFICATION_INSERT_ERROR" }, 500);
   }
 
   // Everything else runs in background — keep response fast.
