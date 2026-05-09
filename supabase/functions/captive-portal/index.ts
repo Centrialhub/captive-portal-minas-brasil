@@ -1710,7 +1710,7 @@ async function handleSubmit(req: Request): Promise<Response> {
       error_code: "LEAD_INSERT_ERROR", error_message: leadError?.message || "unknown",
       client_ip: clientIp, user_agent: ua,
     });
-    return errorResponse("Erro ao salvar cadastro. Tente novamente.", 500);
+    return jsonResponse({ error: "Erro ao salvar cadastro. Tente novamente.", code: "LEAD_INSERT_ERROR" }, 500);
   }
   const leadId = lead.id;
 
