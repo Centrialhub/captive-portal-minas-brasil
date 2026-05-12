@@ -1848,9 +1848,10 @@ async function handleSessionStatus(req: Request): Promise<Response> {
   const verified = !!(ver && ver.status === "verified");
   const authorized = session.status === "authorized";
   const fallbackUrl = (session as { unifi_fallback_redirect_url?: string | null }).unifi_fallback_redirect_url || null;
-  // Verify-code already accepted on backend but client lost the response
-  const useHotspotRedirect = verified && !authorized && !!fallbackUrl;
-  const finalRedirect = useHotspotRedirect ? (fallbackUrl as string) : (redirectUrl || DEFAULT_REDIRECT_URL);
+  void fallbackUrl; // hotspot fallback disabled to avoid Android CNA cert errors
+  // Hotspot redirect fallback is DISABLED — never return a UniFi controller URL.
+  const useHotspotRedirect = false;
+  const finalRedirect = redirectUrl || DEFAULT_REDIRECT_URL;
 
   return jsonResponse({
     ok: true,
