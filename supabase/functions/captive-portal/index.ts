@@ -2995,8 +2995,12 @@ var safe=PUBLIC_CAPTIVE_BASE_URL+'/?success=1&store='+encodeURIComponent(store);
 if(!u)return safe;
 try{var x=new URL(u,PUBLIC_CAPTIVE_BASE_URL);if(x.protocol!=='http:')return safe;
 var h=(x.hostname||'').toLowerCase();
+if(/^\\d{1,3}(\\.\\d{1,3}){3}$/.test(h))return safe;
+if(h.indexOf(':')!==-1)return safe;
 if(h==='31.97.170.23'||h.indexOf('rwificontroller')!==-1||h==='supabase.co'||h.indexOf('.supabase.co')!==-1)return safe;
-if(x.port==='8443')return safe;return x.toString();}catch(e){return safe;}
+if(x.port&&x.port!=='80')return safe;
+if((x.pathname||'').indexOf('/guest/s/')===0)return safe;
+return x.toString();}catch(e){return safe;}
 }
 var clientMac='${clientMac}';
 var apMac='${apMac}';
