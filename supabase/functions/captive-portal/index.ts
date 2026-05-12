@@ -1848,9 +1848,10 @@ async function handleSessionStatus(req: Request): Promise<Response> {
   const verified = !!(ver && ver.status === "verified");
   const authorized = session.status === "authorized";
   const fallbackUrl = (session as { unifi_fallback_redirect_url?: string | null }).unifi_fallback_redirect_url || null;
-  // Verify-code already accepted on backend but client lost the response
-  const useHotspotRedirect = verified && !authorized && !!fallbackUrl;
-  const finalRedirect = useHotspotRedirect ? (fallbackUrl as string) : (redirectUrl || DEFAULT_REDIRECT_URL);
+  void fallbackUrl; // hotspot fallback disabled to avoid Android CNA cert errors
+  // Hotspot redirect fallback is DISABLED — never return a UniFi controller URL.
+  const useHotspotRedirect = false;
+  const finalRedirect = redirectUrl || DEFAULT_REDIRECT_URL;
 
   return jsonResponse({
     ok: true,
@@ -2179,13 +2180,14 @@ async function handleVerifyCode(req: Request): Promise<Response> {
       .eq("id", sessionId as string);
   }
 
-  // Hotspot redirect is ONLY used as a fallback when /stat/sta did NOT confirm
-  // authorized=true. When authorized=true we keep the normal post-auth URL.
-  const useHotspotRedirect = !authorized && !!unifiHotspotRedirect && !dailyLimitReached;
-  const resolvedRedirectUrl = useHotspotRedirect
-    ? (unifiHotspotRedirect as string)
-    : (redirectUrl || session?.redirect_url || DEFAULT_REDIRECT_URL);
-  const pendingUnifiConfirmation = !authorized && useHotspotRedirect;
+  // Hotspot redirect fallback is DISABLED to prevent Android Captive Assistant
+  // certificate errors. Even when /stat/sta cannot confirm authorization, we
+  // never hand the client a UniFi controller URL (HTTPS, port 8443, raw IP).
+  const useHotspotRedirect = false;
+  const resolvedRedirectUrl = redirectUrl || session?.redirect_url || DEFAULT_REDIRECT_URL;
+  const pendingUnifiConfirmation = false;
+  void unifiHotspotRedirect; // intentionally unused while hotspot fallback is off
+  
 
   // Mark verification as completed once OTP is correct AND we have a path forward
   // (either confirmed authorization or a hotspot fallback redirect to finalize it).
@@ -2995,8 +2997,12 @@ var safe=PUBLIC_CAPTIVE_BASE_URL+'/?success=1&store='+encodeURIComponent(store);
 if(!u)return safe;
 try{var x=new URL(u,PUBLIC_CAPTIVE_BASE_URL);if(x.protocol!=='http:')return safe;
 var h=(x.hostname||'').toLowerCase();
+if(/^\\d{1,3}(\\.\\d{1,3}){3}$/.test(h))return safe;
+if(h.indexOf(':')!==-1)return safe;
 if(h==='31.97.170.23'||h.indexOf('rwificontroller')!==-1||h==='supabase.co'||h.indexOf('.supabase.co')!==-1)return safe;
-if(x.port==='8443')return safe;return x.toString();}catch(e){return safe;}
+if(x.port&&x.port!=='80')return safe;
+if((x.pathname||'').indexOf('/guest/s/')===0)return safe;
+return x.toString();}catch(e){return safe;}
 }
 var clientMac='${clientMac}';
 var apMac='${apMac}';
