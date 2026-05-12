@@ -42,15 +42,23 @@ export function sanitizeCaptiveRedirect(url: string | null | undefined): string 
   if (!url) return safeFallback;
   try {
     const u = new URL(url, PUBLIC_CAPTIVE_BASE_URL);
+    // Captive flow MUST stay on HTTP same-origin to avoid Android CNA cert errors.
     if (u.protocol !== "http:") return safeFallback;
     const h = u.hostname.toLowerCase();
+    // Block any IPv4 literal (e.g. 31.97.170.23) and any IPv6 literal.
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h)) return safeFallback;
+    if (h.indexOf(":") !== -1) return safeFallback;
+    // Block known controller/backend hosts.
     if (
       h === "31.97.170.23" ||
       h.indexOf("rwificontroller") !== -1 ||
       h.endsWith("supabase.co") ||
       h.endsWith(".supabase.co")
     ) return safeFallback;
-    if (u.port === "8443") return safeFallback;
+    // Block any non-default port (UniFi controller uses 8443).
+    if (u.port && u.port !== "80") return safeFallback;
+    // Block UniFi hotspot redirect path explicitly.
+    if (u.pathname.indexOf("/guest/s/") === 0) return safeFallback;
     return u.toString();
   } catch {
     return safeFallback;
