@@ -2186,7 +2186,7 @@ async function handleVerifyCode(req: Request): Promise<Response> {
   const resolvedRedirectUrl = redirectUrl || session?.redirect_url || DEFAULT_REDIRECT_URL;
   const pendingUnifiConfirmation = false;
   void unifiHotspotRedirect; // intentionally unused while hotspot fallback is off
-  void dailyLimitReached;
+  
 
   // Mark verification as completed once OTP is correct AND we have a path forward
   // (either confirmed authorization or a hotspot fallback redirect to finalize it).
