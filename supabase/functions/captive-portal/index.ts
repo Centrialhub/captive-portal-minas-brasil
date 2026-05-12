@@ -2179,13 +2179,14 @@ async function handleVerifyCode(req: Request): Promise<Response> {
       .eq("id", sessionId as string);
   }
 
-  // Hotspot redirect is ONLY used as a fallback when /stat/sta did NOT confirm
-  // authorized=true. When authorized=true we keep the normal post-auth URL.
-  const useHotspotRedirect = !authorized && !!unifiHotspotRedirect && !dailyLimitReached;
-  const resolvedRedirectUrl = useHotspotRedirect
-    ? (unifiHotspotRedirect as string)
-    : (redirectUrl || session?.redirect_url || DEFAULT_REDIRECT_URL);
-  const pendingUnifiConfirmation = !authorized && useHotspotRedirect;
+  // Hotspot redirect fallback is DISABLED to prevent Android Captive Assistant
+  // certificate errors. Even when /stat/sta cannot confirm authorization, we
+  // never hand the client a UniFi controller URL (HTTPS, port 8443, raw IP).
+  const useHotspotRedirect = false;
+  const resolvedRedirectUrl = redirectUrl || session?.redirect_url || DEFAULT_REDIRECT_URL;
+  const pendingUnifiConfirmation = false;
+  void unifiHotspotRedirect; // intentionally unused while hotspot fallback is off
+  void dailyLimitReached;
 
   // Mark verification as completed once OTP is correct AND we have a path forward
   // (either confirmed authorization or a hotspot fallback redirect to finalize it).
