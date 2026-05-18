@@ -1,56 +1,70 @@
-## Objetivo
-Restaurar o fluxo de verificação OTP que parou de funcionar em 30/abr. Não reescrever o fluxo — apenas corrigir a regressão.
+## Resumo
 
-## Diagnóstico
-- `/submit` funciona: 100% das sessões recentes têm `otp_sent=success` e `verification` criada
-- `/verify-code` **nunca é chamado** pelo cliente (zero hits em `function_edge_logs`, `attempts=0` em todas verifications)
-- Última verificação OK: **30/abr 08:53**. Após enxurrada de commits no fluxo no mesmo dia (17h–19h UTC), zero verificações.
-- Hoje (06/mai) já há 4 sessões com OTP enviado e nenhuma com `/verify-code` registrado — confirma que é regressão recente, não mudança de comportamento dos usuários.
+Sim, o sistema **já suporta múltiplas lojas** (multi-controladora). A arquitetura de detecção de loja (`?store=` → IP → fallback), credenciais UniFi por loja (`stores.unifi_controller_url/username/password/site_id`) e RLS estão prontos. Hoje existe apenas a loja `matriz` cadastrada (2 IPs públicos).
 
-## Plano de correção (3 mudanças cirúrgicas)
+Para adicionar uma nova unidade, há **3 ajustes obrigatórios** no Dockerfile (que hoje hardcoda `store=matriz`) e o cadastro da loja + IP + URL do hotspot no UniFi da nova unidade.
 
-### 1. Telemetria client-side do verify-code (essencial para confirmar a causa raiz)
-Adicionar em `src/App.tsx` `handleVerify` e no fallback `index.html` (`fb-otp-verify` click):
-- Um `logEvent` via novo endpoint `POST /client-event` antes de chamar `/verify-code`, com `{session_id, event:"verify_attempt_started"}`
-- Outro após sucesso/erro com `{event:"verify_attempt_finished", outcome, error_kind}`
-- Captura `console.error` + `window.onerror` durante a tela OTP, encaminhando para `/client-event`
+---
 
-Endpoint novo no Edge Function: `POST /client-event` que apenas grava em `portal_events` (rate-limited por session_id). Permite ver se:
-- O click no botão Verify dispara JS (event "verify_attempt_started")
-- O XHR retorna timeout/network (event "verify_attempt_finished" com error_kind)
-- Ou se há erro JS antes do click (window.onerror)
+## O que já está pronto
 
-### 2. Revisão do `handleVerify` e do botão OTP procurando a regressão
-Comparar versão atual contra commit funcional (`30/abr 08:53` — antes de `82d9680`):
-- Verificar se o `disabled` do botão Verify está correto (`verifying || otpCode.length !== 6`)
-- Verificar se `sessionIdRef.current` está preenchido quando a tela OTP é montada (suspeita: refs zeradas se App.tsx remonta)
-- Garantir que o input numérico não bloqueia paste (fluxo comum no mobile: copiar código do WhatsApp e colar)
-- Adicionar fallback: se `sessionId` está vazio na tela OTP, chamar `/session-status` automaticamente para recuperar antes de exibir input
+- `stores` aceita N lojas com credenciais UniFi próprias (URL, site_id, user, pass).
+- `detectStore()` no edge function resolve a loja por: `?store=slug` → `store_public_ips` (IP de saída NAT) → fallback única loja ativa.
+- `/start`, `/submit`, `/verify-code` autorizam no controller **da loja detectada** usando `store.unifi_controller_url`.
+- Admin UI permite criar/editar lojas e mapear IPs.
+- RLS isola dados — endpoints públicos só passam por edge function (service role).
 
-### 3. Endurecer o `/verify-code` no fallback HTML
-No `index.html` (vanilla fallback), o handler atual depende de `state.session_id` setado em memória. Se a página recarrega entre OTP enviado e código digitado (comum no CNA), `state.session_id` é perdido.
+---
 
-Adicionar:
-- Persistir `state.session_id` em `sessionStorage` logo após `/submit` retornar
-- No carregamento da tela OTP, restaurar `state.session_id` do `sessionStorage` se vazio
-- Mesmo em `src/App.tsx` (`sessionIdRef`)
+## O que precisa mudar no código (Dockerfile)
 
-## Validação
-1. Deploy → abrir captive em celular real → chegar em OTP → digitar código
-2. Conferir em `portal_events`:
-   - `verify_attempt_started` deve aparecer ao clicar
-   - `verify_code_response` deve aparecer no Edge
-3. Se `verify_attempt_started` aparecer mas `/verify-code` não → bug de XHR
-4. Se nem `verify_attempt_started` aparecer → bug de UI (botão/handler)
-5. `captive_verifications.attempts > 0` na próxima tentativa real
+O Nginx hoje tem **`?store=matriz` cravado** em todos os redirects de captive probe e no `/guest/s/default/`. Isso quebra a detecção quando o cliente da nova unidade cair nesses caminhos.
 
-## O que NÃO vou fazer
-- Não trocar arquitetura (sem magic-link, sem callback, sem mudanças de UX)
-- Não mexer no `/submit` nem no `sendWhatsAppCode` (estão OK)
-- Não tocar em CORS/proxy/Dockerfile (`/submit` chega sem problemas, então a rota proxy está funcional)
+**Mudança:** trocar `?store=matriz&$args` por `?$args` em:
+- `location /guest/s/default/`
+- `/generate_204`, `/gen_204`, `/hotspot-detect.html`, `/library/test/success.html`, `/connecttest.txt`, `/ncsi.txt`
 
-## Arquivos afetados
-- `supabase/functions/captive-portal/index.ts` — adicionar handler `/client-event`
-- `src/App.tsx` — telemetria + persistência de `sessionId` + restore no OTP
-- `index.html` — telemetria vanilla + persistência de `state.session_id`
-- `src/lib/api.ts` — método `clientEvent(payload)`
+A detecção continua funcionando porque:
+1. O UniFi de cada loja injeta seus próprios `id=`/`ap=`/`ssid=` na URL.
+2. Sem `?store=`, o edge function resolve pela tabela `store_public_ips` (IP NAT da unidade) — que é justamente o mecanismo previsto para multi-loja.
+
+Opcional: o proxy `location /unifi/` hoje aponta hardcoded para `rwificontroller...:8083`. Só é usado pelo admin; se a nova unidade tiver controller diferente, podemos remover ou parametrizar depois — **não bloqueia** o captive flow.
+
+---
+
+## O que precisa ser cadastrado para a nova unidade
+
+1. **Loja** no Admin → Lojas → Nova:
+   - `slug` (ex: `filial-centro`)
+   - `name`, `city`
+   - `unifi_controller_url` (ex: `http://rwificontroller.drogariaminasbrasil.com.br:8083/filial-centro` ou outra controladora)
+   - `unifi_site_id` (default `default`)
+   - `unifi_username` / `unifi_password` (deixar em branco usa as globais `UNIFI_USERNAME`/`UNIFI_PASSWORD`)
+   - `is_active = true`
+
+2. **IP público de saída** da nova unidade em `store_public_ips` (Admin → IPs). Garante detecção mesmo quando o UniFi não injeta `?store=`.
+
+3. **Hotspot UniFi da nova unidade**: configurar o "External Portal URL" para:
+   ```
+   http://wifi.guedesepaixao.com.br/?store=<slug-da-nova-loja>
+   ```
+   Isso é o caminho mais confiável de detecção (não depende de IP NAT).
+
+4. **Walled Garden** no UniFi da nova unidade: liberar os mesmos domínios já usados na matriz (`wifi.guedesepaixao.com.br`, `fqamejlyytrhovawgtwg.supabase.co`, hosts do webhook OTP, etc.).
+
+---
+
+## Validações pós-deploy
+
+- Abrir `http://wifi.guedesepaixao.com.br/?store=<novo-slug>` num cliente da nova unidade → portal carrega com nome correto.
+- Submeter formulário → checar `captive_sessions.store_id` aponta para nova loja e `unifi_authorize_called_at` preenchido.
+- Conferir `portal_events` por `store_id` para erros de autorização.
+
+---
+
+## Detalhes técnicos
+
+- Build target es2015 e arquitetura same-origin HTTP continuam válidos para todas as lojas.
+- Nenhuma migração de schema necessária.
+- Sem mudanças em edge functions, frontend React ou RLS.
+- Única alteração de código: 7 linhas no `Dockerfile`.
