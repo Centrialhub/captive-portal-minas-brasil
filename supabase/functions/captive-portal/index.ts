@@ -86,6 +86,25 @@ function isValidPhone(phone: string): boolean {
   return digits.length >= 8 && digits.length <= 15;
 }
 
+function isValidCPF(cpf: string): boolean {
+  const digits = (cpf || "").replace(/\D/g, "");
+  if (digits.length !== 11) return false;
+  if (/^(\d)\1{10}$/.test(digits)) return false;
+  const calcDV = (base: string, weights: number[]): number => {
+    let sum = 0;
+    for (let i = 0; i < base.length; i++) {
+      sum += parseInt(base[i], 10) * weights[i];
+    }
+    const remainder = (sum * 10) % 11;
+    return remainder === 10 ? 0 : remainder;
+  };
+  const firstDV = calcDV(digits.slice(0, 9), [10, 9, 8, 7, 6, 5, 4, 3, 2]);
+  if (firstDV !== parseInt(digits[9], 10)) return false;
+  const secondDV = calcDV(digits.slice(0, 10), [11, 10, 9, 8, 7, 6, 5, 4, 3, 2]);
+  if (secondDV !== parseInt(digits[10], 10)) return false;
+  return true;
+}
+
 /**
  * Normaliza telefone para E.164 brasileiro (ex: 5531999999999).
  * O webhook do Centrial Hub exige esse formato — sem '+', apenas dígitos com DDI 55.
