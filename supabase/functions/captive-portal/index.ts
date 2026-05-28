@@ -554,51 +554,79 @@ async function sendWhatsAppCode(
   clientIp: string | null,
   expiresAt: string
 ): Promise<{ sent: boolean; error?: string }> {
+  // Daily cap per phone: at most 10 OTP sends in a rolling 24h window.
+  // Protects against abuse / webhook cost spikes / spam to the recipient.
+  try {
+    const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const { count: dailyPhoneCount } = await db
+      .from("captive_verifications")
+      .select("id", { count: "exact", head: true })
+      .eq("phone", phone)
+      .gte("created_at", dayAgo);
+    if ((dailyPhoneCount ?? 0) >= 10) {
+      console.warn(`[whatsapp] Daily OTP cap reached for phone (count=${dailyPhoneCount})`);
+      return { sent: false, error: "Limite diário de envios para este número atingido." };
+    }
+  } catch (e) {
+    console.warn("[whatsapp] daily cap check failed (continuing):", (e as Error).message);
+  }
+
   const config = await getWhatsappConfig(db, storeId);
   if (!config) {
     console.warn("WhatsApp webhook not configured");
     return { sent: false, error: "Webhook WhatsApp não configurado." };
+
   }
 
-  // Internal hard timeout so the webhook can never hang the function.
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), 8000);
-  try {
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (config.secret) {
-      headers["Authorization"] = `Bearer ${config.secret}`;
-    }
-
-    const phoneE164 = toE164BR(phone);
-    const res = await fetch(config.url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        phone: phoneE164,
-        phone_raw: phone,
-        code,
-        store_name: storeName,
-        store_id: storeId,
-        session_id: sessionId,
-        public_ip: clientIp,
-        expires_at: expiresAt,
-        type: "otp_verification",
-      }),
-      signal: ac.signal,
-    });
-    clearTimeout(timer);
-    if (!res.ok) {
-      console.error("WhatsApp webhook HTTP error:", res.status);
-      return { sent: false, error: `Webhook retornou HTTP ${res.status}` };
-    }
-    return { sent: true };
-  } catch (e) {
-    clearTimeout(timer);
-    const isAbort = (e as Error).name === "AbortError";
-    console.error("WhatsApp webhook error:", isAbort ? "timeout (8s)" : (e as Error).message);
-    return { sent: false, error: isAbort ? "Timeout ao enviar código." : "Erro de rede ao enviar código." };
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (config.secret) {
+    headers["Authorization"] = `Bearer ${config.secret}`;
   }
+
+  const phoneE164 = toE164BR(phone);
+  const payload = JSON.stringify({
+    phone: phoneE164,
+    phone_raw: phone,
+    code,
+    store_name: storeName,
+    store_id: storeId,
+    session_id: sessionId,
+    public_ip: clientIp,
+    expires_at: expiresAt,
+    type: "otp_verification",
+  });
+
+  // Retry with backoff on 5xx / network errors. Do NOT retry 4xx (client error).
+  const attempts = 3;
+  const backoffsMs = [400, 1200];
+  let lastError = "Falha ao enviar código.";
+
+  for (let i = 0; i < attempts; i++) {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 8000);
+    try {
+      const res = await fetch(config.url, { method: "POST", headers, body: payload, signal: ac.signal });
+      clearTimeout(timer);
+      if (res.ok) return { sent: true };
+
+      // 4xx → don't retry, surface immediately
+      if (res.status >= 400 && res.status < 500) {
+        console.error(`WhatsApp webhook HTTP ${res.status} (no retry)`);
+        return { sent: false, error: `Webhook retornou HTTP ${res.status}` };
+      }
+      lastError = `Webhook retornou HTTP ${res.status}`;
+      console.warn(`WhatsApp webhook attempt ${i + 1}/${attempts} failed: ${lastError}`);
+    } catch (e) {
+      clearTimeout(timer);
+      const isAbort = (e as Error).name === "AbortError";
+      lastError = isAbort ? "Timeout ao enviar código." : "Erro de rede ao enviar código.";
+      console.warn(`WhatsApp webhook attempt ${i + 1}/${attempts} error: ${isAbort ? "timeout (8s)" : (e as Error).message}`);
+    }
+    if (i < attempts - 1) await new Promise((r) => setTimeout(r, backoffsMs[i]));
+  }
+  return { sent: false, error: lastError };
 }
+
 
 // ========== UniFi Provider (Legacy Cookie Auth) ==========
 const UNIFI_USERNAME = Deno.env.get("UNIFI_USERNAME") || "";
