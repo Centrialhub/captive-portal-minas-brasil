@@ -1713,9 +1713,10 @@ async function handleSubmit(req: Request): Promise<Response> {
     store_id: storeId,
     session_id: sessionId,
     name,
-    email: email || null,
+    email: email ? email.trim().toLowerCase() : null,
     phone: phone || null,
-    cpf: cpf || null,
+    cpf: cpf ? cpf.replace(/\D/g, "") : null,
+
     client_mac: clientMac,
     consented_at: new Date().toISOString(),
     consent_version: consentVersion,
