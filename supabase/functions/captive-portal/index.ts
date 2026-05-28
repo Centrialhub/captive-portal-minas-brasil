@@ -1524,6 +1524,7 @@ async function handleSubmit(req: Request): Promise<Response> {
 
   if (!name) return failValidation("NAME_REQUIRED", "Nome é obrigatório");
   if (!cpf) return failValidation("CPF_REQUIRED", "CPF é obrigatório");
+  if (!isValidCPF(cpf)) return failValidation("CPF_INVALID", "CPF inválido");
   if (!phone || !isValidPhone(phone)) return failValidation("PHONE_INVALID", "Telefone válido é obrigatório");
   if (email && !isValidEmail(email)) return failValidation("EMAIL_INVALID", "E-mail inválido");
   if (!consentVersion) return failValidation("CONSENT_REQUIRED", "Consentimento é obrigatório");

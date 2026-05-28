@@ -220,6 +220,10 @@ export default function App() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!consented) return;
+    if (!isValidCPF(cpf)) {
+      setError("CPF inválido. Verifique os dígitos digitados.");
+      return;
+    }
     setSubmitting(true);
     setError("");
 
@@ -597,7 +601,7 @@ export default function App() {
           <input type="email" value={email} onChange={e => setEmail(e.target.value)} className="portal-input" placeholder="email@exemplo.com (opcional)" />
 
           <label className="portal-label">CPF *</label>
-          <input type="text" value={cpf} onChange={e => setCpf(e.target.value)} required inputMode="numeric" maxLength={14} className="portal-input" placeholder="000.000.000-00" />
+          <input type="text" value={cpf} onChange={e => setCpf(formatCPF(e.target.value))} required inputMode="numeric" maxLength={14} className="portal-input" placeholder="000.000.000-00" />
           <p className="portal-hint">Certifique-se que o seu CPF está correto</p>
 
           <label className="portal-label">Telefone (WhatsApp) *</label>
