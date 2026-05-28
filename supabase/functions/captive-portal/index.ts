@@ -1713,9 +1713,10 @@ async function handleSubmit(req: Request): Promise<Response> {
     store_id: storeId,
     session_id: sessionId,
     name,
-    email: email || null,
+    email: email ? email.trim().toLowerCase() : null,
     phone: phone || null,
-    cpf: cpf || null,
+    cpf: cpf ? cpf.replace(/\D/g, "") : null,
+
     client_mac: clientMac,
     consented_at: new Date().toISOString(),
     consent_version: consentVersion,
@@ -2076,29 +2077,72 @@ async function handleVerifyCode(req: Request): Promise<Response> {
     }
 
     if (storeId && session.client_mac) {
-      // Daily limit (max 2/day per MAC)
+      // Daily limit (max 2/day) — checked across MAC, CPF and email so a user
+      // cannot bypass by re-registering with different data on the same device,
+      // nor reuse the same CPF/email on different devices.
       const todayStart = new Date();
       todayStart.setUTCHours(0, 0, 0, 0);
-      const { count: dailyAuthCount } = await db
+
+      // Fetch current lead identifiers (cpf/email) tied to this session
+      const { data: currentLead } = await db
+        .from("leads")
+        .select("cpf, email")
+        .eq("session_id", sessionId as string)
+        .maybeSingle();
+
+      const normCpf = (currentLead?.cpf || "").replace(/\D/g, "") || null;
+      const normEmail = (currentLead?.email || "").trim().toLowerCase() || null;
+
+      // 1) Count authorized sessions today for this MAC
+      const { count: macCount } = await db
         .from("captive_sessions")
         .select("id", { count: "exact", head: true })
         .eq("client_mac", session.client_mac)
         .eq("status", "authorized")
         .gte("authorized_at", todayStart.toISOString());
 
-      if ((dailyAuthCount ?? 0) >= 2) {
+      // 2) Find leads today matching cpf OR email, then count their authorized sessions today
+      let identityCount = 0;
+      let matchedBy: string | null = null;
+      if (normCpf || normEmail) {
+        const orParts: string[] = [];
+        if (normCpf) orParts.push(`cpf.eq.${normCpf}`);
+        if (normEmail) orParts.push(`email.eq.${normEmail}`);
+        const { data: idLeads } = await db
+          .from("leads")
+          .select("session_id")
+          .or(orParts.join(","))
+          .gte("created_at", todayStart.toISOString());
+        const ids = Array.from(new Set((idLeads || []).map((l: { session_id: string | null }) => l.session_id).filter(Boolean))) as string[];
+        if (ids.length > 0) {
+          const { count: idCount } = await db
+            .from("captive_sessions")
+            .select("id", { count: "exact", head: true })
+            .in("id", ids)
+            .eq("status", "authorized")
+            .gte("authorized_at", todayStart.toISOString());
+          identityCount = idCount ?? 0;
+        }
+      }
+
+      const effectiveCount = Math.max(macCount ?? 0, identityCount);
+      if ((macCount ?? 0) >= 2) matchedBy = "mac";
+      else if (identityCount >= 2) matchedBy = normCpf && normEmail ? "cpf_or_email" : (normCpf ? "cpf" : "email");
+
+      if (effectiveCount >= 2) {
         dailyLimitReached = true;
-        console.warn(`[verify-code] Daily auth limit reached for MAC ${session.client_mac} (count=${dailyAuthCount})`);
+        console.warn(`[verify-code] Daily auth limit reached (mac=${session.client_mac} cpf=${normCpf ?? "-"} email=${normEmail ?? "-"} matched_by=${matchedBy})`);
         await db.from("captive_sessions")
-          .update({ status: "failed", fail_reason: "DAILY_LIMIT_REACHED" })
+          .update({ status: "failed", fail_reason: `DAILY_LIMIT_REACHED:${matchedBy ?? "unknown"}` })
           .eq("id", sessionId as string);
         logEvent(db, {
           session_id: sessionId as string, trace_id: traceId, store_id: storeId,
           event_type: "daily_limit_reached", step: "unifi", status: "warning",
           error_code: "DAILY_LIMIT_REACHED",
-          payload: { count: dailyAuthCount, mac: session.client_mac },
+          payload: { mac_count: macCount, identity_count: identityCount, matched_by: matchedBy, mac: session.client_mac, cpf_present: !!normCpf, email_present: !!normEmail },
           client_ip: clientIp, user_agent: ua,
         });
+
       } else {
         const authStartedAt = Date.now();
         logEvent(db, {
