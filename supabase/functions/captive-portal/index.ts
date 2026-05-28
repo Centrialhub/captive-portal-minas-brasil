@@ -1510,6 +1510,7 @@ async function handleSubmit(req: Request): Promise<Response> {
           email_invalid: !!(email && !isValidEmail(email)),
           session_id_invalid: !!(sessionId && !isValidUUID(sessionId)),
           phone_invalid: !!(phone && !isValidPhone(phone)),
+          cpf_invalid: !!(cpf && !isValidCPF(cpf)),
         },
         has_name: !!name,
         phone_length: phone ? phone.replace(/\D/g, "").length : 0,
