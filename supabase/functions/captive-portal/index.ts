@@ -610,7 +610,6 @@ async function sendWhatsAppCode(
   }
 
   const phoneE164 = toE164BR(phone);
-  const timestamp = Math.floor(Date.now() / 1000).toString();
   const payload = JSON.stringify({
     phone: phoneE164,
     phone_raw: phone,
@@ -620,30 +619,8 @@ async function sendWhatsAppCode(
     session_id: sessionId,
     public_ip: clientIp,
     expires_at: expiresAt,
-    timestamp,
     type: "otp_verification",
   });
-
-  // HMAC-SHA256 signature so o receptor pode validar autenticidade + integridade
-  // (mitiga replay/spoof se a URL do webhook vazar). Cabeçalhos seguem o padrão
-  // X-Signature-Timestamp + X-Signature (hex). Receptor deve assinar
-  // `${timestamp}.${rawBody}` com o mesmo secret.
-  if (config.secret) {
-    try {
-      const enc = new TextEncoder();
-      const key = await crypto.subtle.importKey(
-        "raw", enc.encode(config.secret),
-        { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
-      );
-      const sigBuf = await crypto.subtle.sign("HMAC", key, enc.encode(`${timestamp}.${payload}`));
-      const sigHex = Array.from(new Uint8Array(sigBuf)).map((b) => b.toString(16).padStart(2, "0")).join("");
-      headers["X-Signature-Timestamp"] = timestamp;
-      headers["X-Signature"] = sigHex;
-    } catch (e) {
-      console.warn("[whatsapp] HMAC sign failed (continuing without signature):", (e as Error).message);
-    }
-  }
-
 
   // Retry with backoff on 5xx / network errors. Do NOT retry 4xx (client error).
   const attempts = 3;
