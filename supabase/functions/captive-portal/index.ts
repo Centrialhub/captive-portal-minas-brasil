@@ -1608,6 +1608,35 @@ async function handleSubmit(req: Request): Promise<Response> {
   if (!consentVersion) return failValidation("CONSENT_REQUIRED", "Consentimento é obrigatório");
   if (sessionId && !isValidUUID(sessionId)) return failValidation("SESSION_ID_INVALID", "session_id inválido");
 
+  // Velocity check: same public IP creating >8 leads with distinct CPFs in 10min
+  // → provável tentativa de bypass/scripting. Bloqueia e registra alerta.
+  if (clientIp && clientIp !== "unknown") {
+    try {
+      const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+      const { data: recent } = await db
+        .from("leads")
+        .select("cpf")
+        .eq("origin_ip", clientIp)
+        .gte("created_at", tenMinAgo)
+        .limit(50);
+      const distinctCpfs = new Set((recent || []).map((r: { cpf: string | null }) => (r.cpf || "").replace(/\D/g, "")).filter(Boolean));
+      if (distinctCpfs.size >= 8) {
+        logEvent(db, {
+          session_id: sessionId && isValidUUID(sessionId) ? sessionId : null,
+          trace_id: traceId,
+          event_type: "velocity_fraud_blocked", step: "form", status: "warning",
+          error_code: "VELOCITY_FRAUD",
+          payload: { distinct_cpfs_10min: distinctCpfs.size, ip: clientIp },
+          client_ip: clientIp, user_agent: ua,
+        });
+        return jsonResponse({ error: "Atividade suspeita detectada. Tente novamente mais tarde.", code: "VELOCITY_FRAUD" }, 429);
+      }
+    } catch (e) {
+      console.warn("[submit] velocity check failed (continuing):", (e as Error).message);
+    }
+  }
+
+
   const clientMac = normalizeMac(body.client_mac);
 
   console.log(`[submit] trace=${traceId} session=${sessionId || "none"} mac=${clientMac || "none"} ip=${clientIpStr}`);
