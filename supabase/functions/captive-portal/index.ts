@@ -554,10 +554,28 @@ async function sendWhatsAppCode(
   clientIp: string | null,
   expiresAt: string
 ): Promise<{ sent: boolean; error?: string }> {
+  // Daily cap per phone: at most 10 OTP sends in a rolling 24h window.
+  // Protects against abuse / webhook cost spikes / spam to the recipient.
+  try {
+    const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const { count: dailyPhoneCount } = await db
+      .from("captive_verifications")
+      .select("id", { count: "exact", head: true })
+      .eq("phone", phone)
+      .gte("created_at", dayAgo);
+    if ((dailyPhoneCount ?? 0) >= 10) {
+      console.warn(`[whatsapp] Daily OTP cap reached for phone (count=${dailyPhoneCount})`);
+      return { sent: false, error: "Limite diário de envios para este número atingido." };
+    }
+  } catch (e) {
+    console.warn("[whatsapp] daily cap check failed (continuing):", (e as Error).message);
+  }
+
   const config = await getWhatsappConfig(db, storeId);
   if (!config) {
     console.warn("WhatsApp webhook not configured");
     return { sent: false, error: "Webhook WhatsApp não configurado." };
+
   }
 
   const headers: Record<string, string> = { "Content-Type": "application/json" };
