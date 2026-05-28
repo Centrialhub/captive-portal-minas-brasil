@@ -81,10 +81,36 @@ function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && email.length <= MAX_EMAIL_LEN;
 }
 
+// Lista de DDDs brasileiros válidos (ANATEL).
+const VALID_BR_DDD = new Set([
+  11,12,13,14,15,16,17,18,19,
+  21,22,24,27,28,
+  31,32,33,34,35,37,38,
+  41,42,43,44,45,46,47,48,49,
+  51,53,54,55,
+  61,62,63,64,65,66,67,68,69,
+  71,73,74,75,77,79,
+  81,82,83,84,85,86,87,88,89,
+  91,92,93,94,95,96,97,98,99,
+]);
+
 function isValidPhone(phone: string): boolean {
-  const digits = phone.replace(/\D/g, "");
-  return digits.length >= 8 && digits.length <= 15;
+  let digits = phone.replace(/\D/g, "");
+  // Aceita formato E.164 com DDI 55
+  if (digits.startsWith("55") && (digits.length === 12 || digits.length === 13)) {
+    digits = digits.slice(2);
+  }
+  // Brasil: 10 (fixo) ou 11 (celular) dígitos = DDD + número
+  if (digits.length !== 10 && digits.length !== 11) return false;
+  const ddd = parseInt(digits.slice(0, 2), 10);
+  if (!VALID_BR_DDD.has(ddd)) return false;
+  // Celular obrigatoriamente começa com 9 (após DDD); 11 dígitos
+  if (digits.length === 11 && digits[2] !== "9") return false;
+  // Fixo: primeiro dígito do número 2-5 (regras ANATEL); 10 dígitos
+  if (digits.length === 10 && !/^[2-5]/.test(digits.slice(2, 3))) return false;
+  return true;
 }
+
 
 function isValidCPF(cpf: string): boolean {
   const digits = (cpf || "").replace(/\D/g, "");
@@ -584,6 +610,7 @@ async function sendWhatsAppCode(
   }
 
   const phoneE164 = toE164BR(phone);
+  const timestamp = Math.floor(Date.now() / 1000).toString();
   const payload = JSON.stringify({
     phone: phoneE164,
     phone_raw: phone,
@@ -593,8 +620,30 @@ async function sendWhatsAppCode(
     session_id: sessionId,
     public_ip: clientIp,
     expires_at: expiresAt,
+    timestamp,
     type: "otp_verification",
   });
+
+  // HMAC-SHA256 signature so o receptor pode validar autenticidade + integridade
+  // (mitiga replay/spoof se a URL do webhook vazar). Cabeçalhos seguem o padrão
+  // X-Signature-Timestamp + X-Signature (hex). Receptor deve assinar
+  // `${timestamp}.${rawBody}` com o mesmo secret.
+  if (config.secret) {
+    try {
+      const enc = new TextEncoder();
+      const key = await crypto.subtle.importKey(
+        "raw", enc.encode(config.secret),
+        { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
+      );
+      const sigBuf = await crypto.subtle.sign("HMAC", key, enc.encode(`${timestamp}.${payload}`));
+      const sigHex = Array.from(new Uint8Array(sigBuf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+      headers["X-Signature-Timestamp"] = timestamp;
+      headers["X-Signature"] = sigHex;
+    } catch (e) {
+      console.warn("[whatsapp] HMAC sign failed (continuing without signature):", (e as Error).message);
+    }
+  }
+
 
   // Retry with backoff on 5xx / network errors. Do NOT retry 4xx (client error).
   const attempts = 3;
@@ -1558,6 +1607,35 @@ async function handleSubmit(req: Request): Promise<Response> {
   if (email && !isValidEmail(email)) return failValidation("EMAIL_INVALID", "E-mail inválido");
   if (!consentVersion) return failValidation("CONSENT_REQUIRED", "Consentimento é obrigatório");
   if (sessionId && !isValidUUID(sessionId)) return failValidation("SESSION_ID_INVALID", "session_id inválido");
+
+  // Velocity check: same public IP creating >8 leads with distinct CPFs in 10min
+  // → provável tentativa de bypass/scripting. Bloqueia e registra alerta.
+  if (clientIp && clientIp !== "unknown") {
+    try {
+      const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+      const { data: recent } = await db
+        .from("leads")
+        .select("cpf")
+        .eq("origin_ip", clientIp)
+        .gte("created_at", tenMinAgo)
+        .limit(50);
+      const distinctCpfs = new Set((recent || []).map((r: { cpf: string | null }) => (r.cpf || "").replace(/\D/g, "")).filter(Boolean));
+      if (distinctCpfs.size >= 8) {
+        logEvent(db, {
+          session_id: sessionId && isValidUUID(sessionId) ? sessionId : null,
+          trace_id: traceId,
+          event_type: "velocity_fraud_blocked", step: "form", status: "warning",
+          error_code: "VELOCITY_FRAUD",
+          payload: { distinct_cpfs_10min: distinctCpfs.size, ip: clientIp },
+          client_ip: clientIp, user_agent: ua,
+        });
+        return jsonResponse({ error: "Atividade suspeita detectada. Tente novamente mais tarde.", code: "VELOCITY_FRAUD" }, 429);
+      }
+    } catch (e) {
+      console.warn("[submit] velocity check failed (continuing):", (e as Error).message);
+    }
+  }
+
 
   const clientMac = normalizeMac(body.client_mac);
 
