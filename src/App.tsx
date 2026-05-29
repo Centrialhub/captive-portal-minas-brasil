@@ -150,6 +150,20 @@ export default function App() {
       sessionIdRef.current = id;
       setSessionId(id);
       try { sessionStorage.setItem("mb_session_id", id); } catch { /* ignore */ }
+
+      // Resume path: server detected a recent submitted session for this MAC
+      // with a still-valid OTP. Skip the form entirely and go to OTP step.
+      if (s && s.resume === "otp") {
+        if (s.phone_masked) setPhone(String(s.phone_masked));
+        api.clientEvent({
+          session_id: id,
+          event: "session_resumed_otp_client",
+          step: "params",
+          status: "info",
+          payload: { phone_masked: s.phone_masked || null },
+        });
+        setStep("otp");
+      }
       return id;
     }).catch(err => {
       api.clientEvent({
@@ -162,6 +176,7 @@ export default function App() {
       });
       return localSid;
     });
+
   }, []);
 
   useEffect(() => {
