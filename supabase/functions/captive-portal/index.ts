@@ -2464,6 +2464,7 @@ async function handleVerifyCode(req: Request): Promise<Response> {
     pending_unifi_confirmation: pendingUnifiConfirmation,
     redirect_url: resolvedRedirectUrl,
     use_hotspot_redirect: useHotspotRedirect,
+    daily_limit_reached: dailyLimitReached,
     trace_id: traceId,
     message,
   });
