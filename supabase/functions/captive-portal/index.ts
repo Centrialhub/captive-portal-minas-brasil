@@ -1476,9 +1476,67 @@ async function handleStart(req: Request): Promise<Response> {
     client_ip: clientIp, user_agent: ua,
   });
 
+  // ============================================================
+  // RESUME: if this MAC already submitted recently (≤5 min) and
+  // has a pending OTP verification, skip the form and reuse the
+  // existing session so the user goes straight to OTP entry.
+  // Prevents infinite re-cadastro loops when the captive browser
+  // is killed while the user checks WhatsApp.
+  // ============================================================
+  if (mac) {
+    try {
+      const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+      const { data: recentSessions } = await db
+        .from("captive_sessions")
+        .select("id, submitted_at, client_mac")
+        .eq("client_mac", mac)
+        .not("submitted_at", "is", null)
+        .gte("submitted_at", fiveMinAgo)
+        .order("submitted_at", { ascending: false })
+        .limit(5);
+
+      if (recentSessions && recentSessions.length > 0) {
+        const ids = recentSessions.map((s: any) => s.id);
+        const nowIso = new Date().toISOString();
+        const { data: pendingV } = await db
+          .from("captive_verifications")
+          .select("session_id, phone, expires_at, status")
+          .in("session_id", ids)
+          .eq("status", "pending")
+          .gt("expires_at", nowIso)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (pendingV && pendingV.session_id) {
+          const ph = String(pendingV.phone || "");
+          const last4 = ph.slice(-4);
+          const phoneMasked = ph.length >= 4 ? `****${last4}` : ph;
+          logEvent(db, {
+            session_id: pendingV.session_id, trace_id: traceId, store_id: detected.store_id,
+            event_type: "session_resumed_otp", step: "params", status: "success",
+            payload: { client_mac: mac, original_supplied_id: body.session_id ?? null },
+            client_ip: clientIp, user_agent: ua,
+          });
+          return jsonResponse({
+            session_id: pendingV.session_id,
+            trace_id: traceId,
+            resume: "otp",
+            phone_masked: phoneMasked,
+            expires_at: pendingV.expires_at,
+            recovered: true,
+          });
+        }
+      }
+    } catch (e) {
+      console.warn(`[start] resume lookup failed: ${(e as Error).message}`);
+    }
+  }
+
   // Allow the frontend to supply a session_id (UUID generated client-side)
   // so /start and /submit can converge on the same row.
   const suppliedSessionId = isValidUUID(body.session_id) ? (body.session_id as string) : null;
+
 
   const paramFields: Record<string, unknown> = {
     client_mac: mac,
