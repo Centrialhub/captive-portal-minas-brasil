@@ -578,10 +578,10 @@ async function sendWhatsAppCode(
   storeName: string,
   sessionId: string | null,
   clientIp: string | null,
-  expiresAt: string
-): Promise<{ sent: boolean; error?: string }> {
+  expiresAt: string,
+  opts?: { requestId?: string; traceId?: string | null }
+): Promise<{ sent: boolean; error?: string; requestId?: string }> {
   // Daily cap per phone: at most 10 OTP sends in a rolling 24h window.
-  // Protects against abuse / webhook cost spikes / spam to the recipient.
   try {
     const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     const { count: dailyPhoneCount } = await db
@@ -597,11 +597,30 @@ async function sendWhatsAppCode(
     console.warn("[whatsapp] daily cap check failed (continuing):", (e as Error).message);
   }
 
+  // In-flight lock per session: prevents two parallel sends to the same user
+  // (e.g. double-click on "reenviar"). 5s window, max 1 hit.
+  if (sessionId) {
+    try {
+      const lock = await db.rpc("rate_limit_hit", {
+        p_key: `wa_send:session:${sessionId}`,
+        p_window_seconds: 5,
+        p_max_hits: 1,
+        p_block_seconds: 0,
+      });
+      const data = lock.data as { allowed?: boolean } | null;
+      if (data && data.allowed === false) {
+        console.warn(`[whatsapp] in-flight lock active for session=${sessionId}`);
+        return { sent: false, error: "Envio em andamento. Aguarde alguns segundos." };
+      }
+    } catch (e) {
+      console.warn("[whatsapp] in-flight lock check failed (continuing):", (e as Error).message);
+    }
+  }
+
   const config = await getWhatsappConfig(db, storeId);
   if (!config) {
     console.warn("WhatsApp webhook not configured");
     return { sent: false, error: "Webhook WhatsApp não configurado." };
-
   }
 
   const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -609,9 +628,17 @@ async function sendWhatsAppCode(
     headers["Authorization"] = `Bearer ${config.secret}`;
   }
 
+  // Idempotency: stable id across retries so the Hub can dedupe.
+  const requestId = opts?.requestId
+    || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
+  headers["X-Request-Id"] = requestId;
+  headers["X-Idempotency-Key"] = requestId;
+
   const phoneE164 = toE164BR(phone);
   const payload = JSON.stringify({
-    phone: phoneE164,
+    request_id: requestId,
+    phone: phoneE164,            // E.164 sem '+': 5531999999999
+    phone_e164: `+${phoneE164}`, // E.164 com '+': +5531999999999
     phone_raw: phone,
     code,
     store_name: storeName,
@@ -622,7 +649,26 @@ async function sendWhatsAppCode(
     type: "otp_verification",
   });
 
-  // Retry with backoff on 5xx / network errors. Do NOT retry 4xx (client error).
+  const logHubResponse = (status: number | null, bodySnippet: string | null, attempt: number, ok: boolean) => {
+    try {
+      db.from("portal_events").insert({
+        session_id: sessionId,
+        trace_id: opts?.traceId || null,
+        store_id: storeId,
+        event_type: "whatsapp_webhook_response",
+        step: "otp",
+        status: ok ? "info" : "warn",
+        payload: {
+          request_id: requestId,
+          attempt,
+          http_status: status,
+          response_snippet: bodySnippet ? bodySnippet.slice(0, 500) : null,
+        },
+      }).then(() => {}, () => {});
+    } catch { /* never throw from logger */ }
+  };
+
+  // Retry with backoff on 5xx / network errors. Do NOT retry 4xx.
   const attempts = 3;
   const backoffsMs = [400, 1200];
   let lastError = "Falha ao enviar código.";
@@ -633,12 +679,15 @@ async function sendWhatsAppCode(
     try {
       const res = await fetch(config.url, { method: "POST", headers, body: payload, signal: ac.signal });
       clearTimeout(timer);
-      if (res.ok) return { sent: true };
+      let bodyText: string | null = null;
+      try { bodyText = await res.text(); } catch { /* ignore */ }
+      logHubResponse(res.status, bodyText, i + 1, res.ok);
 
-      // 4xx → don't retry, surface immediately
+      if (res.ok) return { sent: true, requestId };
+
       if (res.status >= 400 && res.status < 500) {
         console.error(`WhatsApp webhook HTTP ${res.status} (no retry)`);
-        return { sent: false, error: `Webhook retornou HTTP ${res.status}` };
+        return { sent: false, error: `Webhook retornou HTTP ${res.status}`, requestId };
       }
       lastError = `Webhook retornou HTTP ${res.status}`;
       console.warn(`WhatsApp webhook attempt ${i + 1}/${attempts} failed: ${lastError}`);
@@ -647,10 +696,11 @@ async function sendWhatsAppCode(
       const isAbort = (e as Error).name === "AbortError";
       lastError = isAbort ? "Timeout ao enviar código." : "Erro de rede ao enviar código.";
       console.warn(`WhatsApp webhook attempt ${i + 1}/${attempts} error: ${isAbort ? "timeout (8s)" : (e as Error).message}`);
+      logHubResponse(null, lastError, i + 1, false);
     }
     if (i < attempts - 1) await new Promise((r) => setTimeout(r, backoffsMs[i]));
   }
-  return { sent: false, error: lastError };
+  return { sent: false, error: lastError, requestId };
 }
 
 
