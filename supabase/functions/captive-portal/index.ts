@@ -579,7 +579,7 @@ async function sendWhatsAppCode(
   sessionId: string | null,
   clientIp: string | null,
   expiresAt: string,
-  opts?: { requestId?: string; traceId?: string | null }
+  opts?: { requestId?: string; traceId?: string | null; clientMac?: string | null }
 ): Promise<{ sent: boolean; error?: string; requestId?: string }> {
   // Daily cap per phone: at most 10 OTP sends in a rolling 24h window.
   try {
@@ -614,6 +614,27 @@ async function sendWhatsAppCode(
       }
     } catch (e) {
       console.warn("[whatsapp] in-flight lock check failed (continuing):", (e as Error).message);
+    }
+  }
+
+  // In-flight lock per MAC: defends against reconnections that spawn a NEW
+  // session_id for the same device (page reload, network drop). 10s/1 hit.
+  const macKey = (opts?.clientMac || "").toUpperCase().replace(/[^A-F0-9]/g, "");
+  if (macKey) {
+    try {
+      const lock = await db.rpc("rate_limit_hit", {
+        p_key: `wa_send:mac:${macKey}`,
+        p_window_seconds: 10,
+        p_max_hits: 1,
+        p_block_seconds: 0,
+      });
+      const data = lock.data as { allowed?: boolean } | null;
+      if (data && data.allowed === false) {
+        console.warn(`[whatsapp] in-flight MAC lock active mac=${macKey}`);
+        return { sent: false, error: "Já enviamos um código há instantes. Aguarde alguns segundos antes de tentar de novo." };
+      }
+    } catch (e) {
+      console.warn("[whatsapp] mac lock check failed (continuing):", (e as Error).message);
     }
   }
 
