@@ -1903,7 +1903,7 @@ async function handleSubmit(req: Request): Promise<Response> {
 
       // Send WhatsApp OTP (the critical background task).
       const otpStartedAt = Date.now();
-      const r = await sendWhatsAppCode(db, storeId, phone, otpCode, storeName, sessionId as string | null, clientIp, expiresAt);
+      const r = await sendWhatsAppCode(db, storeId, phone, otpCode, storeName, sessionId as string | null, clientIp, expiresAt, { requestId: `${sessionId}:0`, traceId });
       const otpLatency = Date.now() - otpStartedAt;
       if (!r.sent) {
         console.warn("[submit] WhatsApp not sent (bg):", r.error);
