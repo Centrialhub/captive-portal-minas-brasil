@@ -2096,14 +2096,23 @@ async function handleRequestCode(req: Request): Promise<Response> {
     status: "pending",
   }).eq("id", existing.id);
 
-  // Detect store name for the message
+  // Detect store name + client_mac (for per-MAC in-flight lock)
   let storeName = "Drogaria Minas Brasil";
   if (existing.store_id) {
     const { data: store } = await db.from("stores").select("name").eq("id", existing.store_id).maybeSingle();
     if (store) storeName = store.name;
   }
+  let macForLock: string | null = null;
+  try {
+    const { data: sess } = await db
+      .from("captive_sessions")
+      .select("client_mac")
+      .eq("id", sessionId as string)
+      .maybeSingle();
+    macForLock = (sess?.client_mac as string | null) || null;
+  } catch { /* ignore */ }
 
-  const whatsappResult = await sendWhatsAppCode(db, existing.store_id, phone, otpCode, storeName, sessionId as string, clientIp, expiresAt, { requestId: `${sessionId}:${existing.resends + 1}` });
+  const whatsappResult = await sendWhatsAppCode(db, existing.store_id, phone, otpCode, storeName, sessionId as string, clientIp, expiresAt, { requestId: `${sessionId}:${existing.resends + 1}`, clientMac: macForLock });
 
   if (!whatsappResult.sent) {
     return errorResponse(whatsappResult.error || "Não foi possível enviar o código.", 503);
