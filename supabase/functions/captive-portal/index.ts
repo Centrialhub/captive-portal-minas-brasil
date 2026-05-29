@@ -2082,7 +2082,7 @@ async function handleRequestCode(req: Request): Promise<Response> {
     if (store) storeName = store.name;
   }
 
-  const whatsappResult = await sendWhatsAppCode(db, existing.store_id, phone, otpCode, storeName, sessionId as string, clientIp, expiresAt);
+  const whatsappResult = await sendWhatsAppCode(db, existing.store_id, phone, otpCode, storeName, sessionId as string, clientIp, expiresAt, { requestId: `${sessionId}:${existing.resends + 1}` });
 
   if (!whatsappResult.sent) {
     return errorResponse(whatsappResult.error || "Não foi possível enviar o código.", 503);
