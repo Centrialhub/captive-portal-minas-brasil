@@ -579,7 +579,7 @@ async function sendWhatsAppCode(
   sessionId: string | null,
   clientIp: string | null,
   expiresAt: string,
-  opts?: { requestId?: string; traceId?: string | null }
+  opts?: { requestId?: string; traceId?: string | null; clientMac?: string | null }
 ): Promise<{ sent: boolean; error?: string; requestId?: string }> {
   // Daily cap per phone: at most 10 OTP sends in a rolling 24h window.
   try {
@@ -614,6 +614,27 @@ async function sendWhatsAppCode(
       }
     } catch (e) {
       console.warn("[whatsapp] in-flight lock check failed (continuing):", (e as Error).message);
+    }
+  }
+
+  // In-flight lock per MAC: defends against reconnections that spawn a NEW
+  // session_id for the same device (page reload, network drop). 10s/1 hit.
+  const macKey = (opts?.clientMac || "").toUpperCase().replace(/[^A-F0-9]/g, "");
+  if (macKey) {
+    try {
+      const lock = await db.rpc("rate_limit_hit", {
+        p_key: `wa_send:mac:${macKey}`,
+        p_window_seconds: 10,
+        p_max_hits: 1,
+        p_block_seconds: 0,
+      });
+      const data = lock.data as { allowed?: boolean } | null;
+      if (data && data.allowed === false) {
+        console.warn(`[whatsapp] in-flight MAC lock active mac=${macKey}`);
+        return { sent: false, error: "Já enviamos um código há instantes. Aguarde alguns segundos antes de tentar de novo." };
+      }
+    } catch (e) {
+      console.warn("[whatsapp] mac lock check failed (continuing):", (e as Error).message);
     }
   }
 
@@ -1903,7 +1924,7 @@ async function handleSubmit(req: Request): Promise<Response> {
 
       // Send WhatsApp OTP (the critical background task).
       const otpStartedAt = Date.now();
-      const r = await sendWhatsAppCode(db, storeId, phone, otpCode, storeName, sessionId as string | null, clientIp, expiresAt, { requestId: `${sessionId}:0`, traceId });
+      const r = await sendWhatsAppCode(db, storeId, phone, otpCode, storeName, sessionId as string | null, clientIp, expiresAt, { requestId: `${sessionId}:0`, traceId, clientMac });
       const otpLatency = Date.now() - otpStartedAt;
       if (!r.sent) {
         console.warn("[submit] WhatsApp not sent (bg):", r.error);
@@ -2075,14 +2096,23 @@ async function handleRequestCode(req: Request): Promise<Response> {
     status: "pending",
   }).eq("id", existing.id);
 
-  // Detect store name for the message
+  // Detect store name + client_mac (for per-MAC in-flight lock)
   let storeName = "Drogaria Minas Brasil";
   if (existing.store_id) {
     const { data: store } = await db.from("stores").select("name").eq("id", existing.store_id).maybeSingle();
     if (store) storeName = store.name;
   }
+  let macForLock: string | null = null;
+  try {
+    const { data: sess } = await db
+      .from("captive_sessions")
+      .select("client_mac")
+      .eq("id", sessionId as string)
+      .maybeSingle();
+    macForLock = (sess?.client_mac as string | null) || null;
+  } catch { /* ignore */ }
 
-  const whatsappResult = await sendWhatsAppCode(db, existing.store_id, phone, otpCode, storeName, sessionId as string, clientIp, expiresAt, { requestId: `${sessionId}:${existing.resends + 1}` });
+  const whatsappResult = await sendWhatsAppCode(db, existing.store_id, phone, otpCode, storeName, sessionId as string, clientIp, expiresAt, { requestId: `${sessionId}:${existing.resends + 1}`, clientMac: macForLock });
 
   if (!whatsappResult.sent) {
     return errorResponse(whatsappResult.error || "Não foi possível enviar o código.", 503);
@@ -2400,7 +2430,7 @@ async function handleVerifyCode(req: Request): Promise<Response> {
   if (authorized) {
     message = "Conectado! Acesso liberado com sucesso.";
   } else if (dailyLimitReached) {
-    message = "Você atingiu o limite de 2 acessos por dia. Tente novamente amanhã.";
+    message = "Limite diário atingido. Você já se conectou 2 vezes hoje nesta rede. Tente novamente amanhã ou procure um atendente da loja.";
   } else if (pendingUnifiConfirmation) {
     message = "Código confirmado. Finalizando liberação do Wi-Fi...";
   } else if (!session?.client_mac) {
@@ -2434,6 +2464,7 @@ async function handleVerifyCode(req: Request): Promise<Response> {
     pending_unifi_confirmation: pendingUnifiConfirmation,
     redirect_url: resolvedRedirectUrl,
     use_hotspot_redirect: useHotspotRedirect,
+    daily_limit_reached: dailyLimitReached,
     trace_id: traceId,
     message,
   });

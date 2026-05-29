@@ -427,6 +427,12 @@ export default function App() {
         const finalUrl = sanitizeCaptiveRedirect(result.redirect_url || redirectUrl);
         setRedirectUrl(finalUrl);
         setStep("success");
+      } else if (result.daily_limit_reached) {
+        // Hard block — no retry, no OTP reset. Show as final state.
+        setError(result.message || "Limite diário de acessos atingido. Tente novamente amanhã.");
+        setOtpCode("");
+        setVerifying(false);
+        return;
       } else {
         setError(result.message || "Cadastro confirmado, mas o UniFi não confirmou a liberação. Desconecte e conecte novamente à rede ou procure atendimento.");
         setOtpCode("");
