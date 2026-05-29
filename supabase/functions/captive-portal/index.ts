@@ -2430,7 +2430,7 @@ async function handleVerifyCode(req: Request): Promise<Response> {
   if (authorized) {
     message = "Conectado! Acesso liberado com sucesso.";
   } else if (dailyLimitReached) {
-    message = "Você atingiu o limite de 2 acessos por dia. Tente novamente amanhã.";
+    message = "Limite diário atingido. Você já se conectou 2 vezes hoje nesta rede. Tente novamente amanhã ou procure um atendente da loja.";
   } else if (pendingUnifiConfirmation) {
     message = "Código confirmado. Finalizando liberação do Wi-Fi...";
   } else if (!session?.client_mac) {
