@@ -2112,20 +2112,16 @@ async function handleRequestCode(req: Request): Promise<Response> {
   const sessionId = body.session_id;
   if (!isValidUUID(sessionId)) return errorResponse("session_id inválido");
 
-  const phone = sanitizeString(body.phone, MAX_PHONE_LEN);
-  if (!phone || !isValidPhone(phone)) return errorResponse("Telefone inválido");
+  const suppliedPhone = sanitizeString(body.phone, MAX_PHONE_LEN);
 
   // Rate limits
   const rlIp = await checkRateLimitDb(db, `reqcode:ip:${clientIp}`, 60, 5, 120);
   if (!rlIp.allowed) return errorResponse("Muitas tentativas. Aguarde.", 429);
 
-  const rlPhone = await checkRateLimitDb(db, `reqcode:phone:${phone}`, 60, 3, 120);
-  if (!rlPhone.allowed) return errorResponse("Muitas tentativas para este número.", 429);
-
   // Find existing pending or expired verification
   const { data: existing } = await db
     .from("captive_verifications")
-    .select("id, resends, created_at, lead_id, store_id, status")
+    .select("id, phone, resends, created_at, lead_id, store_id, status")
     .eq("session_id", sessionId as string)
     .in("status", ["pending", "expired"])
     .order("created_at", { ascending: false })
@@ -2134,6 +2130,14 @@ async function handleRequestCode(req: Request): Promise<Response> {
 
   if (!existing) return errorResponse("Nenhuma verificação pendente para esta sessão.", 404);
   if (existing.resends >= OTP_MAX_RESENDS) return errorResponse("Limite de reenvios atingido.", 429);
+
+  const phone = suppliedPhone && isValidPhone(suppliedPhone)
+    ? suppliedPhone
+    : sanitizeString((existing as { phone?: string | null }).phone, MAX_PHONE_LEN);
+  if (!phone || !isValidPhone(phone)) return errorResponse("Telefone inválido");
+
+  const rlPhone = await checkRateLimitDb(db, `reqcode:phone:${phone}`, 60, 3, 120);
+  if (!rlPhone.allowed) return errorResponse("Muitas tentativas para este número.", 429);
 
   // Cooldown check
   const elapsed = (Date.now() - new Date(existing.created_at).getTime()) / 1000;
