@@ -60,6 +60,7 @@ export default function App() {
   const startPromiseRef = useRef<Promise<string | null> | null>(null);
   const otpCodeRef = useRef("");
   const otpAutoSubmitRef = useRef(false);
+  const verifyingRef = useRef(false);
 
   // Ensure session_id exists before any submit/verify/resend call
   const ensureSession = async (): Promise<string> => {
@@ -390,7 +391,7 @@ export default function App() {
 
   const handleVerify = async (e?: React.FormEvent, codeOverride?: string) => {
     if (e) e.preventDefault();
-    if (verifying) return;
+    if (verifyingRef.current || verifying) return;
     let sid = sessionIdRef.current || sessionId;
     if (!sid) {
       try {
@@ -412,6 +413,7 @@ export default function App() {
       api.clientEvent({ session_id: sid, event: "verify_blocked_reason", step: "otp", status: "warning", payload: { reason: "code_incomplete", length: code.length } });
       return;
     }
+    verifyingRef.current = true;
     setVerifying(true);
     setError("");
 
@@ -437,6 +439,7 @@ export default function App() {
         otpAutoSubmitRef.current = false;
         otpCodeRef.current = "";
         setOtpCode("");
+        verifyingRef.current = false;
         setVerifying(false);
         return;
       }
@@ -466,7 +469,10 @@ export default function App() {
       } else if (result.daily_limit_reached) {
         // Hard block — no retry, no OTP reset. Show as final state.
         setError(result.message || "Limite diário de acessos atingido. Tente novamente amanhã.");
+        otpAutoSubmitRef.current = false;
+        otpCodeRef.current = "";
         setOtpCode("");
+        verifyingRef.current = false;
         setVerifying(false);
         return;
       } else {
@@ -499,6 +505,7 @@ export default function App() {
           setRedirectUrl(safe);
           setStep("success");
           setTimeout(() => { window.location.href = safe; }, 800);
+          verifyingRef.current = false;
           setVerifying(false);
           return;
         }
@@ -506,6 +513,7 @@ export default function App() {
           setSuccessMsg("Conectado com sucesso!");
           setRedirectUrl(sanitizeCaptiveRedirect(recovered.redirect_url || redirectUrl));
           setStep("success");
+          verifyingRef.current = false;
           setVerifying(false);
           return;
         }
@@ -514,6 +522,7 @@ export default function App() {
       setError("Erro ao verificar código. Tente novamente.");
       otpAutoSubmitRef.current = false;
     }
+    verifyingRef.current = false;
     setVerifying(false);
   };
 
