@@ -3349,14 +3349,14 @@ document.getElementById('otp-view').style.display='block';
 document.getElementById('otp-phone-msg').innerHTML='Digite o c\\u00f3digo enviado para <strong>'+(phone||'')+'</strong>';
 var c=document.getElementById('otp-inputs');c.innerHTML='';
 for(var i=0;i<6;i++){var inp=document.createElement('input');inp.type='text';inp.inputMode='numeric';inp.maxLength=1;inp.className='otp-input';
-inp.addEventListener('input',function(){this.value=this.value.replace(/\\D/g,'');if(this.value&&this.nextElementSibling)this.nextElementSibling.focus();checkOtp();});
+inp.addEventListener('input',function(){this.value=this.value.replace(/\\D/g,'');if(this.value&&this.nextElementSibling)this.nextElementSibling.focus();checkOtp();var code=getOtp();if(code.length<6)otpAutoSubmitted=false;if(code.length===6&&!otpAutoSubmitted&&!verifyInFlight){otpAutoSubmitted=true;setTimeout(function(){document.getElementById('verify-btn').click();},250);}});
 inp.addEventListener('keydown',function(e){if(e.key==='Backspace'&&!this.value&&this.previousElementSibling)this.previousElementSibling.focus();});
 c.appendChild(inp);}c.children[0].focus();startCooldown(60);
 }
 function getOtp(){var v='';document.querySelectorAll('.otp-input').forEach(function(i){v+=i.value;});return v;}
 function checkOtp(){document.getElementById('verify-btn').disabled=getOtp().length!==6;}
 document.getElementById('verify-btn').addEventListener('click',function(){
-var code=getOtp();if(!sessionId||code.length!==6)return;var btn=this;btn.disabled=true;btn.textContent='Verificando...';
+var code=getOtp();if(verifyInFlight||!sessionId||code.length!==6)return;verifyInFlight=true;var btn=this;btn.disabled=true;btn.textContent='Verificando...';
 var oe=document.getElementById('otp-error');hideErr(oe);
 function applyVerifyResult(r){
 if(r.use_hotspot_redirect&&r.redirect_url){redirectUrl=sanitizeCaptiveRedirect(r.redirect_url);showSuccess(r.message||'Finalizando libera\\u00e7\\u00e3o do Wi-Fi...',true);setTimeout(function(){location.replace(redirectUrl);},800);return true;}
