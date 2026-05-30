@@ -3369,13 +3369,13 @@ if(err){
 try{simplePostBackup('/verify-code',{session_id:sessionId,code:code,backup_transport:'simple_post'});}catch(e){}
 recoverSubmit(function(rec){
 if(rec&&applyVerifyResult(rec))return;
-showErr(oe,err);btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';
+showErr(oe,err);verifyInFlight=false;otpAutoSubmitted=false;btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';
 });
 return;
 }
-if(r.error){showErr(oe,r.error);btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';document.querySelectorAll('.otp-input').forEach(function(i){i.value='';});document.querySelector('.otp-input').focus();return;}
+if(r.error){showErr(oe,r.error);verifyInFlight=false;otpAutoSubmitted=false;btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';document.querySelectorAll('.otp-input').forEach(function(i){i.value='';});document.querySelector('.otp-input').focus();return;}
 if(applyVerifyResult(r))return;
-showErr(oe,r.message||'Cadastro confirmado, mas o UniFi n\\u00e3o confirmou a libera\\u00e7\\u00e3o. Desconecte e conecte novamente \\u00e0 rede.');btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';document.querySelectorAll('.otp-input').forEach(function(i){i.value='';});document.querySelector('.otp-input').focus();
+showErr(oe,r.message||'Cadastro confirmado, mas o UniFi n\\u00e3o confirmou a libera\\u00e7\\u00e3o. Desconecte e conecte novamente \\u00e0 rede.');verifyInFlight=false;otpAutoSubmitted=false;btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';document.querySelectorAll('.otp-input').forEach(function(i){i.value='';});document.querySelector('.otp-input').focus();
 });
 });
 document.getElementById('resend-btn').addEventListener('click',function(){
