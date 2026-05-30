@@ -58,6 +58,9 @@ export default function App() {
   const cooldownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const startPromiseRef = useRef<Promise<string | null> | null>(null);
+  const otpCodeRef = useRef("");
+  const otpAutoSubmitRef = useRef(false);
+  const verifyingRef = useRef(false);
 
   // Ensure session_id exists before any submit/verify/resend call
   const ensureSession = async (): Promise<string> => {
@@ -375,7 +378,20 @@ export default function App() {
     setSubmitting(false);
   };
 
-  const handleVerify = async () => {
+  const handleOtpChange = (value: string) => {
+    const next = value.replace(/\D/g, "").slice(0, 6);
+    otpCodeRef.current = next;
+    setOtpCode(next);
+    if (next.length < 6) otpAutoSubmitRef.current = false;
+    if (next.length === 6 && !verifying && !otpAutoSubmitRef.current) {
+      otpAutoSubmitRef.current = true;
+      window.setTimeout(() => handleVerify(undefined, next), 250);
+    }
+  };
+
+  const handleVerify = async (e?: React.FormEvent, codeOverride?: string) => {
+    if (e) e.preventDefault();
+    if (verifyingRef.current || verifying) return;
     let sid = sessionIdRef.current || sessionId;
     if (!sid) {
       try {
@@ -392,7 +408,12 @@ export default function App() {
       setError("Sessão não encontrada. Recarregue a página.");
       return;
     }
-    if (otpCode.length !== 6) return;
+    const code = (codeOverride || otpCodeRef.current || otpCode).replace(/\D/g, "").slice(0, 6);
+    if (code.length !== 6) {
+      api.clientEvent({ session_id: sid, event: "verify_blocked_reason", step: "otp", status: "warning", payload: { reason: "code_incomplete", length: code.length } });
+      return;
+    }
+    verifyingRef.current = true;
     setVerifying(true);
     setError("");
 
@@ -402,10 +423,10 @@ export default function App() {
     // Captive Network Assistants on some devices silently drop XHR POST bodies for
     // /verify-code while still letting sendBeacon through. The backend dedupes by
     // session_id so duplicate /verify-code is safe.
-    try { api.verifyCodeBackup({ session_id: sid, code: otpCode }); } catch { /* ignore */ }
+    try { api.verifyCodeBackup({ session_id: sid, code }); } catch { /* ignore */ }
 
     try {
-      const result = await api.verifyCode({ session_id: sid, code: otpCode });
+      const result = await api.verifyCode({ session_id: sid, code });
       api.clientEvent({
         session_id: sid,
         event: "verify_attempt_finished",
@@ -415,7 +436,10 @@ export default function App() {
       });
       if (result.error) {
         setError(result.error);
+        otpAutoSubmitRef.current = false;
+        otpCodeRef.current = "";
         setOtpCode("");
+        verifyingRef.current = false;
         setVerifying(false);
         return;
       }
@@ -445,11 +469,16 @@ export default function App() {
       } else if (result.daily_limit_reached) {
         // Hard block — no retry, no OTP reset. Show as final state.
         setError(result.message || "Limite diário de acessos atingido. Tente novamente amanhã.");
+        otpAutoSubmitRef.current = false;
+        otpCodeRef.current = "";
         setOtpCode("");
+        verifyingRef.current = false;
         setVerifying(false);
         return;
       } else {
         setError(result.message || "Cadastro confirmado, mas o UniFi não confirmou a liberação. Desconecte e conecte novamente à rede ou procure atendimento.");
+        otpAutoSubmitRef.current = false;
+        otpCodeRef.current = "";
         setOtpCode("");
       }
     } catch (err) {
@@ -465,7 +494,7 @@ export default function App() {
       // Backup transport: captive assistants frequently drop the XHR POST response
       // for /verify-code. Fire a sendBeacon/iframe POST and poll /session-status
       // to recover the verify result.
-      try { api.verifyCodeBackup({ session_id: sid, code: otpCode }); } catch { /* ignore */ }
+      try { api.verifyCodeBackup({ session_id: sid, code }); } catch { /* ignore */ }
       const recovered = await recoverAfterSubmitNetworkError(sid);
       if (recovered) {
         api.clientEvent({ session_id: sid, event: "verify_recovery_success", step: "otp", status: "success",
@@ -476,6 +505,7 @@ export default function App() {
           setRedirectUrl(safe);
           setStep("success");
           setTimeout(() => { window.location.href = safe; }, 800);
+          verifyingRef.current = false;
           setVerifying(false);
           return;
         }
@@ -483,13 +513,16 @@ export default function App() {
           setSuccessMsg("Conectado com sucesso!");
           setRedirectUrl(sanitizeCaptiveRedirect(recovered.redirect_url || redirectUrl));
           setStep("success");
+          verifyingRef.current = false;
           setVerifying(false);
           return;
         }
       }
       api.clientEvent({ session_id: sid, event: "verify_recovery_failed", step: "otp", status: "error" });
       setError("Erro ao verificar código. Tente novamente.");
+      otpAutoSubmitRef.current = false;
     }
+    verifyingRef.current = false;
     setVerifying(false);
   };
 
@@ -573,22 +606,24 @@ export default function App() {
 
           {error && <div className="portal-error">{error}</div>}
 
-          <input
-            type="text"
-            inputMode="numeric"
-            maxLength={6}
-            value={otpCode}
-            onChange={e => setOtpCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
-            className="portal-input portal-otp-input"
-            placeholder="000000"
-            autoFocus
-          />
+          <form onSubmit={handleVerify}>
+            <input
+              type="text"
+              inputMode="numeric"
+              maxLength={6}
+              value={otpCode}
+              onChange={e => handleOtpChange(e.target.value)}
+              className="portal-input portal-otp-input"
+              placeholder="000000"
+              autoFocus
+            />
 
-          <button onClick={handleVerify} disabled={verifying || otpCode.length !== 6} className="portal-btn">
-            {verifying ? "Verificando..." : "Verificar código"}
-          </button>
+            <button type="submit" disabled={verifying || otpCode.length !== 6} className="portal-btn">
+              {verifying ? "Verificando..." : "Verificar código"}
+            </button>
+          </form>
 
-          <button onClick={handleResend} disabled={resending || cooldown > 0} className="portal-btn-secondary">
+          <button type="button" onClick={handleResend} disabled={resending || cooldown > 0} className="portal-btn-secondary">
             {cooldown > 0 ? `Reenviar código (${cooldown}s)` : resending ? "Reenviando..." : "Reenviar código"}
           </button>
 

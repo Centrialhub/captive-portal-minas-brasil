@@ -2112,20 +2112,16 @@ async function handleRequestCode(req: Request): Promise<Response> {
   const sessionId = body.session_id;
   if (!isValidUUID(sessionId)) return errorResponse("session_id inválido");
 
-  const phone = sanitizeString(body.phone, MAX_PHONE_LEN);
-  if (!phone || !isValidPhone(phone)) return errorResponse("Telefone inválido");
+  const suppliedPhone = sanitizeString(body.phone, MAX_PHONE_LEN);
 
   // Rate limits
   const rlIp = await checkRateLimitDb(db, `reqcode:ip:${clientIp}`, 60, 5, 120);
   if (!rlIp.allowed) return errorResponse("Muitas tentativas. Aguarde.", 429);
 
-  const rlPhone = await checkRateLimitDb(db, `reqcode:phone:${phone}`, 60, 3, 120);
-  if (!rlPhone.allowed) return errorResponse("Muitas tentativas para este número.", 429);
-
   // Find existing pending or expired verification
   const { data: existing } = await db
     .from("captive_verifications")
-    .select("id, resends, created_at, lead_id, store_id, status")
+    .select("id, phone, resends, created_at, lead_id, store_id, status")
     .eq("session_id", sessionId as string)
     .in("status", ["pending", "expired"])
     .order("created_at", { ascending: false })
@@ -2134,6 +2130,14 @@ async function handleRequestCode(req: Request): Promise<Response> {
 
   if (!existing) return errorResponse("Nenhuma verificação pendente para esta sessão.", 404);
   if (existing.resends >= OTP_MAX_RESENDS) return errorResponse("Limite de reenvios atingido.", 429);
+
+  const phone = suppliedPhone && isValidPhone(suppliedPhone)
+    ? suppliedPhone
+    : sanitizeString((existing as { phone?: string | null }).phone, MAX_PHONE_LEN);
+  if (!phone || !isValidPhone(phone)) return errorResponse("Telefone inválido");
+
+  const rlPhone = await checkRateLimitDb(db, `reqcode:phone:${phone}`, 60, 3, 120);
+  if (!rlPhone.allowed) return errorResponse("Muitas tentativas para este número.", 429);
 
   // Cooldown check
   const elapsed = (Date.now() - new Date(existing.created_at).getTime()) / 1000;
@@ -3306,7 +3310,7 @@ function persist(){try{sessionStorage.setItem('mb_session_id',sessionId);session
 if(!sessionId){sessionId=uuid();persist();}
 var consentVersion='offline-fallback';
 var redirectUrl=sanitizeCaptiveRedirect('${redirectParam}'||null);
-var resendTimer=null,resendSeconds=0;
+var resendTimer=null,resendSeconds=0,verifyInFlight=false,otpAutoSubmitted=false;
 var form=document.getElementById('portal-form');
 var consentCheck=document.getElementById('consent-check');
 var submitBtn=document.getElementById('submit-btn');
@@ -3330,7 +3334,7 @@ req('GET','/bootstrap',null,function(e,d){
 if(d&&d.store&&d.store.name){document.getElementById('store-info').textContent=d.store.city?d.store.name+' \\u2014 '+d.store.city:d.store.name;}
 if(d&&d.consent){document.getElementById('consent-text').textContent=d.consent.text;consentVersion=d.consent.version||consentVersion;}
 },5000);
-req('POST','/start',{session_id:sessionId,client_mac:clientMac,ap_mac:apMac,ssid:ssid,redirect_url:redirectUrl,captive_timestamp:captiveTs,site:siteParam,original_unifi_url_params:unifiOriginalParams,user_agent:navigator.userAgent},function(e,d){if(d&&d.session_id){sessionId=d.session_id;persist();}},6000);
+req('POST','/start',{session_id:sessionId,client_mac:clientMac,ap_mac:apMac,ssid:ssid,redirect_url:redirectUrl,captive_timestamp:captiveTs,site:siteParam,original_unifi_url_params:unifiOriginalParams,user_agent:navigator.userAgent},function(e,d){if(d&&d.session_id){sessionId=d.session_id;persist();if(d.resume==='otp')showOtp(d.phone_masked||'');}},6000);
 function showErr(el,m){el.textContent=m;el.style.display='block';}
 function hideErr(el){el.style.display='none';}
 form.addEventListener('submit',function(ev){
@@ -3349,14 +3353,14 @@ document.getElementById('otp-view').style.display='block';
 document.getElementById('otp-phone-msg').innerHTML='Digite o c\\u00f3digo enviado para <strong>'+(phone||'')+'</strong>';
 var c=document.getElementById('otp-inputs');c.innerHTML='';
 for(var i=0;i<6;i++){var inp=document.createElement('input');inp.type='text';inp.inputMode='numeric';inp.maxLength=1;inp.className='otp-input';
-inp.addEventListener('input',function(){this.value=this.value.replace(/\\D/g,'');if(this.value&&this.nextElementSibling)this.nextElementSibling.focus();checkOtp();});
+inp.addEventListener('input',function(){this.value=this.value.replace(/\\D/g,'');if(this.value&&this.nextElementSibling)this.nextElementSibling.focus();checkOtp();var code=getOtp();if(code.length<6)otpAutoSubmitted=false;if(code.length===6&&!otpAutoSubmitted&&!verifyInFlight){otpAutoSubmitted=true;setTimeout(function(){document.getElementById('verify-btn').click();},250);}});
 inp.addEventListener('keydown',function(e){if(e.key==='Backspace'&&!this.value&&this.previousElementSibling)this.previousElementSibling.focus();});
 c.appendChild(inp);}c.children[0].focus();startCooldown(60);
 }
 function getOtp(){var v='';document.querySelectorAll('.otp-input').forEach(function(i){v+=i.value;});return v;}
 function checkOtp(){document.getElementById('verify-btn').disabled=getOtp().length!==6;}
 document.getElementById('verify-btn').addEventListener('click',function(){
-var code=getOtp();if(!sessionId||code.length!==6)return;var btn=this;btn.disabled=true;btn.textContent='Verificando...';
+var code=getOtp();if(verifyInFlight||!sessionId||code.length!==6)return;verifyInFlight=true;var btn=this;btn.disabled=true;btn.textContent='Verificando...';
 var oe=document.getElementById('otp-error');hideErr(oe);
 function applyVerifyResult(r){
 if(r.use_hotspot_redirect&&r.redirect_url){redirectUrl=sanitizeCaptiveRedirect(r.redirect_url);showSuccess(r.message||'Finalizando libera\\u00e7\\u00e3o do Wi-Fi...',true);setTimeout(function(){location.replace(redirectUrl);},800);return true;}
@@ -3369,13 +3373,13 @@ if(err){
 try{simplePostBackup('/verify-code',{session_id:sessionId,code:code,backup_transport:'simple_post'});}catch(e){}
 recoverSubmit(function(rec){
 if(rec&&applyVerifyResult(rec))return;
-showErr(oe,err);btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';
+showErr(oe,err);verifyInFlight=false;otpAutoSubmitted=false;btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';
 });
 return;
 }
-if(r.error){showErr(oe,r.error);btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';document.querySelectorAll('.otp-input').forEach(function(i){i.value='';});document.querySelector('.otp-input').focus();return;}
+if(r.error){showErr(oe,r.error);verifyInFlight=false;otpAutoSubmitted=false;btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';document.querySelectorAll('.otp-input').forEach(function(i){i.value='';});document.querySelector('.otp-input').focus();return;}
 if(applyVerifyResult(r))return;
-showErr(oe,r.message||'Cadastro confirmado, mas o UniFi n\\u00e3o confirmou a libera\\u00e7\\u00e3o. Desconecte e conecte novamente \\u00e0 rede.');btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';document.querySelectorAll('.otp-input').forEach(function(i){i.value='';});document.querySelector('.otp-input').focus();
+showErr(oe,r.message||'Cadastro confirmado, mas o UniFi n\\u00e3o confirmou a libera\\u00e7\\u00e3o. Desconecte e conecte novamente \\u00e0 rede.');verifyInFlight=false;otpAutoSubmitted=false;btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';document.querySelectorAll('.otp-input').forEach(function(i){i.value='';});document.querySelector('.otp-input').focus();
 });
 });
 document.getElementById('resend-btn').addEventListener('click',function(){
