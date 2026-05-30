@@ -3306,7 +3306,7 @@ function persist(){try{sessionStorage.setItem('mb_session_id',sessionId);session
 if(!sessionId){sessionId=uuid();persist();}
 var consentVersion='offline-fallback';
 var redirectUrl=sanitizeCaptiveRedirect('${redirectParam}'||null);
-var resendTimer=null,resendSeconds=0;
+var resendTimer=null,resendSeconds=0,verifyInFlight=false,otpAutoSubmitted=false;
 var form=document.getElementById('portal-form');
 var consentCheck=document.getElementById('consent-check');
 var submitBtn=document.getElementById('submit-btn');
