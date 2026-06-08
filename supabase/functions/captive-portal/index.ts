@@ -2212,6 +2212,20 @@ async function handleVerifyCode(req: Request): Promise<Response> {
     return errorResponse("Código inválido");
   }
 
+  // Dedup: same (session, code) within 8s = same submission, do NOT consume a
+  // second attempt. Returns a benign 200 so the duplicate transport (sendBeacon
+  // backup, captive-portal retry, etc.) is silently absorbed. The primary XHR
+  // path still gets the real result on its own call.
+  if (isDuplicate(`verify:${sessionId}:${code}`)) {
+    logEvent(db, {
+      session_id: sessionId as string, trace_id: traceId,
+      event_type: "otp_verify_deduped", step: "otp", status: "info",
+      payload: { backup_transport: body.backup_transport ?? null },
+      client_ip: clientIp, user_agent: ua,
+    });
+    return jsonResponse({ ok: true, deduped: true, message: "Verificando..." });
+  }
+
   // Rate limits
   const rlIp = await checkRateLimitDb(db, `verify:ip:${clientIp}`, 60, 10, 120);
   if (!rlIp.allowed) return errorResponse("Muitas tentativas. Aguarde.", 429);
