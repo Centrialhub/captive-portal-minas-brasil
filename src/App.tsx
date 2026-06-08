@@ -419,11 +419,12 @@ export default function App() {
 
     api.clientEvent({ session_id: sid, event: "verify_attempt_started", step: "otp", status: "info" });
 
-    // Proactive backup transport: fire sendBeacon/iframe POST in parallel with the XHR.
-    // Captive Network Assistants on some devices silently drop XHR POST bodies for
-    // /verify-code while still letting sendBeacon through. The backend dedupes by
-    // session_id so duplicate /verify-code is safe.
-    try { api.verifyCodeBackup({ session_id: sid, code }); } catch { /* ignore */ }
+    // NOTE: We do NOT fire a proactive backup transport here anymore. Firing both
+    // the XHR and the sendBeacon/iframe POST in parallel caused /verify-code to be
+    // handled twice, consuming TWO OTP attempts per single user submission and
+    // crashing the authorization rate. The XHR catch handler below still fires
+    // verifyCodeBackup() when the XHR genuinely fails, which is enough to recover
+    // from Captive Network Assistants that drop the response body.
 
     try {
       const result = await api.verifyCode({ session_id: sid, code });
