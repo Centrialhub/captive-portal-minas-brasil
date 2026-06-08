@@ -2212,19 +2212,35 @@ async function handleVerifyCode(req: Request): Promise<Response> {
     return errorResponse("Código inválido");
   }
 
-  // Dedup: same (session, code) within 8s = same submission, do NOT consume a
-  // second attempt. Returns a benign 200 so the duplicate transport (sendBeacon
-  // backup, captive-portal retry, etc.) is silently absorbed. The primary XHR
-  // path still gets the real result on its own call.
-  if (isDuplicate(`verify:${sessionId}:${code}`)) {
-    logEvent(db, {
-      session_id: sessionId as string, trace_id: traceId,
-      event_type: "otp_verify_deduped", step: "otp", status: "info",
-      payload: { backup_transport: body.backup_transport ?? null },
-      client_ip: clientIp, user_agent: ua,
+  // Dedup: same (session, code) within 10s = same submission. We use the
+  // DB-backed rate_limit_hit RPC because in-memory dedup is per-isolate and
+  // Edge Functions run many isolates in parallel — two concurrent verify
+  // requests landing on different isolates would otherwise both pass the
+  // in-memory check and each consume an OTP attempt. Atomic upsert in
+  // Postgres guarantees only the first request proceeds.
+  try {
+    const { data: dedupRes } = await db.rpc("rate_limit_hit", {
+      p_key: `verify_dedup:${sessionId}:${code}`,
+      p_window_seconds: 10,
+      p_max_hits: 1,
+      p_block_seconds: 0,
     });
-    return jsonResponse({ ok: true, deduped: true, message: "Verificando..." });
+    if (dedupRes && (dedupRes as any).allowed === false) {
+      logEvent(db, {
+        session_id: sessionId as string, trace_id: traceId,
+        event_type: "otp_verify_deduped", step: "otp", status: "info",
+        payload: { backup_transport: body.backup_transport ?? null, source: "db_dedup" },
+        client_ip: clientIp, user_agent: ua,
+      });
+      return jsonResponse({ ok: true, deduped: true, message: "Verificando..." });
+    }
+  } catch (e) {
+    // If RPC fails, fall back to in-memory dedup (better than nothing).
+    if (isDuplicate(`verify:${sessionId}:${code}`)) {
+      return jsonResponse({ ok: true, deduped: true, message: "Verificando..." });
+    }
   }
+
 
   // Rate limits
   const rlIp = await checkRateLimitDb(db, `verify:ip:${clientIp}`, 60, 10, 120);
