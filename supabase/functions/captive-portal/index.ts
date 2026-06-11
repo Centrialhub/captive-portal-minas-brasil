@@ -923,6 +923,12 @@ type UnifiAuthOptions = {
   apMac?: string | null;
   ssid?: string | null;
   minutes?: number;
+  // When true, return ok as soon as the controller acknowledges the
+  // authorize-guest command (CMD_ACCEPTED), and continue /stat/sta polling
+  // in the background. Lets the client get a response in ~700ms instead of
+  // ~2.5s, preventing iOS/Android CNA from closing the window before we
+  // render the success screen.
+  fastReturn?: boolean;
 };
 
 type UnifiAuthResult = {
@@ -935,6 +941,8 @@ type UnifiAuthResult = {
   cmd_accepted_at?: string; // ISO when controller accepted authorize-guest
   last_verify_result?: Record<string, unknown>; // diagnostic snapshot
   weak_signal?: boolean; // station has IP/is_guest/recentAssoc but authorized!=true
+  pending_confirmation?: boolean; // set when fastReturn=true and CMD accepted
+  confirm?: Promise<UnifiAuthResult>; // resolves with the final polling result
 };
 
 function isJsonContentType(res: Response): boolean {
