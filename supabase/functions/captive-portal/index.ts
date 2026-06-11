@@ -1096,10 +1096,13 @@ async function unifiAuthorizeByMac(
     return h;
   };
 
+  let closed = false;
+  const closeClient = () => { if (!closed) { closed = true; try { httpClient?.close(); } catch { /* ignore */ } } };
+
   try {
     // Step 1: Fresh login
     let login = await unifiLogin(baseUrl, httpClient, username, password);
-    if (!login.ok) return { ok: false, reason: "UNIFI_LOGIN_FAILED", error: `UniFi login failed: ${login.error}` };
+    if (!login.ok) { closeClient(); return { ok: false, reason: "UNIFI_LOGIN_FAILED", error: `UniFi login failed: ${login.error}` }; }
     let headers = buildHeaders(login);
 
     const origin = parsed.origin;
@@ -1126,9 +1129,9 @@ async function unifiAuthorizeByMac(
     if (pick.remapped) {
       console.log(`[unifi-auth] reason=MAC_REMAPPED_OK portal=${formattedMac} controller=${effectiveMac} ap=${apMacForPayload || "?"}`);
     } else if (!pick.mac) {
-      // Couldn't find any candidate. Try anyway with portal MAC, but flag ambiguity if multiple were close.
       if (pick.candidateCount > 1) {
         console.warn(`[unifi-auth] reason=MAC_RANDOMIZATION_AMBIGUOUS candidates=${pick.candidateCount} ap=${apMacForPayload || "?"}`);
+        closeClient();
         return {
           ok: false,
           reason: "MAC_RANDOMIZATION_AMBIGUOUS",
@@ -1136,10 +1139,8 @@ async function unifiAuthorizeByMac(
           latency_ms: Date.now() - startedAt,
         };
       }
-      // candidateCount === 0 → station list might be stale; proceed with portal MAC
     }
 
-    // Auto-discover ap_mac if missing (causa #12)
     if (!apMacForPayload) {
       const found = stations.find((s) => (s.mac || "").toLowerCase() === effectiveMac);
       if (found?.ap_mac) {
@@ -1180,10 +1181,9 @@ async function unifiAuthorizeByMac(
           return true;
         }
         if (cmd.ok && !cmd.rcOk) {
-          // Logical failure — possible site policy rejection (causa #9)
           lastError = `rc!=ok msg=${cmd.rcMsg || "none"}`;
           if (!policyOverride && /authoriz|reject|policy|limit|timeout/i.test(cmd.rcMsg || "")) {
-            return false; // signal caller to retry with safe minutes
+            return false;
           }
           continue;
         }
@@ -1195,94 +1195,112 @@ async function unifiAuthorizeByMac(
 
     let accepted = await sendOnce(usedMinutes);
     if (!accepted && /msg=/i.test(lastError) && !policyOverride) {
-      // Retry once with safe 15 minutes (causa #9)
       console.warn(`[unifi-auth] reason=SITE_POLICY_OVERRIDE retrying with minutes=15 (was ${usedMinutes}, error=${lastError})`);
       policyOverride = true;
       usedMinutes = 15;
       accepted = await sendOnce(usedMinutes);
     }
     if (!accepted) {
+      closeClient();
       return { ok: false, reason: "UNIFI_CMD_REJECTED", error: lastError || "command rejected", latency_ms: Date.now() - startedAt };
     }
 
-    // Step 4: Polling with backoff + re-emission (causa #7)
-    const staUrl = activeUrl.replace("/cmd/stamgr", "/stat/sta");
-    let confirmed = false;
-    let verifyError = "controller did not confirm authorized client";
-    let weakSignal = false;
-    let lastVerifySnapshot: Record<string, unknown> = { mac: effectiveMac, found: false };
+    // Step 4: Polling extracted into closure so we can run it in the
+    // background when fastReturn is set.
+    const pollConfirmation = async (): Promise<UnifiAuthResult> => {
+      const staUrl = activeUrl.replace("/cmd/stamgr", "/stat/sta");
+      let verifyError = "controller did not confirm authorized client";
+      let weakSignal = false;
+      let lastVerifySnapshot: Record<string, unknown> = { mac: effectiveMac, found: false };
 
-    for (let attempt = 1; attempt <= VERIFY_BACKOFF_MS.length; attempt++) {
-      let staRes = await unifiFetchStations(staUrl, headers, httpClient);
-      if (staRes.sessionExpired) {
-        console.warn(`[unifi-auth] reason=UNIFI_SESSION_EXPIRED phase=poll attempt=${attempt} action=re-login`);
-        login = await unifiLogin(baseUrl, httpClient, username, password);
-        if (login.ok) { headers = buildHeaders(login); staRes = await unifiFetchStations(staUrl, headers, httpClient); }
-      }
-      if (staRes.ok && staRes.data) {
-        const found = staRes.data.find((s) => (s.mac || "").toLowerCase() === effectiveMac);
-        if (found) {
-          const hasIp = !!found.ip;
-          const recentAssoc = typeof found.assoc_time === "number" && found.assoc_time >= cmdSentAt - 2;
-          const ms = Date.now() - startedAt;
-          lastVerifySnapshot = {
-            mac: effectiveMac, found: true,
-            authorized: found.authorized === true,
-            is_guest: !!found.is_guest,
-            ip: found.ip || null,
-            essid: found.essid || null,
-            ap_mac: found.ap_mac || null,
-            assoc_time: found.assoc_time || null,
-            recent_assoc: recentAssoc,
-            attempt, latency_ms: ms,
-          };
-          // STRICT: only authorized=true is treated as confirmed liberation.
-          // Having an IP / is_guest / recent assoc is NOT enough — captive
-          // clients can satisfy those even while still blocked.
-          if (found.authorized === true) {
-            confirmed = true;
-            console.log(`[unifi-auth] reason=AUTH_CONFIRMED mac=${effectiveMac} ap=${found.ap_mac || "-"} ip=${found.ip || "-"} attempts=${attempt} ms=${ms}`);
-            return {
-              ok: true, effective_mac: effectiveMac.replace(/:/g, "").toUpperCase(),
-              ap_mac_used: apMacForPayload, latency_ms: ms,
-              cmd_accepted_at: cmdAcceptedAtIso,
-              last_verify_result: { ...lastVerifySnapshot, verify_error: null },
-            };
+      try {
+        for (let attempt = 1; attempt <= VERIFY_BACKOFF_MS.length; attempt++) {
+          let staRes = await unifiFetchStations(staUrl, headers, httpClient);
+          if (staRes.sessionExpired) {
+            console.warn(`[unifi-auth] reason=UNIFI_SESSION_EXPIRED phase=poll attempt=${attempt} action=re-login`);
+            login = await unifiLogin(baseUrl, httpClient, username, password);
+            if (login.ok) { headers = buildHeaders(login); staRes = await unifiFetchStations(staUrl, headers, httpClient); }
           }
-          if (hasIp && recentAssoc && found.is_guest) {
-            weakSignal = true;
-            verifyError = `WEAK_SIGNAL_ONLY: station has IP/is_guest/recentAssoc but authorized!=true (mac=${effectiveMac} ip=${found.ip})`;
-          } else {
-            verifyError = `MAC ${effectiveMac} found but authorized=${String(found.authorized)} ip=${found.ip || "-"}`;
+          if (staRes.ok && staRes.data) {
+            const found = staRes.data.find((s) => (s.mac || "").toLowerCase() === effectiveMac);
+            if (found) {
+              const hasIp = !!found.ip;
+              const recentAssoc = typeof found.assoc_time === "number" && found.assoc_time >= cmdSentAt - 2;
+              const ms = Date.now() - startedAt;
+              lastVerifySnapshot = {
+                mac: effectiveMac, found: true,
+                authorized: found.authorized === true,
+                is_guest: !!found.is_guest,
+                ip: found.ip || null,
+                essid: found.essid || null,
+                ap_mac: found.ap_mac || null,
+                assoc_time: found.assoc_time || null,
+                recent_assoc: recentAssoc,
+                attempt, latency_ms: ms,
+              };
+              if (found.authorized === true) {
+                console.log(`[unifi-auth] reason=AUTH_CONFIRMED mac=${effectiveMac} ap=${found.ap_mac || "-"} ip=${found.ip || "-"} attempts=${attempt} ms=${ms}`);
+                return {
+                  ok: true, effective_mac: effectiveMac.replace(/:/g, "").toUpperCase(),
+                  ap_mac_used: apMacForPayload, latency_ms: ms,
+                  cmd_accepted_at: cmdAcceptedAtIso,
+                  last_verify_result: { ...lastVerifySnapshot, verify_error: null },
+                };
+              }
+              if (hasIp && recentAssoc && found.is_guest) {
+                weakSignal = true;
+                verifyError = `WEAK_SIGNAL_ONLY: station has IP/is_guest/recentAssoc but authorized!=true (mac=${effectiveMac} ip=${found.ip})`;
+              } else {
+                verifyError = `MAC ${effectiveMac} found but authorized=${String(found.authorized)} ip=${found.ip || "-"}`;
+              }
+            } else {
+              lastVerifySnapshot = { mac: effectiveMac, found: false, total_stations: staRes.data.length, attempt };
+              verifyError = `MAC ${effectiveMac} not in /stat/sta (total=${staRes.data.length})`;
+            }
+          } else if (staRes.error) {
+            verifyError = staRes.error;
+            lastVerifySnapshot = { mac: effectiveMac, found: false, sta_error: staRes.error, attempt };
           }
-        } else {
-          lastVerifySnapshot = { mac: effectiveMac, found: false, total_stations: staRes.data.length, attempt };
-          verifyError = `MAC ${effectiveMac} not in /stat/sta (total=${staRes.data.length})`;
+          console.warn(`[unifi-auth] poll attempt=${attempt}/${VERIFY_BACKOFF_MS.length}: ${verifyError}`);
+
+          if (attempt < VERIFY_BACKOFF_MS.length) {
+            await new Promise((r) => setTimeout(r, VERIFY_BACKOFF_MS[attempt - 1]));
+          }
         }
-      } else if (staRes.error) {
-        verifyError = staRes.error;
-        lastVerifySnapshot = { mac: effectiveMac, found: false, sta_error: staRes.error, attempt };
-      }
-      console.warn(`[unifi-auth] poll attempt=${attempt}/${VERIFY_BACKOFF_MS.length}: ${verifyError}`);
 
-      if (attempt < VERIFY_BACKOFF_MS.length) {
-        await new Promise((r) => setTimeout(r, VERIFY_BACKOFF_MS[attempt - 1]));
+        return {
+          ok: false,
+          reason: "UNIFI_200_BUT_NOT_CONFIRMED",
+          error: verifyError,
+          effective_mac: effectiveMac.replace(/:/g, "").toUpperCase(),
+          ap_mac_used: apMacForPayload,
+          latency_ms: Date.now() - startedAt,
+          cmd_accepted_at: cmdAcceptedAtIso,
+          last_verify_result: { ...lastVerifySnapshot, verify_error: verifyError },
+          weak_signal: weakSignal,
+        };
+      } finally {
+        closeClient();
       }
+    };
+
+    if (options.fastReturn) {
+      // Return immediately on CMD_ACCEPTED; polling continues in background.
+      return {
+        ok: true,
+        effective_mac: effectiveMac.replace(/:/g, "").toUpperCase(),
+        ap_mac_used: apMacForPayload,
+        latency_ms: Date.now() - startedAt,
+        cmd_accepted_at: cmdAcceptedAtIso,
+        pending_confirmation: true,
+        confirm: pollConfirmation(),
+      };
     }
 
-    return {
-      ok: false,
-      reason: "UNIFI_200_BUT_NOT_CONFIRMED",
-      error: verifyError,
-      effective_mac: effectiveMac.replace(/:/g, "").toUpperCase(),
-      ap_mac_used: apMacForPayload,
-      latency_ms: Date.now() - startedAt,
-      cmd_accepted_at: cmdAcceptedAtIso,
-      last_verify_result: { ...lastVerifySnapshot, verify_error: verifyError },
-      weak_signal: weakSignal,
-    };
-  } finally {
-    httpClient?.close();
+    return await pollConfirmation();
+  } catch (err) {
+    closeClient();
+    throw err;
   }
 }
 
