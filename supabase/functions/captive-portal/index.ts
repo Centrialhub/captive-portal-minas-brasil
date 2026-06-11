@@ -2446,13 +2446,23 @@ async function handleVerifyCode(req: Request): Promise<Response> {
         try {
           const authResult = await authorizeClient(
             db, storeId, storeSlug, session.client_mac, sessionId as string, clientIp,
-            { apMac: (session as { ap_mac?: string | null }).ap_mac || null, ssid: (session as { ssid?: string | null }).ssid || null },
+            {
+              apMac: (session as { ap_mac?: string | null }).ap_mac || null,
+              ssid: (session as { ssid?: string | null }).ssid || null,
+              // Fast path: return as soon as the controller acknowledges
+              // authorize-guest (~700ms). Background polling finalizes the
+              // /stat/sta confirmation so the client sees the success screen
+              // before iOS/Android CNA closes the captive window.
+              fastReturn: true,
+            },
           );
           authorized = authResult.ok;
           if (!authResult.ok && authResult.userMessage) authUserMessage = authResult.userMessage;
           logEvent(db, {
             session_id: sessionId as string, trace_id: traceId, store_id: storeId,
-            event_type: authResult.ok ? "unifi_authorize_confirmed" : "unifi_authorize_failed",
+            event_type: authResult.ok
+              ? (authResult.pending_confirmation ? "unifi_authorize_accepted" : "unifi_authorize_confirmed")
+              : "unifi_authorize_failed",
             step: "unifi",
             status: authResult.ok ? "success" : "error",
             error_code: authResult.ok ? null : (authResult.reason || "UNIFI_UNKNOWN"),
@@ -2461,10 +2471,54 @@ async function handleVerifyCode(req: Request): Promise<Response> {
             payload: {
               cmd_accepted_at: authResult.cmd_accepted_at || null,
               last_verify_result: authResult.last_verify_result || null,
+              pending_confirmation: !!authResult.pending_confirmation,
             },
-            session_patch: authResult.ok ? { unifi_confirmed_at: new Date().toISOString() } : undefined,
+            session_patch: authResult.ok && !authResult.pending_confirmation
+              ? { unifi_confirmed_at: new Date().toISOString() }
+              : undefined,
             client_ip: clientIp, user_agent: ua,
           });
+
+          // Background-confirm: when fastReturn returned before /stat/sta
+          // poll, finalize the DB row when the confirmation lands.
+          if (authResult.ok && authResult.pending_confirmation && authResult.confirm) {
+            const bgConfirm = (async () => {
+              try {
+                const final = await authResult.confirm!;
+                const patch: Record<string, unknown> = {};
+                if (final.last_verify_result) patch.unifi_last_verify_result = final.last_verify_result;
+                if (final.ok) {
+                  patch.unifi_confirmed_at = new Date().toISOString();
+                  if (typeof final.latency_ms === "number") patch.auth_latency_ms = final.latency_ms;
+                } else {
+                  // Keep status=authorized (CMD was accepted), but record the
+                  // post-hoc verification failure for traceability.
+                  patch.fail_reason = (final.reason || final.error || "UNIFI_POST_CONFIRM_FAILED").slice(0, 500);
+                }
+                if (Object.keys(patch).length > 0) {
+                  await db.from("captive_sessions").update(patch).eq("id", sessionId as string);
+                }
+                logEvent(db, {
+                  session_id: sessionId as string, trace_id: traceId, store_id: storeId,
+                  event_type: final.ok ? "unifi_authorize_confirmed_bg" : "unifi_authorize_unconfirmed_bg",
+                  step: "unifi",
+                  status: final.ok ? "success" : "warning",
+                  error_code: final.ok ? null : (final.reason || "UNIFI_POST_CONFIRM_FAILED"),
+                  error_message: final.ok ? null : (final.error || null),
+                  latency_ms: typeof final.latency_ms === "number" ? final.latency_ms : null,
+                  payload: { last_verify_result: final.last_verify_result || null, weak_signal: !!final.weak_signal },
+                  client_ip: clientIp, user_agent: ua,
+                });
+              } catch (e) {
+                console.warn(`[verify-code] background confirm failed: ${(e as Error).message}`);
+              }
+            })();
+            // @ts-ignore EdgeRuntime is available at runtime
+            if (typeof EdgeRuntime !== "undefined" && EdgeRuntime?.waitUntil) {
+              // @ts-ignore
+              EdgeRuntime.waitUntil(bgConfirm);
+            }
+          }
         } catch (err) {
           console.error("UniFi authorization error:", (err as Error).message);
           logEvent(db, {
