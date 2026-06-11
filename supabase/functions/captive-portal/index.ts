@@ -1323,8 +1323,8 @@ async function unifiAuthorizeWithRetry(
 async function authorizeClient(
   db: ReturnType<typeof supabaseAdmin>,
   storeId: string | null, storeSlug: string, clientMac: string | null, sessionId: string, clientIp: string,
-  context: { apMac?: string | null; ssid?: string | null } = {},
-): Promise<{ ok: boolean; reason?: string; userMessage?: string; cmd_accepted_at?: string; last_verify_result?: Record<string, unknown> | null }> {
+  context: { apMac?: string | null; ssid?: string | null; fastReturn?: boolean } = {},
+): Promise<{ ok: boolean; reason?: string; userMessage?: string; cmd_accepted_at?: string; last_verify_result?: Record<string, unknown> | null; pending_confirmation?: boolean; confirm?: Promise<UnifiAuthResult> }> {
   if (!storeId) {
     await db.from("captive_sessions").update({ status: "failed", fail_reason: "NO_STORE_CONFIGURED" }).eq("id", sessionId);
     return { ok: false, reason: "NO_STORE_CONFIGURED" };
