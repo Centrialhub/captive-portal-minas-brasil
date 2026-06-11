@@ -1368,7 +1368,7 @@ async function authorizeClient(
   const siteId = store.unifi_site_id || "default";
   const result = await unifiAuthorizeWithRetry(
     store.unifi_controller_url, siteId, clientMac, storeUser, storePass,
-    { apMac: context.apMac || null, ssid: context.ssid || null, minutes: desiredMinutes },
+    { apMac: context.apMac || null, ssid: context.ssid || null, minutes: desiredMinutes, fastReturn: !!context.fastReturn },
   );
 
   // Persist UniFi audit columns regardless of outcome
@@ -1378,6 +1378,9 @@ async function authorizeClient(
 
   if (result.ok) {
     Object.assign(auditUpdate, {
+      // When fastReturn ack'd CMD but not yet confirmed, mark as authorized
+      // optimistically; the background confirm will downgrade to "failed" if
+      // /stat/sta doesn't see the MAC.
       status: "authorized",
       authorized_at: new Date().toISOString(),
       auth_latency_ms: result.latency_ms ?? null,
@@ -1395,9 +1398,16 @@ async function authorizeClient(
         ap_mac: result.ap_mac_used || context.apMac || null,
         store_slug: storeSlug, ip: clientIp,
         attempts: result.attempts, latency_ms: result.latency_ms,
+        pending_confirmation: !!result.pending_confirmation,
       },
     });
-    return { ok: true, cmd_accepted_at: result.cmd_accepted_at, last_verify_result: result.last_verify_result || null };
+    return {
+      ok: true,
+      cmd_accepted_at: result.cmd_accepted_at,
+      last_verify_result: result.last_verify_result || null,
+      pending_confirmation: !!result.pending_confirmation,
+      confirm: result.confirm,
+    };
   } else {
     const failReason = (result.reason || result.error || "UNKNOWN").slice(0, 500);
     Object.assign(auditUpdate, {
