@@ -4228,6 +4228,7 @@ Deno.serve(async (req: Request) => {
     if (path === "/admin/settings") return await handleAdminSettings(req);
     if (path === "/admin/stores") return await handleAdminStores(req);
     if (path === "/admin/store-ips") return await handleAdminStoreIps(req, url);
+    if (path === "/admin/access-points") return await handleAdminAccessPoints(req, url);
     if (path === "/admin/leads-xml" && req.method === "GET") return await handleAdminLeadsXml(req, url);
     if (path === "/admin/leads") return await handleAdminLeads(req, url);
     if (path === "/admin/consent") return await handleAdminConsent(req);
