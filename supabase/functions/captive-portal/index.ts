@@ -3215,6 +3215,121 @@ async function handleAdminStoreIps(req: Request, url: URL): Promise<Response> {
   return errorResponse("Method not allowed", 405);
 }
 
+// ========== Admin: Access Points (AP MAC -> Store mapping) ==========
+async function handleAdminAccessPoints(req: Request, url: URL): Promise<Response> {
+  const auth = await requireAdmin(req);
+  if (auth instanceof Response) return auth;
+  const { db } = auth;
+
+  // GET /admin/access-points[?store_id=uuid]  -> list mappings
+  if (req.method === "GET") {
+    const storeId = url.searchParams.get("store_id");
+    let query = db.from("store_access_points")
+      .select("ap_mac, store_id, source, name, last_seen_at, created_at, stores(slug, name)")
+      .order("created_at", { ascending: false });
+    if (storeId && isValidUUID(storeId)) query = query.eq("store_id", storeId);
+    const { data, error } = await query;
+    if (error) return errorResponse(error.message, 500);
+    return jsonResponse(data);
+  }
+
+  // POST /admin/access-points
+  //   { ap_mac, store_id, name? }                              -> manual upsert
+  //   { action: "import_from_controller", store_id }           -> bulk import via /stat/device
+  if (req.method === "POST") {
+    const body = await safeParseJson(req);
+    if (!body) return errorResponse("Invalid JSON");
+
+    // Bulk import action
+    if (body.action === "import_from_controller") {
+      if (!isValidUUID(body.store_id)) return errorResponse("store_id inválido");
+      const { data: store } = await db.from("stores")
+        .select("id, slug, unifi_controller_url, unifi_username, unifi_password, unifi_site_id")
+        .eq("id", body.store_id as string)
+        .maybeSingle();
+      if (!store?.unifi_controller_url) return errorResponse("Loja sem controladora configurada");
+
+      const ctrlUrl = store.unifi_controller_url.replace(/\/+$/, "");
+      const user = store.unifi_username || UNIFI_USERNAME;
+      const pass = store.unifi_password || UNIFI_PASSWORD;
+      const siteId = store.unifi_site_id || "default";
+      const httpClient = createUnifiHttpClient();
+      try {
+        const parsed = new URL(ctrlUrl);
+        const baseUrl = (parsed.origin + parsed.pathname).replace(/\/+$/, "");
+        const login = await unifiLogin(baseUrl, httpClient, user, pass);
+        if (!login.ok || !login.cookie) return errorResponse(`Falha no login UniFi: ${login.error || "unknown"}`, 502);
+        const headers: Record<string, string> = {
+          Cookie: login.csrfToken
+            ? `unifises=${login.cookie}; csrf_token=${login.csrfToken}`
+            : `unifises=${login.cookie}`,
+        };
+        const opts: Record<string, unknown> = { method: "GET", headers, redirect: "manual" };
+        if (httpClient) opts.client = httpClient;
+        const rDev = await fetch(`${baseUrl}/api/s/${siteId}/stat/device`, opts as RequestInit);
+        const devList = await rDev.json().catch(() => null);
+        const aps = Array.isArray(devList?.data)
+          ? devList.data.filter((d: Record<string, unknown>) => d.type === "uap" && typeof d.mac === "string")
+          : [];
+
+        const rows = aps.map((d: Record<string, unknown>) => ({
+          ap_mac: (d.mac as string),
+          store_id: store.id,
+          source: "imported",
+          name: (d.name as string) || null,
+        }));
+
+        if (rows.length === 0) return jsonResponse({ imported: 0, message: "Nenhum AP (uap) encontrado na controladora" });
+
+        const { error: upErr, data: upData } = await db
+          .from("store_access_points")
+          .upsert(rows, { onConflict: "ap_mac" })
+          .select("ap_mac");
+        if (upErr) return errorResponse(upErr.message, 500);
+
+        return jsonResponse({ imported: upData?.length || rows.length, store_slug: store.slug });
+      } catch (err) {
+        return errorResponse((err as Error).message, 502);
+      } finally {
+        httpClient?.close();
+      }
+    }
+
+    // Manual single upsert
+    if (!isValidUUID(body.store_id)) return errorResponse("store_id inválido");
+    const macRaw = sanitizeString(body.ap_mac, 32);
+    if (!macRaw) return errorResponse("ap_mac obrigatório");
+
+    const { data, error } = await db.from("store_access_points")
+      .upsert({
+        ap_mac: macRaw, // trigger normalizes
+        store_id: body.store_id as string,
+        source: "manual",
+        name: sanitizeString(body.name, 100),
+      }, { onConflict: "ap_mac" })
+      .select("ap_mac, store_id, source, name")
+      .single();
+    if (error) return errorResponse(error.message, 500);
+    return jsonResponse(data, 201);
+  }
+
+  // DELETE /admin/access-points  { ap_mac }
+  if (req.method === "DELETE") {
+    const body = await safeParseJson(req);
+    const macRaw = sanitizeString(body?.ap_mac, 32);
+    if (!macRaw) return errorResponse("ap_mac obrigatório");
+    const apMac = macRaw.replace(/[^a-fA-F0-9]/g, "").toUpperCase();
+    if (apMac.length !== 12) return errorResponse("ap_mac inválido");
+    const { error } = await db.from("store_access_points").delete().eq("ap_mac", apMac);
+    if (error) return errorResponse(error.message, 500);
+    return jsonResponse({ ok: true });
+  }
+
+  return errorResponse("Method not allowed", 405);
+}
+
+
+
 // ========== Diagnostic: Test UniFi Connectivity (Admin Only) ==========
 async function handleTestUnifiReach(req: Request): Promise<Response> {
   const auth = await requireAdmin(req);
