@@ -1612,10 +1612,17 @@ async function handleStart(req: Request): Promise<Response> {
   if (!body) return errorResponse("Invalid JSON body");
 
   const traceId = getTraceId(req, body);
-  const detected = await detectStoreFromRequest(db, req);
 
   const mac = normalizeMac(body.client_mac);
   const apMac = normalizeMac(body.ap_mac);
+
+  let detected = await detectStoreFromRequest(db, req, apMac);
+  // If no deterministic mapping resolved a store, probe all controllers to find
+  // the one that currently sees this client MAC (auto-persists AP->store mapping).
+  if (!detected.store_id && mac) {
+    const discovered = await discoverStoreByClientMac(db, mac, apMac);
+    if (discovered) detected = discovered;
+  }
   const captiveTimestamp = sanitizeString(body.captive_timestamp, 32);
   const originalUnifiParams = (body.original_unifi_url_params && typeof body.original_unifi_url_params === "object")
     ? body.original_unifi_url_params
