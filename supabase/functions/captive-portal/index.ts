@@ -1912,11 +1912,16 @@ async function handleSubmit(req: Request): Promise<Response> {
 
 
   const clientMac = normalizeMac(body.client_mac);
+  const submitApMac = normalizeMac(body.ap_mac);
 
   console.log(`[submit] trace=${traceId} session=${sessionId || "none"} mac=${clientMac || "none"} ip=${clientIpStr}`);
 
-  // Detect store: ?store=slug > IP mapping > single active store
-  const detected = await detectStoreFromRequest(db, req);
+  // Detect store: ?store=slug > AP MAC > IP mapping > auto-discovery > single active
+  let detected = await detectStoreFromRequest(db, req, submitApMac);
+  if (!detected.store_id && clientMac) {
+    const discovered = await discoverStoreByClientMac(db, clientMac, submitApMac);
+    if (discovered) detected = discovered;
+  }
   const storeId = detected.store_id;
   const storeSlug = detected.store_slug;
   const redirectUrl = detected.redirect_url;
