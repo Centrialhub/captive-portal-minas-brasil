@@ -303,11 +303,18 @@ function logEvent(db: ReturnType<typeof supabaseAdmin>, args: LogEventArgs): voi
   }
 }
 
-// ========== Detect Store (slug param > IP > single active fallback) ==========
+// ========== Detect Store ==========
+// Priority order (most reliable first):
+//   1. ?store=slug query param          (deterministic, set by UniFi External Portal URL)
+//   2. AP MAC -> store_access_points    (deterministic per physical AP)
+//   3. Public IP -> store_public_ips    (fragile: ISP/NAT shared)
+//   4. Single active store              (only meaningful in 1-store deployments)
+//   5. Generic fallback                 (caller should trigger discoverStoreByClientMac)
 async function detectStoreFromRequest(
   db: ReturnType<typeof supabaseAdmin>,
-  req: Request
-): Promise<{ store_id: string | null; store_slug: string; redirect_url: string | null; store_name: string; store_city: string | null }> {
+  req: Request,
+  apMac?: string | null,
+): Promise<{ store_id: string | null; store_slug: string; redirect_url: string | null; store_name: string; store_city: string | null; detection_source: string }> {
 
   const fallback = {
     store_id: null as string | null,
@@ -315,14 +322,16 @@ async function detectStoreFromRequest(
     redirect_url: null as string | null,
     store_name: "Wi-Fi Drogaria Minas Brasil",
     store_city: null as string | null,
+    detection_source: "fallback_none",
   };
 
-  const storeResult = (s: { id: string; slug: string; name: string; city: string | null; post_auth_redirect_url: string | null }) => ({
+  const storeResult = (s: { id: string; slug: string; name: string; city: string | null; post_auth_redirect_url: string | null }, source: string) => ({
     store_id: s.id,
     store_slug: s.slug,
     redirect_url: s.post_auth_redirect_url || null,
     store_name: s.name,
     store_city: s.city,
+    detection_source: source,
   });
 
   // 1) Check ?store=slug query param (passed by UniFi redirect URL)
@@ -339,13 +348,35 @@ async function detectStoreFromRequest(
 
       if (store) {
         console.log(`Store detected via ?store= param: ${store.slug}`);
-        return storeResult(store);
+        return storeResult(store, "url_param");
       }
       console.warn(`Store slug "${storeSlug}" from URL not found or inactive`);
     }
   } catch { /* ignore URL parse errors */ }
 
-  // 2) Check IP mapping (existing logic)
+  // 2) AP MAC mapping (deterministic per physical AP — works even when all
+  //    controllers share IP/SSID/walled garden)
+  const normApMac = (apMac || "").replace(/[^a-fA-F0-9]/g, "").toUpperCase();
+  if (normApMac.length === 12) {
+    const { data: apMapping } = await db
+      .from("store_access_points")
+      .select("store_id, stores!inner(id, slug, name, city, is_active, post_auth_redirect_url)")
+      .eq("ap_mac", normApMac)
+      .maybeSingle();
+
+    const store = (apMapping as { stores?: { id: string; slug: string; name: string; city: string | null; is_active: boolean; post_auth_redirect_url: string | null } } | null)?.stores;
+    if (store?.is_active) {
+      console.log(`Store detected via AP MAC mapping: ${store.slug} (AP: ${normApMac})`);
+      // Fire-and-forget: refresh last_seen_at
+      db.from("store_access_points")
+        .update({ last_seen_at: new Date().toISOString() })
+        .eq("ap_mac", normApMac)
+        .then(() => {}, (e) => console.warn("[ap-mac] last_seen update failed:", (e as Error)?.message));
+      return storeResult(store, "ap_mac");
+    }
+  }
+
+  // 3) Public IP mapping (legacy fallback)
   const ip = getPublicIp(req);
   if (ip) {
     const { data: ipMapping } = await db
@@ -364,12 +395,12 @@ async function detectStoreFromRequest(
 
       if (store?.is_active) {
         console.log(`Store detected via IP mapping: ${store.slug} (IP: ${ip})`);
-        return storeResult(store);
+        return storeResult(store, "public_ip");
       }
     }
   }
 
-  // 3) Fallback: if exactly one active store exists, use it
+  // 4) Single-active fallback
   const { data: activeStores } = await db
     .from("stores")
     .select("id, slug, name, city, post_auth_redirect_url")
@@ -379,11 +410,105 @@ async function detectStoreFromRequest(
   if (activeStores && activeStores.length === 1) {
     const store = activeStores[0];
     console.log(`Store detected via single-active fallback: ${store.slug}`);
-    return storeResult(store);
+    return storeResult(store, "single_active");
   }
 
-  console.warn(`No store detected (IP: ${ip || "unknown"}, active stores: ${activeStores?.length || 0})`);
+  console.warn(`No store detected (apMac: ${normApMac || "none"}, IP: ${ip || "unknown"}, active stores: ${activeStores?.length || 0})`);
   return fallback;
+}
+
+// ========== Auto-Discovery: probe all controllers to find which one sees the client MAC ==========
+// Used when detectStoreFromRequest cannot resolve a store deterministically.
+// Logs in to every active controller in parallel and queries /stat/sta. If
+// exactly one controller has the client MAC associated, that's the store.
+// On success, persists ap_mac -> store mapping for future O(1) detection.
+async function discoverStoreByClientMac(
+  db: ReturnType<typeof supabaseAdmin>,
+  clientMac: string,
+  apMacHint?: string | null,
+): Promise<{ store_id: string | null; store_slug: string; redirect_url: string | null; store_name: string; store_city: string | null; detection_source: string } | null> {
+  if (!clientMac || clientMac.length !== 12) return null;
+
+  const { data: stores } = await db
+    .from("stores")
+    .select("id, slug, name, city, post_auth_redirect_url, unifi_controller_url, unifi_site_id, unifi_username, unifi_password")
+    .eq("is_active", true)
+    .not("unifi_controller_url", "is", null);
+
+  if (!stores || stores.length === 0) return null;
+
+  const target = clientMac.toLowerCase().match(/.{2}/g)?.join(":") || clientMac.toLowerCase();
+
+  type Hit = { store: typeof stores[number]; apMac: string | null };
+  const probes = stores.map(async (store): Promise<Hit | null> => {
+    const ctrlUrl = (store.unifi_controller_url || "").replace(/\/+$/, "");
+    if (!ctrlUrl) return null;
+    const user = store.unifi_username || UNIFI_USERNAME;
+    const pass = store.unifi_password || UNIFI_PASSWORD;
+    if (!user || !pass) return null;
+    const siteId = store.unifi_site_id || "default";
+    const httpClient = createUnifiHttpClient();
+    try {
+      const parsed = new URL(ctrlUrl);
+      const baseUrl = (parsed.origin + parsed.pathname).replace(/\/+$/, "");
+      const login = await unifiLogin(baseUrl, httpClient, user, pass);
+      if (!login.ok || !login.cookie) return null;
+      const headers: Record<string, string> = {
+        Cookie: login.csrfToken
+          ? `unifises=${login.cookie}; csrf_token=${login.csrfToken}`
+          : `unifises=${login.cookie}`,
+      };
+      const sta = await unifiFetchStations(`${baseUrl}/api/s/${siteId}/stat/sta`, headers, httpClient);
+      if (!sta.ok || !sta.data) return null;
+      const match = sta.data.find((s) => (s.mac || "").toLowerCase() === target);
+      if (!match) return null;
+      return { store, apMac: (match.ap_mac as string) || null };
+    } catch (e) {
+      console.warn(`[discover] probe ${store.slug} failed:`, (e as Error)?.message);
+      return null;
+    } finally {
+      httpClient?.close();
+    }
+  });
+
+  const results = (await Promise.all(probes)).filter((r): r is Hit => r !== null);
+
+  if (results.length === 0) {
+    console.warn(`[discover] no controller sees client ${clientMac}`);
+    return null;
+  }
+  if (results.length > 1) {
+    console.warn(`[discover] AMBIGUOUS: client ${clientMac} visible on ${results.length} controllers: ${results.map((r) => r.store.slug).join(",")} — refusing to guess`);
+    return null;
+  }
+
+  const winner = results[0];
+  console.log(`[discover] client ${clientMac} -> store ${winner.store.slug} (ap=${winner.apMac || "?"})`);
+
+  // Persist AP MAC mapping for future O(1) detection (use AP from probe or hint)
+  const apToPersist = (winner.apMac || apMacHint || "").replace(/[^a-fA-F0-9]/g, "").toUpperCase();
+  if (apToPersist.length === 12) {
+    db.from("store_access_points")
+      .upsert({
+        ap_mac: apToPersist,
+        store_id: winner.store.id,
+        source: "auto_discovered",
+        last_seen_at: new Date().toISOString(),
+      }, { onConflict: "ap_mac" })
+      .then(
+        () => console.log(`[discover] persisted ap ${apToPersist} -> ${winner.store.slug}`),
+        (e) => console.warn(`[discover] persist ap failed:`, (e as Error)?.message),
+      );
+  }
+
+  return {
+    store_id: winner.store.id,
+    store_slug: winner.store.slug,
+    redirect_url: winner.store.post_auth_redirect_url || null,
+    store_name: winner.store.name,
+    store_city: winner.store.city,
+    detection_source: "auto_discovery",
+  };
 }
 
 // ========== Distributed Rate Limiting (Postgres) ==========
