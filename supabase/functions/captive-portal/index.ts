@@ -304,9 +304,10 @@ function logEvent(db: ReturnType<typeof supabaseAdmin>, args: LogEventArgs): voi
 }
 
 // ========== Detect Store ==========
-// Priority order (most reliable first):
-//   1. ?store=slug query param          (deterministic, set by UniFi External Portal URL)
-//   2. AP MAC -> store_access_points    (deterministic per physical AP)
+// Priority order (physical truth first — nginx/UniFi may inject ?store=matriz
+// as a global fallback, but the AP MAC reflects the real physical location):
+//   1. AP MAC -> store_access_points    (deterministic per physical AP — TRUTH)
+//   2. ?store=slug query param          (deterministic only if URL is per-store)
 //   3. Public IP -> store_public_ips    (fragile: ISP/NAT shared)
 //   4. Single active store              (only meaningful in 1-store deployments)
 //   5. Generic fallback                 (caller should trigger discoverStoreByClientMac)
@@ -334,28 +335,9 @@ async function detectStoreFromRequest(
     detection_source: source,
   });
 
-  // 1) Check ?store=slug query param (passed by UniFi redirect URL)
-  try {
-    const url = new URL(req.url);
-    const storeSlug = url.searchParams.get("store");
-    if (storeSlug && isValidSlug(storeSlug)) {
-      const { data: store } = await db
-        .from("stores")
-        .select("id, slug, name, city, is_active, post_auth_redirect_url")
-        .eq("slug", storeSlug)
-        .eq("is_active", true)
-        .maybeSingle();
-
-      if (store) {
-        console.log(`Store detected via ?store= param: ${store.slug}`);
-        return storeResult(store, "url_param");
-      }
-      console.warn(`Store slug "${storeSlug}" from URL not found or inactive`);
-    }
-  } catch { /* ignore URL parse errors */ }
-
-  // 2) AP MAC mapping (deterministic per physical AP — works even when all
-  //    controllers share IP/SSID/walled garden)
+  // 1) AP MAC mapping (deterministic per physical AP — works even when all
+  //    controllers share IP/SSID/walled garden). Takes priority over ?store=
+  //    because nginx may inject a fallback param that masks the real store.
   const normApMac = (apMac || "").replace(/[^a-fA-F0-9]/g, "").toUpperCase();
   if (normApMac.length === 12) {
     const { data: apMapping } = await db
@@ -375,6 +357,26 @@ async function detectStoreFromRequest(
       return storeResult(store, "ap_mac");
     }
   }
+
+  // 2) Check ?store=slug query param (passed by UniFi redirect URL)
+  try {
+    const url = new URL(req.url);
+    const storeSlug = url.searchParams.get("store");
+    if (storeSlug && isValidSlug(storeSlug)) {
+      const { data: store } = await db
+        .from("stores")
+        .select("id, slug, name, city, is_active, post_auth_redirect_url")
+        .eq("slug", storeSlug)
+        .eq("is_active", true)
+        .maybeSingle();
+
+      if (store) {
+        console.log(`Store detected via ?store= param: ${store.slug}`);
+        return storeResult(store, "url_param");
+      }
+      console.warn(`Store slug "${storeSlug}" from URL not found or inactive`);
+    }
+  } catch { /* ignore URL parse errors */ }
 
   // 3) Public IP mapping (legacy fallback)
   const ip = getPublicIp(req);
