@@ -524,6 +524,51 @@ export type Database = {
         }
         Relationships: []
       }
+      store_access_points: {
+        Row: {
+          ap_mac: string
+          created_at: string
+          last_seen_at: string | null
+          name: string | null
+          source: string
+          store_id: string
+          updated_at: string
+        }
+        Insert: {
+          ap_mac: string
+          created_at?: string
+          last_seen_at?: string | null
+          name?: string | null
+          source?: string
+          store_id: string
+          updated_at?: string
+        }
+        Update: {
+          ap_mac?: string
+          created_at?: string
+          last_seen_at?: string | null
+          name?: string | null
+          source?: string
+          store_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "store_access_points_store_id_fkey"
+            columns: ["store_id"]
+            isOneToOne: false
+            referencedRelation: "stores"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "store_access_points_store_id_fkey"
+            columns: ["store_id"]
+            isOneToOne: false
+            referencedRelation: "stores_public"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       store_public_ips: {
         Row: {
           created_at: string
