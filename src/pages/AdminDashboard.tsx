@@ -315,7 +315,7 @@ export default function AdminDashboard() {
               onKeyDown={(e) => { if (e.key === "Enter") loadSessions(); }}
             />
           </Field>
-          <button onClick={() => { loadSessions(); loadAuthCounts(); }} style={btnPrimary}>
+          <button onClick={() => { loadSessions(); loadAuthCounts(); loadAuthAttempts(); }} style={btnPrimary}>
             {loading ? "Carregando…" : "Atualizar"}
           </button>
         </div>
