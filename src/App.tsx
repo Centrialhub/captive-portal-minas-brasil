@@ -1,27 +1,16 @@
 import { useState, useEffect, useRef } from "react";
-import { api, createClientSessionId } from "./lib/api";
-import { getApiBase, getQueryParams, buildSubmitPayload, sanitizeCaptiveRedirect, isValidCPF, formatCPF, type PortalStep } from "./lib/portal-utils";
+import { api } from "./lib/api";
+import { supabase } from "./integrations/supabase/client";
+import {
+  getQueryParams,
+  sanitizeCaptiveRedirect,
+  isValidCPF,
+  formatCPF,
+} from "./lib/portal-utils";
 import logoMinasBrasil from "./assets/logo-minas-brasil.png";
 import "./index.css";
 
-const API_BASE_FOR_TELEMETRY = (() => {
-  try { return getApiBase(); } catch { return ""; }
-})();
-
-async function recoverAfterSubmitNetworkError(sid: string) {
-  const waits = [500, 1200, 2500];
-  for (const w of waits) {
-    await new Promise(r => setTimeout(r, w));
-    try {
-      const status = await api.sessionStatus(sid);
-      if (status?.requires_verification) return status;
-      if (status?.authorized) return status;
-      if (status?.use_hotspot_redirect) return status;
-      if (status?.verified) return status;
-    } catch { /* keep trying */ }
-  }
-  return null;
-}
+type Step = "loading" | "login" | "signup" | "authorizing" | "success" | "error";
 
 interface BootstrapData {
   store: { slug: string | null; name: string; city?: string | null };
@@ -32,524 +21,208 @@ const FALLBACK_BOOT: BootstrapData = {
   store: { slug: null, name: "Drogaria Minas Brasil" },
   consent: {
     version: "1.0",
-    text: "Ao se conectar à rede Wi-Fi da Drogaria Minas Brasil, você concorda com a coleta e tratamento dos seus dados pessoais (nome, CPF, e-mail e telefone) para fins de autenticação, segurança da rede e comunicações promocionais. Seus dados serão tratados conforme a LGPD (Lei nº 13.709/2018). Você pode solicitar a exclusão dos seus dados a qualquer momento.",
+    text:
+      "Ao se conectar à rede Wi-Fi da Drogaria Minas Brasil, você concorda com a coleta e tratamento dos seus dados pessoais (nome, CPF, e-mail e telefone) para fins de autenticação, segurança da rede e comunicações promocionais. Sua senha é armazenada de forma criptografada e serve para acesso recorrente em qualquer unidade. Seus dados serão tratados conforme a LGPD (Lei nº 13.709/2018). Você pode solicitar a exclusão dos seus dados a qualquer momento.",
   },
 };
 
+/** Format Brazilian phone as (DD) 9XXXX-XXXX or (DD) XXXX-XXXX */
+function formatPhoneBR(value: string): string {
+  const d = (value || "").replace(/\D/g, "").slice(0, 11);
+  if (d.length <= 2) return d.length ? `(${d}` : "";
+  if (d.length <= 6) return `(${d.slice(0, 2)}) ${d.slice(2)}`;
+  if (d.length <= 10) return `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`;
+  return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`;
+}
+
 export default function App() {
-  const [step, setStep] = useState<PortalStep>("loading");
+  const [step, setStep] = useState<Step>("loading");
   const [boot, setBoot] = useState<BootstrapData>(FALLBACK_BOOT);
-  const [sessionId, setSessionId] = useState<string | null>(null);
   const [redirectUrl, setRedirectUrl] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+  const silentTriedRef = useRef(false);
 
+  // login form
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+
+  // signup form
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
-  const [phone, setPhone] = useState("");
   const [cpf, setCpf] = useState("");
+  const [phone, setPhone] = useState("");
+  const [password, setPassword] = useState("");
+  const [password2, setPassword2] = useState("");
   const [consented, setConsented] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
 
-  const [otpCode, setOtpCode] = useState("");
-  const [verifying, setVerifying] = useState(false);
-  const [resending, setResending] = useState(false);
-  const [cooldown, setCooldown] = useState(0);
-  const cooldownRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const sessionIdRef = useRef<string | null>(null);
-  const startPromiseRef = useRef<Promise<string | null> | null>(null);
-  const otpCodeRef = useRef("");
-  const otpAutoSubmitRef = useRef(false);
-  const verifyingRef = useRef(false);
-
-  // Ensure session_id exists before any submit/verify/resend call
-  const ensureSession = async (): Promise<string> => {
-    if (sessionIdRef.current) return sessionIdRef.current;
-
-    // If /start is already in-flight, wait for it
-    if (startPromiseRef.current) {
-      try {
-        const id = await startPromiseRef.current;
-        if (id) return id;
-      } catch {
-        // A failed background /start must not poison the whole captive flow.
-        startPromiseRef.current = null;
-      }
-    }
-
-    // Otherwise call /start now
-    const params = getQueryParams();
-    const promise = api.startSession(params).then(s => {
-      const id = s.session_id || null;
-      if (id) {
-        sessionIdRef.current = id;
-        setSessionId(id);
-      }
-      return id;
-    }).catch(err => {
-      startPromiseRef.current = null;
-      throw err;
-    });
-    startPromiseRef.current = promise;
-    const id = await promise;
-    if (!id) throw new Error("Não foi possível criar sessão. Tente novamente.");
-    return id;
-  };
-
-  // Boot: show form immediately, fetch bootstrap + start in background
+  // Boot: fetch bootstrap + try silent login
   useEffect(() => {
-    setStep("form");
-
-    // Hide HTML fallback — React mounted successfully
+    // Hide vanilla-JS fallback
     const fb = document.getElementById("fb");
     if (fb) fb.style.display = "none";
 
-    const params = getQueryParams();
+    // Non-blocking bootstrap (store name / consent text)
+    api.bootstrap().then(
+      (b) => {
+        if (b?.store) setBoot({ store: b.store, consent: b.consent || FALLBACK_BOOT.consent });
+      },
+      () => { /* keep fallback */ },
+    );
 
-    // Fingerprint of the current captive redirect — if UniFi sent us a new
-    // id/ap/ssid/t we must NOT reuse the stored session from a previous
-    // connection attempt.
-    const fingerprint = [
-      params.client_mac || "",
-      params.ap_mac || "",
-      params.ssid || "",
-      params.captive_timestamp || "",
-    ].join("|");
-    const MAX_AGE_MS = 30 * 60 * 1000;
-
-    let localSid: string | null = null;
-    try {
-      const storedSid = sessionStorage.getItem("mb_session_id");
-      const storedFp = sessionStorage.getItem("mb_session_fingerprint");
-      const storedAt = parseInt(sessionStorage.getItem("mb_session_created_at") || "0", 10);
-      const fresh = storedAt && (Date.now() - storedAt) < MAX_AGE_MS;
-      if (storedSid && storedFp === fingerprint && fresh) {
-        localSid = storedSid;
-      }
-    } catch { /* ignore */ }
-
-    if (!localSid) {
-      localSid = createClientSessionId();
+    (async () => {
+      if (silentTriedRef.current) return;
+      silentTriedRef.current = true;
       try {
-        sessionStorage.setItem("mb_session_id", localSid);
-        sessionStorage.setItem("mb_session_fingerprint", fingerprint);
-        sessionStorage.setItem("mb_session_created_at", String(Date.now()));
-      } catch { /* ignore */ }
-    }
-    sessionIdRef.current = localSid;
-    setSessionId(localSid);
-
-    // Bootstrap (non-blocking)
-    api.bootstrap()
-      .then(data => { if (data && !data.error) setBoot(data); })
-      .catch(() => { /* use fallback */ });
-
-    // /start in background — does not block the form
-    startPromiseRef.current = api.startSession({
-      ...params,
-      session_id: localSid,
-    } as any).then(s => {
-      const id = (s && s.session_id) || localSid!;
-      sessionIdRef.current = id;
-      setSessionId(id);
-      try { sessionStorage.setItem("mb_session_id", id); } catch { /* ignore */ }
-
-      // Resume path: server detected a recent submitted session for this MAC
-      // with a still-valid OTP. Skip the form entirely and go to OTP step.
-      if (s && s.resume === "otp") {
-        if (s.phone_masked) setPhone(String(s.phone_masked));
-        api.clientEvent({
-          session_id: id,
-          event: "session_resumed_otp_client",
-          step: "params",
-          status: "info",
-          payload: { phone_masked: s.phone_masked || null },
+        const { data } = await supabase.auth.getSession();
+        const session = data?.session;
+        if (!session?.access_token) {
+          setStep("login");
+          return;
+        }
+        setStep("authorizing");
+        const params = getQueryParams();
+        const result = await api.authorizeExisting({
+          access_token: session.access_token,
+          client_mac: params.client_mac,
+          ap_mac: params.ap_mac,
+          ssid: params.ssid,
+          redirect_url: params.redirect_url,
+          captive_timestamp: params.captive_timestamp,
         });
-        setStep("otp");
+        if (result?.needs_login) {
+          setStep("login");
+          return;
+        }
+        if (result?.authorized) {
+          setSuccessMsg("Conectado com sucesso!");
+          setRedirectUrl(sanitizeCaptiveRedirect(result.redirect_url));
+          setStep("success");
+          return;
+        }
+        // Not authorized but token valid — go to login as safety net
+        setError(result?.fail_reason ? "Não foi possível liberar. Faça login novamente." : "");
+        setStep("login");
+      } catch {
+        setStep("login");
       }
-      return id;
-    }).catch(err => {
-      api.clientEvent({
-        session_id: localSid,
-        event: "start_background_failed",
-        step: "params",
-        status: "warning",
-        error_code: err?.kind || "unknown",
-        error_message: err?.message?.slice(0, 200),
-      });
-      return localSid;
-    });
-
+    })();
   }, []);
 
-  useEffect(() => {
-    return () => { if (cooldownRef.current) clearInterval(cooldownRef.current); };
-  }, []);
-
-  // Restore session_id from sessionStorage on mount (CNA may reload page mid-flow)
-  useEffect(() => {
-    try {
-      const stored = sessionStorage.getItem("mb_session_id");
-      if (stored && !sessionIdRef.current) {
-        sessionIdRef.current = stored;
-        setSessionId(stored);
-      }
-    } catch { /* ignore */ }
-
-    const onErr = (msg: unknown, src?: unknown, line?: unknown) => {
-      try {
-        api.clientEvent({
-          session_id: sessionIdRef.current,
-          event: "window_error",
-          status: "error",
-          error_message: String(msg).slice(0, 200),
-          payload: { src: String(src).slice(0, 200), line: typeof line === "number" ? line : 0 },
-        });
-      } catch { /* ignore */ }
-    };
-    window.addEventListener("error", (e) => onErr(e.message, e.filename, e.lineno));
-    window.addEventListener("unhandledrejection", (e) => onErr(e.reason?.message || e.reason || "unhandledrejection"));
-  }, []);
-
-  // Telemetry on entering OTP step
-  useEffect(() => {
-    if (step === "otp") {
-      api.clientEvent({
-        session_id: sessionIdRef.current,
-        event: "otp_screen_mounted",
-        step: "otp",
-        status: "info",
-        payload: { has_session: !!sessionIdRef.current },
-      });
-    }
-  }, [step]);
-
-  const startCooldown = (sec: number) => {
-    setCooldown(sec);
-    if (cooldownRef.current) clearInterval(cooldownRef.current);
-    cooldownRef.current = setInterval(() => {
-      setCooldown(p => {
-        if (p <= 1) { clearInterval(cooldownRef.current!); return 0; }
-        return p - 1;
-      });
-    }, 1000);
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!consented) return;
-    if (!isValidCPF(cpf)) {
-      setError("CPF inválido. Verifique os dígitos digitados.");
+    if (busy) return;
+    setError("");
+    if (!loginEmail || !loginPassword) {
+      setError("Informe e-mail e senha.");
       return;
     }
-    setSubmitting(true);
-    setError("");
-
-    const params = getQueryParams();
-
-    // Prefer session id from background /start; fall back to local one.
-    let sid: string;
+    setBusy(true);
     try {
-      sid = await ensureSession();
-    } catch {
-      sid = sessionIdRef.current || sessionId || createClientSessionId();
-    }
-    sessionIdRef.current = sid;
-    setSessionId(sid);
-    try { sessionStorage.setItem("mb_session_id", sid); } catch { /* ignore */ }
-
-    api.clientEvent({
-      session_id: sid,
-      event: "submit_attempt_started",
-      step: "form",
-      status: "info",
-      payload: {
-        host: typeof window !== "undefined" ? window.location.hostname : "",
-        api_base: API_BASE_FOR_TELEMETRY,
-        has_client_mac: !!params.client_mac,
-        has_ap_mac: !!params.ap_mac,
-        ssid: params.ssid || null,
-      },
-    });
-
-    const payload = buildSubmitPayload({
-      session_id: sid,
-      name, email, phone, cpf,
-      client_mac: params.client_mac,
-      consent_version: boot.consent?.version || "1.0",
-    });
-
-    api.clientEvent({
-      session_id: sid,
-      event: "submit_payload_ready",
-      step: "form",
-      status: "info",
-      payload: {
-        has_session: !!payload.session_id,
-        has_client_mac: !!payload.client_mac,
-        has_ap_mac: !!payload.ap_mac,
-        has_redirect_url: !!payload.redirect_url,
-        has_captive_timestamp: !!payload.captive_timestamp,
-        phone_length: payload.phone.length,
-        cpf_length: payload.cpf.length,
-      },
-    });
-
-    try {
-      const result = await api.submitLead(payload);
-
-      if (result?.session_id) {
-        sessionIdRef.current = result.session_id;
-        setSessionId(result.session_id);
-        try { sessionStorage.setItem("mb_session_id", result.session_id); } catch { /* ignore */ }
-      }
-
-      api.clientEvent({
-        session_id: sid,
-        event: "submit_attempt_finished",
-        step: "form",
-        status: result?.error ? "error" : "success",
-        payload: { has_error: !!result?.error, requires_verification: !!result?.requires_verification, ok: !!result?.ok },
+      const params = getQueryParams();
+      const result = await api.login({
+        email: loginEmail.trim().toLowerCase(),
+        password: loginPassword,
+        client_mac: params.client_mac,
+        ap_mac: params.ap_mac,
+        ssid: params.ssid,
+        redirect_url: params.redirect_url,
+        captive_timestamp: params.captive_timestamp,
       });
-
       if (result?.error) {
         setError(result.error);
-      } else if (result?.requires_verification) {
-        setRedirectUrl(sanitizeCaptiveRedirect(result.redirect_url));
-        setStep("otp");
-        startCooldown(60);
-      } else if (result?.ok) {
-        setSuccessMsg(result.message || "Cadastro realizado! Você já pode navegar.");
+        setBusy(false);
+        return;
+      }
+      if (result?.access_token && result?.refresh_token) {
+        await supabase.auth.setSession({
+          access_token: result.access_token,
+          refresh_token: result.refresh_token,
+        });
+      }
+      if (result?.authorized) {
+        setSuccessMsg("Conectado com sucesso!");
         setRedirectUrl(sanitizeCaptiveRedirect(result.redirect_url));
         setStep("success");
       } else {
-        setError("Resposta inesperada do servidor. Tente novamente.");
+        setError(
+          "Login realizado, mas o Wi-Fi não confirmou a liberação. Desconecte e conecte-se novamente à rede.",
+        );
       }
-    } catch (err) {
-      console.error("[portal] submit error:", err);
-      const e2 = err as { kind?: string; message?: string };
-      api.clientEvent({
-        session_id: sid,
-        event: "submit_attempt_failed",
-        step: "form",
-        status: "error",
-        error_code: e2?.kind || "unknown",
-        error_message: e2?.message?.slice(0, 200),
-        payload: {
-          host: typeof window !== "undefined" ? window.location.hostname : "",
-          api_base: API_BASE_FOR_TELEMETRY,
-        },
-      });
-      const backupPayload = buildSubmitPayload({
-        session_id: sid,
-        name, email, phone, cpf,
+    } catch {
+      setError("Erro de conexão. Tente novamente.");
+    }
+    setBusy(false);
+  };
+
+  const handleSignup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (busy) return;
+    setError("");
+
+    if (!name || name.trim().length < 2) return setError("Informe seu nome completo.");
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return setError("E-mail inválido.");
+    if (!isValidCPF(cpf)) return setError("CPF inválido.");
+    const phoneDigits = phone.replace(/\D/g, "");
+    if (phoneDigits.length < 10 || phoneDigits.length > 11) return setError("Telefone inválido.");
+    if (password.length < 8) return setError("A senha deve ter ao menos 8 caracteres.");
+    if (!/[A-Za-z]/.test(password) || !/[0-9]/.test(password))
+      return setError("A senha deve conter letras e números.");
+    if (password !== password2) return setError("As senhas não coincidem.");
+    if (!consented) return setError("Você precisa aceitar os termos.");
+
+    setBusy(true);
+    try {
+      const params = getQueryParams();
+      const result = await api.signup({
+        name: name.trim(),
+        email: email.trim().toLowerCase(),
+        cpf: cpf.replace(/\D/g, ""),
+        phone: phoneDigits,
+        password,
         client_mac: params.client_mac,
+        ap_mac: params.ap_mac,
+        ssid: params.ssid,
+        redirect_url: params.redirect_url,
+        captive_timestamp: params.captive_timestamp,
         consent_version: boot.consent?.version || "1.0",
       });
-      api.submitLeadBackup(backupPayload as unknown as Record<string, unknown>);
-
-      // Recovery: backend may have processed /submit even if the response
-      // never made it back. Poll /session-status with backoff.
-      const recovered = await recoverAfterSubmitNetworkError(sid);
-      if (recovered?.requires_verification) {
-        api.clientEvent({ session_id: sid, event: "submit_recovery_success", step: "form", status: "success", payload: { outcome: "otp" } });
-        setRedirectUrl(sanitizeCaptiveRedirect(recovered.redirect_url));
-        setStep("otp");
-        startCooldown(60);
-        setSubmitting(false);
-        return;
-      }
-      if (recovered?.authorized) {
-        api.clientEvent({ session_id: sid, event: "submit_recovery_success", step: "form", status: "success", payload: { outcome: "authorized" } });
-        setSuccessMsg(recovered.message || "Conectado com sucesso!");
-        setRedirectUrl(sanitizeCaptiveRedirect(recovered.redirect_url));
-        setStep("success");
-        setSubmitting(false);
-        return;
-      }
-      api.clientEvent({ session_id: sid, event: "submit_recovery_failed", step: "form", status: "error" });
-
-      const friendly =
-        e2?.kind === "timeout" ? "Tempo esgotado. Verifique o sinal e tente novamente." :
-        e2?.kind === "network" ? "Falha de conexão. Verifique sua rede e tente novamente." :
-        e2?.message || "Erro ao enviar cadastro. Tente novamente.";
-      setError(friendly);
-    }
-    setSubmitting(false);
-  };
-
-  const handleOtpChange = (value: string) => {
-    const next = value.replace(/\D/g, "").slice(0, 6);
-    otpCodeRef.current = next;
-    setOtpCode(next);
-    if (next.length < 6) otpAutoSubmitRef.current = false;
-    if (next.length === 6 && !verifying && !otpAutoSubmitRef.current) {
-      otpAutoSubmitRef.current = true;
-      window.setTimeout(() => handleVerify(undefined, next), 250);
-    }
-  };
-
-  const handleVerify = async (e?: React.FormEvent, codeOverride?: string) => {
-    if (e) e.preventDefault();
-    if (verifyingRef.current || verifying) return;
-    let sid = sessionIdRef.current || sessionId;
-    if (!sid) {
-      try {
-        const stored = sessionStorage.getItem("mb_session_id");
-        if (stored) {
-          sid = stored;
-          sessionIdRef.current = stored;
-          setSessionId(stored);
-        }
-      } catch { /* ignore */ }
-    }
-    if (!sid) {
-      api.clientEvent({ event: "verify_no_session", status: "error" });
-      setError("Sessão não encontrada. Recarregue a página.");
-      return;
-    }
-    const code = (codeOverride || otpCodeRef.current || otpCode).replace(/\D/g, "").slice(0, 6);
-    if (code.length !== 6) {
-      api.clientEvent({ session_id: sid, event: "verify_blocked_reason", step: "otp", status: "warning", payload: { reason: "code_incomplete", length: code.length } });
-      return;
-    }
-    verifyingRef.current = true;
-    setVerifying(true);
-    setError("");
-
-    api.clientEvent({ session_id: sid, event: "verify_attempt_started", step: "otp", status: "info" });
-
-    // NOTE: We do NOT fire a proactive backup transport here anymore. Firing both
-    // the XHR and the sendBeacon/iframe POST in parallel caused /verify-code to be
-    // handled twice, consuming TWO OTP attempts per single user submission and
-    // crashing the authorization rate. The XHR catch handler below still fires
-    // verifyCodeBackup() when the XHR genuinely fails, which is enough to recover
-    // from Captive Network Assistants that drop the response body.
-
-    try {
-      const result = await api.verifyCode({ session_id: sid, code });
-      api.clientEvent({
-        session_id: sid,
-        event: "verify_attempt_finished",
-        step: "otp",
-        status: result?.error ? "error" : (result?.authorized ? "success" : "warning"),
-        payload: { has_error: !!result?.error, authorized: !!result?.authorized, use_hotspot_redirect: !!result?.use_hotspot_redirect },
-      });
-      if (result.error) {
+      if (result?.error) {
         setError(result.error);
-        otpAutoSubmitRef.current = false;
-        otpCodeRef.current = "";
-        setOtpCode("");
-        verifyingRef.current = false;
-        setVerifying(false);
+        setBusy(false);
         return;
       }
-
-      // Hotspot redirect has PRIORITY over authorized flag — backend already
-      // accepted the OTP, and the UniFi controller will finalize liberation
-      // when the browser hits /guest/s/<site>/.
-      // Hotspot redirect: backend may try to send the user to the UniFi
-      // controller (HTTPS, port 8443, raw IP). During the captive flow that
-      // breaks the Android Captive Network Assistant with a cert error.
-      // We sanitize: only HTTP same-domain redirects are allowed; otherwise
-      // we keep the user on the in-app success screen.
-      if (result.use_hotspot_redirect && result.redirect_url) {
-        const safe = sanitizeCaptiveRedirect(result.redirect_url);
-        setSuccessMsg(result.message || "Finalizando liberação do Wi-Fi...");
-        setRedirectUrl(safe);
-        setStep("success");
-        setTimeout(() => { window.location.href = safe; }, 800);
-        return;
+      if (result?.access_token && result?.refresh_token) {
+        await supabase.auth.setSession({
+          access_token: result.access_token,
+          refresh_token: result.refresh_token,
+        });
       }
-
-      if (result.authorized) {
-        setSuccessMsg(result.message || "Conectado com sucesso!");
-        const finalUrl = sanitizeCaptiveRedirect(result.redirect_url || redirectUrl);
-        setRedirectUrl(finalUrl);
+      if (result?.authorized) {
+        setSuccessMsg("Cadastro concluído. Conectado com sucesso!");
+        setRedirectUrl(sanitizeCaptiveRedirect(result.redirect_url));
         setStep("success");
-      } else if (result.daily_limit_reached) {
-        // Hard block — no retry, no OTP reset. Show as final state.
-        setError(result.message || "Limite diário de acessos atingido. Tente novamente amanhã.");
-        otpAutoSubmitRef.current = false;
-        otpCodeRef.current = "";
-        setOtpCode("");
-        verifyingRef.current = false;
-        setVerifying(false);
-        return;
       } else {
-        setError(result.message || "Cadastro confirmado, mas o UniFi não confirmou a liberação. Desconecte e conecte novamente à rede ou procure atendimento.");
-        otpAutoSubmitRef.current = false;
-        otpCodeRef.current = "";
-        setOtpCode("");
+        setError(
+          "Conta criada, mas o Wi-Fi não confirmou a liberação. Desconecte e conecte-se novamente à rede.",
+        );
       }
-    } catch (err) {
-      const e2 = err as { kind?: string; message?: string };
-      api.clientEvent({
-        session_id: sid,
-        event: "verify_attempt_failed",
-        step: "otp",
-        status: "error",
-        error_code: e2?.kind || "unknown",
-        error_message: e2?.message?.slice(0, 200),
-      });
-      // Backup transport: captive assistants frequently drop the XHR POST response
-      // for /verify-code. Fire a sendBeacon/iframe POST and poll /session-status
-      // to recover the verify result.
-      try { api.verifyCodeBackup({ session_id: sid, code }); } catch { /* ignore */ }
-      const recovered = await recoverAfterSubmitNetworkError(sid);
-      if (recovered) {
-        api.clientEvent({ session_id: sid, event: "verify_recovery_success", step: "otp", status: "success",
-          payload: { authorized: !!recovered.authorized, use_hotspot_redirect: !!recovered.use_hotspot_redirect } });
-        if (recovered.use_hotspot_redirect && recovered.redirect_url) {
-          const safe = sanitizeCaptiveRedirect(recovered.redirect_url);
-          setSuccessMsg("Finalizando liberação do Wi-Fi...");
-          setRedirectUrl(safe);
-          setStep("success");
-          setTimeout(() => { window.location.href = safe; }, 800);
-          verifyingRef.current = false;
-          setVerifying(false);
-          return;
-        }
-        if (recovered.authorized) {
-          setSuccessMsg("Conectado com sucesso!");
-          setRedirectUrl(sanitizeCaptiveRedirect(recovered.redirect_url || redirectUrl));
-          setStep("success");
-          verifyingRef.current = false;
-          setVerifying(false);
-          return;
-        }
-      }
-      api.clientEvent({ session_id: sid, event: "verify_recovery_failed", step: "otp", status: "error" });
-      setError("Erro ao verificar código. Tente novamente.");
-      otpAutoSubmitRef.current = false;
-    }
-    verifyingRef.current = false;
-    setVerifying(false);
-  };
-
-  const handleResend = async () => {
-    const sid = sessionIdRef.current || sessionId;
-    if (!sid) { setError("Sessão não encontrada. Recarregue a página."); return; }
-    if (cooldown > 0) return;
-    setResending(true);
-    setError("");
-    try {
-      const result = await api.requestCode({ session_id: sid, phone });
-      if (result.error) setError(result.error);
-      else startCooldown(60);
     } catch {
-      setError("Erro ao reenviar código.");
+      setError("Erro de conexão. Tente novamente.");
     }
-    setResending(false);
+    setBusy(false);
   };
 
-  // ── LOADING ──
-  if (step === "loading") {
+  // ── LOADING / AUTHORIZING ──
+  if (step === "loading" || step === "authorizing") {
     return (
       <div className="portal-wrapper">
         <div className="portal-card" style={{ textAlign: "center" }}>
           <img src={logoMinasBrasil} alt="Drogaria Minas Brasil" className="portal-logo" />
-          <p style={{ color: "#888", marginTop: 12 }}>Carregando...</p>
+          <p style={{ color: "#888", marginTop: 12 }}>
+            {step === "authorizing" ? "Liberando seu acesso..." : "Carregando..."}
+          </p>
         </div>
       </div>
     );
@@ -562,7 +235,9 @@ export default function App() {
         <div className="portal-card" style={{ textAlign: "center" }}>
           <h1 className="portal-title">Erro</h1>
           <p className="portal-subtitle">{error || "Ocorreu um erro inesperado."}</p>
-          <button onClick={() => { setError(""); setStep("form"); }} className="portal-btn">Tentar novamente</button>
+          <button onClick={() => { setError(""); setStep("login"); }} className="portal-btn">
+            Tentar novamente
+          </button>
           <p className="portal-footer">Drogaria Minas Brasil © {new Date().getFullYear()}</p>
         </div>
       </div>
@@ -582,7 +257,11 @@ export default function App() {
           <h1 className="portal-title">Conectado!</h1>
           <p className="portal-subtitle">{successMsg}</p>
           {redirectUrl && (
-            <a href={redirectUrl} className="portal-btn" style={{ display: "inline-block", marginTop: 16, textDecoration: "none" }}>
+            <a
+              href={redirectUrl}
+              className="portal-btn"
+              style={{ display: "inline-block", marginTop: 16, textDecoration: "none" }}
+            >
               Continuar conexão
             </a>
           )}
@@ -592,40 +271,94 @@ export default function App() {
     );
   }
 
-  // ── OTP ──
-  if (step === "otp") {
+  // ── SIGNUP ──
+  if (step === "signup") {
     return (
       <div className="portal-wrapper">
         <div className="portal-card">
           <div style={{ textAlign: "center" }}>
             <img src={logoMinasBrasil} alt="Drogaria Minas Brasil" className="portal-logo" />
+            <p className="portal-slogan">vender barato é tradição</p>
           </div>
-          <h1 className="portal-title">Verificação</h1>
+
+          <h1 className="portal-title">Criar conta</h1>
           <p className="portal-subtitle">
-            Digite o código de 6 dígitos enviado para <strong>{phone}</strong>
+            {boot.store.city ? `${boot.store.name} — ${boot.store.city}` : boot.store.name}
           </p>
 
           {error && <div className="portal-error">{error}</div>}
 
-          <form onSubmit={handleVerify}>
+          <form onSubmit={handleSignup}>
+            <label className="portal-label">Nome *</label>
             <input
-              type="text"
-              inputMode="numeric"
-              maxLength={6}
-              value={otpCode}
-              onChange={e => handleOtpChange(e.target.value)}
-              className="portal-input portal-otp-input"
-              placeholder="000000"
-              autoFocus
+              type="text" value={name} onChange={(e) => setName(e.target.value)}
+              required className="portal-input" placeholder="Seu nome completo"
             />
 
-            <button type="submit" disabled={verifying || otpCode.length !== 6} className="portal-btn">
-              {verifying ? "Verificando..." : "Verificar código"}
+            <label className="portal-label">E-mail *</label>
+            <input
+              type="email" value={email} onChange={(e) => setEmail(e.target.value)}
+              required className="portal-input" placeholder="email@exemplo.com"
+            />
+
+            <label className="portal-label">CPF *</label>
+            <input
+              type="text" value={cpf}
+              onChange={(e) => setCpf(formatCPF(e.target.value))}
+              required inputMode="numeric" maxLength={14}
+              className="portal-input" placeholder="000.000.000-00"
+            />
+
+            <label className="portal-label">Telefone *</label>
+            <input
+              type="tel" value={phone}
+              onChange={(e) => setPhone(formatPhoneBR(e.target.value))}
+              required className="portal-input" placeholder="(11) 99999-9999"
+            />
+
+            <label className="portal-label">Senha *</label>
+            <input
+              type="password" value={password} onChange={(e) => setPassword(e.target.value)}
+              required minLength={8} className="portal-input"
+              placeholder="Mínimo 8 caracteres, letras e números"
+              autoComplete="new-password"
+            />
+
+            <label className="portal-label">Confirmar senha *</label>
+            <input
+              type="password" value={password2} onChange={(e) => setPassword2(e.target.value)}
+              required minLength={8} className="portal-input"
+              placeholder="Digite a senha novamente"
+              autoComplete="new-password"
+            />
+
+            {boot.consent && (
+              <>
+                <details className="portal-terms">
+                  <summary>Termos de Uso e Política de Privacidade (LGPD)</summary>
+                  <p>{boot.consent.text}</p>
+                </details>
+                <label className="portal-checkbox-label">
+                  <input
+                    type="checkbox" checked={consented}
+                    onChange={(e) => setConsented(e.target.checked)}
+                  />
+                  <span>Li e aceito os termos</span>
+                </label>
+              </>
+            )}
+
+            <button type="submit" disabled={busy} className="portal-btn">
+              {busy ? "Criando conta..." : "Criar conta e conectar"}
             </button>
           </form>
 
-          <button type="button" onClick={handleResend} disabled={resending || cooldown > 0} className="portal-btn-secondary">
-            {cooldown > 0 ? `Reenviar código (${cooldown}s)` : resending ? "Reenviando..." : "Reenviar código"}
+          <button
+            type="button"
+            onClick={() => { setError(""); setStep("login"); }}
+            className="portal-btn-secondary"
+          >
+            Já tenho conta
           </button>
 
           <p className="portal-footer">Drogaria Minas Brasil © {new Date().getFullYear()}</p>
@@ -634,7 +367,7 @@ export default function App() {
     );
   }
 
-  // ── FORM ──
+  // ── LOGIN (default) ──
   return (
     <div className="portal-wrapper">
       <div className="portal-card">
@@ -643,44 +376,42 @@ export default function App() {
           <p className="portal-slogan">vender barato é tradição</p>
         </div>
 
-        <h1 className="portal-title">WiFi Gratuito</h1>
+        <h1 className="portal-title">Acessar Wi-Fi</h1>
         <p className="portal-subtitle">
           {boot.store.city ? `${boot.store.name} — ${boot.store.city}` : boot.store.name}
         </p>
 
         {error && <div className="portal-error">{error}</div>}
 
-        <form onSubmit={handleSubmit}>
-          <label className="portal-label">Nome *</label>
-          <input type="text" value={name} onChange={e => setName(e.target.value)} required className="portal-input" placeholder="Seu nome completo" />
-
+        <form onSubmit={handleLogin}>
           <label className="portal-label">E-mail</label>
-          <input type="email" value={email} onChange={e => setEmail(e.target.value)} className="portal-input" placeholder="email@exemplo.com (opcional)" />
+          <input
+            type="email" value={loginEmail}
+            onChange={(e) => setLoginEmail(e.target.value)}
+            required className="portal-input" placeholder="email@exemplo.com"
+            autoComplete="email"
+          />
 
-          <label className="portal-label">CPF *</label>
-          <input type="text" value={cpf} onChange={e => setCpf(formatCPF(e.target.value))} required inputMode="numeric" maxLength={14} className="portal-input" placeholder="000.000.000-00" />
-          <p className="portal-hint">Certifique-se que o seu CPF está correto</p>
+          <label className="portal-label">Senha</label>
+          <input
+            type="password" value={loginPassword}
+            onChange={(e) => setLoginPassword(e.target.value)}
+            required className="portal-input" placeholder="Sua senha"
+            autoComplete="current-password"
+          />
 
-          <label className="portal-label">Telefone (WhatsApp) *</label>
-          <input type="tel" value={phone} onChange={e => setPhone(e.target.value)} required className="portal-input" placeholder="(11) 99999-9999" />
-
-          {boot.consent && (
-            <>
-              <details className="portal-terms">
-                <summary>Termos de Uso e Política de Privacidade (LGPD)</summary>
-                <p>{boot.consent.text}</p>
-              </details>
-              <label className="portal-checkbox-label">
-                <input type="checkbox" checked={consented} onChange={e => setConsented(e.target.checked)} />
-                <span>Li e aceito os termos</span>
-              </label>
-            </>
-          )}
-
-          <button type="submit" disabled={submitting || !consented} className="portal-btn">
-            {submitting ? "Enviando..." : "Conectar ao Wi-Fi"}
+          <button type="submit" disabled={busy} className="portal-btn">
+            {busy ? "Entrando..." : "Entrar"}
           </button>
         </form>
+
+        <button
+          type="button"
+          onClick={() => { setError(""); setStep("signup"); }}
+          className="portal-btn-secondary"
+        >
+          Criar conta
+        </button>
 
         <p className="portal-footer">Drogaria Minas Brasil © {new Date().getFullYear()}</p>
       </div>
