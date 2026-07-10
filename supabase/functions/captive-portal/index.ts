@@ -4020,6 +4020,20 @@ async function handleSignup(req: Request): Promise<Response> {
     payload: { email }, client_ip: clientIp, user_agent: ua,
   });
 
+  // Pre-check: CPF already registered?
+  const { data: cpfExists } = await db
+    .from("profiles").select("id").eq("cpf_digits", cpfDigits).limit(1).maybeSingle();
+  if (cpfExists?.id) {
+    logEvent(db, {
+      trace_id: traceId, event_type: "signup_failed", step: "form", status: "error",
+      error_code: "cpf_already_registered", payload: { email }, client_ip: clientIp,
+    });
+    return jsonResponse({
+      error: "Este CPF já possui conta. Entre com o e-mail cadastrado ou recupere a senha.",
+      code: "cpf_already_registered",
+    }, 409);
+  }
+
   // Create auth user (email confirmed so captive flow can proceed)
   const { data: created, error: createErr } = await db.auth.admin.createUser({
     email,
@@ -4032,9 +4046,11 @@ async function handleSignup(req: Request): Promise<Response> {
     const msg = (createErr?.message || "").toLowerCase();
     let code = "signup_failed";
     let userMsg = "Não foi possível criar a conta. Tente novamente.";
+    let httpStatus = 400;
     if (msg.includes("already") || msg.includes("registered") || msg.includes("exists")) {
       code = "email_already_registered";
-      userMsg = "Este e-mail já está cadastrado. Faça login.";
+      userMsg = "Este e-mail já possui conta. Faça login ou recupere a senha.";
+      httpStatus = 409;
     } else if (msg.includes("password")) {
       code = "weak_password";
       userMsg = "Senha muito fraca.";
@@ -4043,7 +4059,7 @@ async function handleSignup(req: Request): Promise<Response> {
       trace_id: traceId, event_type: "signup_failed", step: "form", status: "error",
       error_code: code, error_message: createErr?.message, payload: { email }, client_ip: clientIp,
     });
-    return jsonResponse({ error: userMsg, code }, 400);
+    return jsonResponse({ error: userMsg, code }, httpStatus);
   }
 
   const userId = created.user.id;
@@ -4060,6 +4076,18 @@ async function handleSignup(req: Request): Promise<Response> {
     console.error("[signup] profile insert failed:", profErr.message);
     // Roll back the auth user so retry works
     try { await db.auth.admin.deleteUser(userId); } catch { /* ignore */ }
+    // Postgres unique_violation on profiles_cpf_digits_key → race with another signup
+    const isCpfDup = (profErr.code === "23505") || /cpf_digits/i.test(profErr.message || "");
+    if (isCpfDup) {
+      logEvent(db, {
+        trace_id: traceId, event_type: "signup_failed", step: "form", status: "error",
+        error_code: "cpf_already_registered", error_message: profErr.message, client_ip: clientIp,
+      });
+      return jsonResponse({
+        error: "Este CPF já possui conta. Entre com o e-mail cadastrado ou recupere a senha.",
+        code: "cpf_already_registered",
+      }, 409);
+    }
     logEvent(db, {
       trace_id: traceId, event_type: "signup_failed", step: "form", status: "error",
       error_code: "profile_insert_failed", error_message: profErr.message, client_ip: clientIp,
