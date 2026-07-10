@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX IF NOT EXISTS profiles_cpf_digits_key ON public.profiles (cpf_digits);
