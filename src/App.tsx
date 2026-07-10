@@ -217,6 +217,28 @@ export default function App() {
     setBusy(false);
   };
 
+  const handleForgot = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (busy) return;
+    setError("");
+    if (!forgotEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(forgotEmail)) {
+      setError("Informe um e-mail válido.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.requestPasswordReset({ email: forgotEmail.trim().toLowerCase() });
+      // Always go to the confirmation screen (avoid account enumeration)
+      setStep("forgot_sent");
+    } catch {
+      // Network glitch — still show the confirmation screen; backend swallowed enumeration risk
+      setStep("forgot_sent");
+    }
+    setBusy(false);
+  };
+
+
+
   // ── LOADING / AUTHORIZING ──
   if (step === "loading" || step === "authorizing") {
     return (
