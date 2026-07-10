@@ -498,6 +498,19 @@ export default function App() {
 
         <button
           type="button"
+          onClick={() => { setError(""); setForgotEmail(loginEmail); setStep("forgot"); }}
+          className="portal-link-btn"
+          style={{
+            background: "none", border: "none", color: "#E30613",
+            textDecoration: "underline", cursor: "pointer", padding: "8px 0",
+            width: "100%", fontSize: 14,
+          }}
+        >
+          Esqueci minha senha
+        </button>
+
+        <button
+          type="button"
           onClick={() => { setError(""); setStep("signup"); }}
           className="portal-btn-secondary"
         >
