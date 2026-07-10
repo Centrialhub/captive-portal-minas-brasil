@@ -48,6 +48,9 @@ export default function App() {
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
 
+  // forgot password
+  const [forgotEmail, setForgotEmail] = useState("");
+
   // signup form
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
