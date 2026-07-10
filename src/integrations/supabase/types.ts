@@ -48,6 +48,7 @@ export type Database = {
         Row: {
           ap_mac: string | null
           auth_latency_ms: number | null
+          auth_method: string | null
           authorized_at: string | null
           captive_timestamp: string | null
           client_ip: string | null
@@ -80,10 +81,12 @@ export type Database = {
           unifi_last_verify_result: Json | null
           updated_at: string
           user_agent: string | null
+          user_id: string | null
         }
         Insert: {
           ap_mac?: string | null
           auth_latency_ms?: number | null
+          auth_method?: string | null
           authorized_at?: string | null
           captive_timestamp?: string | null
           client_ip?: string | null
@@ -116,10 +119,12 @@ export type Database = {
           unifi_last_verify_result?: Json | null
           updated_at?: string
           user_agent?: string | null
+          user_id?: string | null
         }
         Update: {
           ap_mac?: string | null
           auth_latency_ms?: number | null
+          auth_method?: string | null
           authorized_at?: string | null
           captive_timestamp?: string | null
           client_ip?: string | null
@@ -152,6 +157,7 @@ export type Database = {
           unifi_last_verify_result?: Json | null
           updated_at?: string
           user_agent?: string | null
+          user_id?: string | null
         }
         Relationships: [
           {
@@ -314,6 +320,7 @@ export type Database = {
           created_at: string
           email: string | null
           id: string
+          last_seen_store_id: string | null
           name: string
           origin_asn: string | null
           origin_city: string | null
@@ -327,6 +334,7 @@ export type Database = {
           source: string
           store_id: string | null
           updated_at: string
+          user_id: string | null
         }
         Insert: {
           client_mac?: string | null
@@ -337,6 +345,7 @@ export type Database = {
           created_at?: string
           email?: string | null
           id?: string
+          last_seen_store_id?: string | null
           name: string
           origin_asn?: string | null
           origin_city?: string | null
@@ -350,6 +359,7 @@ export type Database = {
           source?: string
           store_id?: string | null
           updated_at?: string
+          user_id?: string | null
         }
         Update: {
           client_mac?: string | null
@@ -360,6 +370,7 @@ export type Database = {
           created_at?: string
           email?: string | null
           id?: string
+          last_seen_store_id?: string | null
           name?: string
           origin_asn?: string | null
           origin_city?: string | null
@@ -373,8 +384,23 @@ export type Database = {
           source?: string
           store_id?: string | null
           updated_at?: string
+          user_id?: string | null
         }
         Relationships: [
+          {
+            foreignKeyName: "leads_last_seen_store_id_fkey"
+            columns: ["last_seen_store_id"]
+            isOneToOne: false
+            referencedRelation: "stores"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "leads_last_seen_store_id_fkey"
+            columns: ["last_seen_store_id"]
+            isOneToOne: false
+            referencedRelation: "stores_public"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "leads_session_id_fkey"
             columns: ["session_id"]
@@ -497,6 +523,36 @@ export type Database = {
           store_id?: string | null
           trace_id?: string | null
           user_agent?: string | null
+        }
+        Relationships: []
+      }
+      profiles: {
+        Row: {
+          cpf_digits: string
+          created_at: string
+          email: string
+          full_name: string
+          id: string
+          phone_digits: string
+          updated_at: string
+        }
+        Insert: {
+          cpf_digits: string
+          created_at?: string
+          email: string
+          full_name: string
+          id: string
+          phone_digits: string
+          updated_at?: string
+        }
+        Update: {
+          cpf_digits?: string
+          created_at?: string
+          email?: string
+          full_name?: string
+          id?: string
+          phone_digits?: string
+          updated_at?: string
         }
         Relationships: []
       }
