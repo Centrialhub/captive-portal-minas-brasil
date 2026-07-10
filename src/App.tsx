@@ -296,6 +296,72 @@ export default function App() {
     );
   }
 
+  // ── FORGOT PASSWORD ──
+  if (step === "forgot") {
+    return (
+      <div className="portal-wrapper">
+        <div className="portal-card">
+          <div style={{ textAlign: "center" }}>
+            <img src={logoMinasBrasil} alt="Drogaria Minas Brasil" className="portal-logo" />
+            <p className="portal-slogan">vender barato é tradição</p>
+          </div>
+          <h1 className="portal-title">Recuperar senha</h1>
+          <p className="portal-subtitle">
+            Informe o e-mail da sua conta. Enviaremos um link para redefinir sua senha.
+          </p>
+          {error && <div className="portal-error">{error}</div>}
+          <form onSubmit={handleForgot}>
+            <label className="portal-label">E-mail</label>
+            <input
+              type="email" value={forgotEmail}
+              onChange={(e) => setForgotEmail(e.target.value)}
+              required className="portal-input" placeholder="email@exemplo.com"
+              autoComplete="email"
+            />
+            <button type="submit" disabled={busy} className="portal-btn">
+              {busy ? "Enviando..." : "Enviar link"}
+            </button>
+          </form>
+          <button
+            type="button"
+            onClick={() => { setError(""); setStep("login"); }}
+            className="portal-btn-secondary"
+          >
+            Voltar
+          </button>
+          <p className="portal-footer">Drogaria Minas Brasil © {new Date().getFullYear()}</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (step === "forgot_sent") {
+    return (
+      <div className="portal-wrapper">
+        <div className="portal-card" style={{ textAlign: "center" }}>
+          <img src={logoMinasBrasil} alt="Drogaria Minas Brasil" className="portal-logo" />
+          <h1 className="portal-title">Verifique seu e-mail</h1>
+          <p className="portal-subtitle">
+            Se existir uma conta com esse e-mail, enviaremos um link para redefinir a senha.
+          </p>
+          <p style={{ color: "#666", fontSize: 14, marginTop: 12 }}>
+            Dica: o link precisa ser aberto <strong>fora do Wi-Fi da loja</strong> (use dados móveis
+            ou outra rede). Depois de redefinir a senha, volte ao portal Wi-Fi e faça login.
+          </p>
+          <button
+            type="button"
+            onClick={() => { setError(""); setStep("login"); }}
+            className="portal-btn"
+            style={{ marginTop: 16 }}
+          >
+            Voltar ao login
+          </button>
+          <p className="portal-footer">Drogaria Minas Brasil © {new Date().getFullYear()}</p>
+        </div>
+      </div>
+    );
+  }
+
   // ── SIGNUP ──
   if (step === "signup") {
     return (
