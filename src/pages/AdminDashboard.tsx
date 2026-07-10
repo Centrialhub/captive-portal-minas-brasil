@@ -515,3 +515,22 @@ const inputStyle: React.CSSProperties = { padding: "6px 10px", border: "1px soli
 const btnPrimary: React.CSSProperties = { padding: "8px 14px", background: "#E30613", color: "white", border: 0, borderRadius: 6, fontWeight: 600, cursor: "pointer" };
 const btnSecondary: React.CSSProperties = { padding: "6px 12px", background: "#f3f4f6", border: "1px solid #d1d5db", borderRadius: 6, cursor: "pointer", fontSize: 13 };
 const btnLink: React.CSSProperties = { background: "none", border: 0, color: "#E30613", fontWeight: 600, cursor: "pointer", padding: 0 };
+
+function AuthEventPill({ type }: { type: string }) {
+  const map: Record<string, [string, string, string]> = {
+    signup_started: ["#e0e7ff", "#3730a3", "signup"],
+    signup_success: ["#dcfce7", "#166534", "signup ok"],
+    signup_failed: ["#fee2e2", "#b91c1c", "signup falhou"],
+    login_started: ["#dbeafe", "#1d4ed8", "login"],
+    login_success: ["#dcfce7", "#166534", "login ok"],
+    login_failed: ["#fee2e2", "#b91c1c", "login falhou"],
+    silent_login_success: ["#ecfeff", "#0e7490", "silent ok"],
+    silent_login_failed: ["#fef3c7", "#92400e", "silent falhou"],
+    password_reset_requested: ["#f3e8ff", "#6b21a8", "reset enviado"],
+    password_reset_rate_limited: ["#fef3c7", "#92400e", "reset limitado"],
+    password_reset_failed: ["#fee2e2", "#b91c1c", "reset falhou"],
+  };
+  const [bg, fg, label] = map[type] || ["#f3f4f6", "#374151", type];
+  return <span style={{ background: bg, color: fg, padding: "2px 8px", borderRadius: 999, fontSize: 11, fontWeight: 600 }}>{label}</span>;
+}
+
