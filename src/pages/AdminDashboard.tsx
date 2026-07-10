@@ -16,12 +16,12 @@ interface SessionRow {
   started_at: string;
   params_received_at: string | null;
   form_submitted_at: string | null;
-  otp_sent_at: string | null;
-  otp_verified_at: string | null;
   unifi_authorize_called_at: string | null;
   unifi_confirmed_at: string | null;
   redirect_served_at: string | null;
   total_latency_ms: number | null;
+  user_id: string | null;
+  auth_method: string | null;
 }
 
 interface EventRow {
@@ -36,14 +36,28 @@ interface EventRow {
   payload: any;
 }
 
-const STEPS = ["params", "form", "otp", "unifi", "redirect"] as const;
+const STEPS = ["params", "form", "unifi", "redirect"] as const;
 const STATUSES = ["started", "submitted", "authorized", "failed"] as const;
+const AUTH_METHODS = [
+  { value: "", label: "Todos" },
+  { value: "password", label: "Signup/Login" },
+  { value: "silent", label: "Silent login" },
+] as const;
 
 const fmt = (iso: string | null) => iso ? new Date(iso).toLocaleString("pt-BR", { hour12: false }) : "—";
 const dur = (a: string | null, b: string | null) => {
   if (!a || !b) return null;
   return `${Math.round((new Date(b).getTime() - new Date(a).getTime()) / 100) / 10}s`;
 };
+
+interface AuthCounts {
+  signup_success: number;
+  signup_failed: number;
+  login_success: number;
+  login_failed: number;
+  silent_success: number;
+  silent_failed: number;
+}
 
 export default function AdminDashboard() {
   const navigate = useNavigate();
@@ -53,10 +67,18 @@ export default function AdminDashboard() {
   const [loading, setLoading] = useState(false);
   const [statusFilter, setStatusFilter] = useState<string>("");
   const [stepFilter, setStepFilter] = useState<string>("");
+  const [authMethodFilter, setAuthMethodFilter] = useState<string>("");
   const [searchTrace, setSearchTrace] = useState("");
   const [selected, setSelected] = useState<SessionRow | null>(null);
   const [events, setEvents] = useState<EventRow[]>([]);
   const [loadingEvents, setLoadingEvents] = useState(false);
+  const [authCounts, setAuthCounts] = useState<AuthCounts>({
+    signup_success: 0, signup_failed: 0,
+    login_success: 0, login_failed: 0,
+    silent_success: 0, silent_failed: 0,
+  });
+  const [totalAccounts, setTotalAccounts] = useState<number>(0);
+  const [rangeHours, setRangeHours] = useState<number>(24);
 
   // Auth gate
   useEffect(() => {
@@ -85,11 +107,12 @@ export default function AdminDashboard() {
     setLoading(true);
     let q = supabase
       .from("captive_sessions")
-      .select("id,trace_id,store_id,client_mac,client_ip,status,last_step,last_error_code,last_error_message,fail_reason,started_at,params_received_at,form_submitted_at,otp_sent_at,otp_verified_at,unifi_authorize_called_at,unifi_confirmed_at,redirect_served_at,total_latency_ms")
+      .select("id,trace_id,store_id,client_mac,client_ip,status,last_step,last_error_code,last_error_message,fail_reason,started_at,params_received_at,form_submitted_at,unifi_authorize_called_at,unifi_confirmed_at,redirect_served_at,total_latency_ms,user_id,auth_method")
       .order("started_at", { ascending: false })
       .limit(200);
     if (statusFilter) q = q.eq("status", statusFilter as any);
     if (stepFilter) q = q.eq("last_step", stepFilter);
+    if (authMethodFilter) q = q.eq("auth_method", authMethodFilter);
     if (searchTrace.trim()) q = q.eq("trace_id", searchTrace.trim());
     const { data, error } = await q;
     if (error) console.error(error);
@@ -97,7 +120,44 @@ export default function AdminDashboard() {
     setLoading(false);
   };
 
-  useEffect(() => { if (isAdmin) loadSessions(); /* eslint-disable-next-line */ }, [isAdmin, statusFilter, stepFilter]);
+  // Load auth-flow counts (signup/login/silent) from portal_events within the selected window
+  const loadAuthCounts = async () => {
+    const since = new Date(Date.now() - rangeHours * 3600 * 1000).toISOString();
+    const types = [
+      "signup_success", "signup_failed",
+      "login_success", "login_failed",
+      "silent_login_success", "silent_login_failed",
+    ] as const;
+    const results = await Promise.all(
+      types.map((t) =>
+        supabase
+          .from("portal_events")
+          .select("id", { count: "exact", head: true })
+          .eq("event_type", t)
+          .gte("created_at", since)
+      ),
+    );
+    const [ss, sf, ls, lf, ils, ilf] = results.map((r) => r.count || 0);
+    setAuthCounts({
+      signup_success: ss, signup_failed: sf,
+      login_success: ls, login_failed: lf,
+      silent_success: ils, silent_failed: ilf,
+    });
+
+    // Total accounts created (all-time)
+    const { count } = await supabase
+      .from("profiles")
+      .select("id", { count: "exact", head: true });
+    setTotalAccounts(count || 0);
+  };
+
+  useEffect(() => {
+    if (isAdmin) {
+      loadSessions();
+      loadAuthCounts();
+    }
+    /* eslint-disable-next-line */
+  }, [isAdmin, statusFilter, stepFilter, authMethodFilter, rangeHours]);
 
   const openSession = async (s: SessionRow) => {
     setSelected(s);
@@ -113,12 +173,11 @@ export default function AdminDashboard() {
 
   const funnel = useMemo(() => {
     const total = sessions.length;
-    const formSubmitted = sessions.filter(s => !!s.form_submitted_at).length;
-    const otpSent = sessions.filter(s => !!s.otp_sent_at).length;
-    const otpVerified = sessions.filter(s => !!s.otp_verified_at).length;
+    const signups = sessions.filter(s => s.auth_method === "password" && !!s.form_submitted_at && !!s.user_id).length;
+    const silent = sessions.filter(s => s.auth_method === "silent").length;
     const unifiCalled = sessions.filter(s => !!s.unifi_authorize_called_at).length;
     const unifiConfirmed = sessions.filter(s => !!s.unifi_confirmed_at).length;
-    return { total, formSubmitted, otpSent, otpVerified, unifiCalled, unifiConfirmed };
+    return { total, signups, silent, unifiCalled, unifiConfirmed };
   }, [sessions]);
 
   if (isAdmin === null) {
@@ -137,6 +196,9 @@ export default function AdminDashboard() {
     );
   }
 
+  const totalAuthEvents =
+    authCounts.signup_success + authCounts.login_success + authCounts.silent_success;
+
   return (
     <div style={{ minHeight: "100vh", background: "#f9fafb", padding: 24 }}>
       <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
@@ -147,14 +209,58 @@ export default function AdminDashboard() {
         <button onClick={() => supabase.auth.signOut()} style={btnSecondary}>Sair</button>
       </header>
 
-      {/* Funnel */}
+      {/* Auth summary */}
       <section style={cardStyle}>
-        <h2 style={h2Style}>Funil (últimas {sessions.length} sessões)</h2>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+          <h2 style={h2Style}>Contas &amp; Autenticação</h2>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12 }}>
+            <span style={{ color: "#6b7280" }}>Janela:</span>
+            {[1, 24, 168].map((h) => (
+              <button
+                key={h}
+                onClick={() => setRangeHours(h)}
+                style={{
+                  ...btnSecondary,
+                  padding: "4px 10px",
+                  background: rangeHours === h ? "#E30613" : "#f3f4f6",
+                  color: rangeHours === h ? "white" : "#374151",
+                  fontWeight: rangeHours === h ? 700 : 500,
+                }}
+              >
+                {h === 1 ? "1h" : h === 24 ? "24h" : "7d"}
+              </button>
+            ))}
+          </div>
+        </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 12, marginTop: 12 }}>
+          <Stat label="Contas criadas (total)" value={totalAccounts} highlight />
+          <Stat label="Cadastros" value={authCounts.signup_success} sub={authCounts.signup_failed ? `${authCounts.signup_failed} falhas` : undefined} />
+          <Stat label="Logins" value={authCounts.login_success} sub={authCounts.login_failed ? `${authCounts.login_failed} falhas` : undefined} />
+          <Stat label="Silent logins" value={authCounts.silent_success} sub={authCounts.silent_failed ? `${authCounts.silent_failed} falhas` : undefined} />
+          <Stat label="Autenticações totais" value={totalAuthEvents} />
+          <Stat
+            label="Taxa de sucesso"
+            value={
+              (totalAuthEvents + authCounts.signup_failed + authCounts.login_failed + authCounts.silent_failed) > 0
+                ? Math.round(
+                    (totalAuthEvents /
+                      (totalAuthEvents + authCounts.signup_failed + authCounts.login_failed + authCounts.silent_failed)) *
+                      100,
+                  )
+                : 0
+            }
+            suffix="%"
+          />
+        </div>
+      </section>
+
+      {/* Session funnel */}
+      <section style={{ ...cardStyle, marginTop: 16 }}>
+        <h2 style={h2Style}>Funil de sessões (últimas {sessions.length})</h2>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12, marginTop: 12 }}>
           <Stat label="Sessões" value={funnel.total} />
-          <Stat label="Formulário" value={funnel.formSubmitted} pct={funnel.total ? funnel.formSubmitted / funnel.total : 0} />
-          <Stat label="OTP enviado" value={funnel.otpSent} pct={funnel.total ? funnel.otpSent / funnel.total : 0} />
-          <Stat label="OTP verificado" value={funnel.otpVerified} pct={funnel.total ? funnel.otpVerified / funnel.total : 0} />
+          <Stat label="Cadastros (nesta lista)" value={funnel.signups} pct={funnel.total ? funnel.signups / funnel.total : 0} />
+          <Stat label="Silent logins" value={funnel.silent} pct={funnel.total ? funnel.silent / funnel.total : 0} />
           <Stat label="UniFi chamado" value={funnel.unifiCalled} pct={funnel.total ? funnel.unifiCalled / funnel.total : 0} />
           <Stat label="UniFi confirmado" value={funnel.unifiConfirmed} pct={funnel.total ? funnel.unifiConfirmed / funnel.total : 0} highlight />
         </div>
@@ -175,6 +281,11 @@ export default function AdminDashboard() {
               {STEPS.map(s => <option key={s} value={s}>{s}</option>)}
             </select>
           </Field>
+          <Field label="Método de auth">
+            <select value={authMethodFilter} onChange={(e) => setAuthMethodFilter(e.target.value)} style={inputStyle}>
+              {AUTH_METHODS.map(a => <option key={a.value} value={a.value}>{a.label}</option>)}
+            </select>
+          </Field>
           <Field label="Trace ID">
             <input value={searchTrace} onChange={(e) => setSearchTrace(e.target.value)}
               placeholder="cole um trace_id"
@@ -182,7 +293,9 @@ export default function AdminDashboard() {
               onKeyDown={(e) => { if (e.key === "Enter") loadSessions(); }}
             />
           </Field>
-          <button onClick={loadSessions} style={btnPrimary}>{loading ? "Carregando…" : "Atualizar"}</button>
+          <button onClick={() => { loadSessions(); loadAuthCounts(); }} style={btnPrimary}>
+            {loading ? "Carregando…" : "Atualizar"}
+          </button>
         </div>
       </section>
 
@@ -192,7 +305,7 @@ export default function AdminDashboard() {
         <table style={{ width: "100%", fontSize: 13, borderCollapse: "collapse", marginTop: 8 }}>
           <thead>
             <tr style={{ background: "#f3f4f6", textAlign: "left" }}>
-              <Th>Iniciado</Th><Th>Status</Th><Th>Etapa</Th><Th>MAC</Th>
+              <Th>Iniciado</Th><Th>Status</Th><Th>Auth</Th><Th>Etapa</Th><Th>MAC</Th>
               <Th>IP</Th><Th>Erro</Th><Th>Latência</Th><Th>Trace</Th><Th>{""}</Th>
             </tr>
           </thead>
@@ -201,6 +314,7 @@ export default function AdminDashboard() {
               <tr key={s.id} style={{ borderBottom: "1px solid #e5e7eb" }}>
                 <Td>{fmt(s.started_at)}</Td>
                 <Td><StatusPill status={s.status} /></Td>
+                <Td><AuthPill method={s.auth_method} hasUser={!!s.user_id} /></Td>
                 <Td>{s.last_step || "—"}</Td>
                 <Td style={{ fontFamily: "monospace", fontSize: 11 }}>{s.client_mac || "—"}</Td>
                 <Td style={{ fontFamily: "monospace", fontSize: 11 }}>{s.client_ip || "—"}</Td>
@@ -211,7 +325,7 @@ export default function AdminDashboard() {
               </tr>
             ))}
             {sessions.length === 0 && (
-              <tr><td colSpan={9} style={{ padding: 24, textAlign: "center", color: "#6b7280" }}>Nenhuma sessão encontrada.</td></tr>
+              <tr><td colSpan={10} style={{ padding: 24, textAlign: "center", color: "#6b7280" }}>Nenhuma sessão encontrada.</td></tr>
             )}
           </tbody>
         </table>
@@ -227,7 +341,12 @@ export default function AdminDashboard() {
               <h2 style={{ margin: 0, color: "#E30613", fontSize: 18 }}>Sessão {selected.id.slice(0, 8)}</h2>
               <button onClick={() => setSelected(null)} style={btnSecondary}>Fechar</button>
             </div>
-            <p style={{ fontSize: 12, color: "#6b7280", marginTop: 4 }}>Trace: <span style={{ fontFamily: "monospace" }}>{selected.trace_id || "—"}</span></p>
+            <p style={{ fontSize: 12, color: "#6b7280", marginTop: 4 }}>
+              Trace: <span style={{ fontFamily: "monospace" }}>{selected.trace_id || "—"}</span>
+              {" · "}
+              Auth: <AuthPill method={selected.auth_method} hasUser={!!selected.user_id} />
+              {selected.user_id && <> {" · "} <span style={{ fontFamily: "monospace" }}>user {selected.user_id.slice(0, 8)}</span></>}
+            </p>
 
             <h3 style={{ ...h2Style, fontSize: 14, marginTop: 16 }}>Timeline</h3>
             <Timeline s={selected} />
@@ -264,12 +383,10 @@ function Timeline({ s }: { s: SessionRow }) {
   const rows: { label: string; at: string | null; from?: string | null }[] = [
     { label: "Início", at: s.started_at },
     { label: "Params recebidos", at: s.params_received_at, from: s.started_at },
-    { label: "Form enviado", at: s.form_submitted_at, from: s.params_received_at || s.started_at },
-    { label: "OTP enviado", at: s.otp_sent_at, from: s.form_submitted_at },
-    { label: "OTP verificado", at: s.otp_verified_at, from: s.otp_sent_at },
-    { label: "UniFi chamado", at: s.unifi_authorize_called_at, from: s.otp_verified_at },
+    { label: "Auth enviado", at: s.form_submitted_at, from: s.params_received_at || s.started_at },
+    { label: "UniFi chamado", at: s.unifi_authorize_called_at, from: s.form_submitted_at || s.started_at },
     { label: "UniFi confirmado", at: s.unifi_confirmed_at, from: s.unifi_authorize_called_at },
-    { label: "Redirect entregue", at: s.redirect_served_at, from: s.unifi_authorize_called_at || s.otp_verified_at },
+    { label: "Redirect entregue", at: s.redirect_served_at, from: s.unifi_confirmed_at || s.unifi_authorize_called_at },
   ];
   return (
     <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
@@ -286,12 +403,15 @@ function Timeline({ s }: { s: SessionRow }) {
   );
 }
 
-function Stat({ label, value, pct, highlight }: { label: string; value: number; pct?: number; highlight?: boolean }) {
+function Stat({ label, value, pct, highlight, sub, suffix }: { label: string; value: number; pct?: number; highlight?: boolean; sub?: string; suffix?: string }) {
   return (
     <div style={{ background: highlight ? "#fef2f2" : "#f9fafb", padding: 12, borderRadius: 8, border: "1px solid #e5e7eb" }}>
       <div style={{ fontSize: 11, color: "#6b7280" }}>{label}</div>
-      <div style={{ fontSize: 22, fontWeight: 700, color: highlight ? "#E30613" : "#111827" }}>{value}</div>
+      <div style={{ fontSize: 22, fontWeight: 700, color: highlight ? "#E30613" : "#111827" }}>
+        {value}{suffix || ""}
+      </div>
       {pct !== undefined && <div style={{ fontSize: 11, color: "#6b7280" }}>{(pct * 100).toFixed(0)}%</div>}
+      {sub && <div style={{ fontSize: 11, color: "#b91c1c" }}>{sub}</div>}
     </div>
   );
 }
@@ -305,6 +425,19 @@ function StatusPill({ status }: { status: string }) {
   };
   const [bg, fg] = colors[status] || ["#f3f4f6", "#374151"];
   return <span style={{ background: bg, color: fg, padding: "2px 8px", borderRadius: 999, fontSize: 11, fontWeight: 600 }}>{status}</span>;
+}
+
+function AuthPill({ method, hasUser }: { method: string | null; hasUser: boolean }) {
+  if (!method && !hasUser) {
+    return <span style={{ color: "#9ca3af", fontSize: 11 }}>—</span>;
+  }
+  const map: Record<string, [string, string, string]> = {
+    password: ["#e0e7ff", "#3730a3", "senha"],
+    silent: ["#ecfeff", "#0e7490", "silent"],
+    otp_legacy: ["#fef3c7", "#92400e", "otp (legado)"],
+  };
+  const [bg, fg, label] = map[method || ""] || ["#f3f4f6", "#374151", method || "—"];
+  return <span style={{ background: bg, color: fg, padding: "2px 8px", borderRadius: 999, fontSize: 11, fontWeight: 600 }}>{label}</span>;
 }
 
 const Th = ({ children }: { children: React.ReactNode }) => <th style={{ padding: "8px 6px", fontWeight: 600 }}>{children}</th>;
