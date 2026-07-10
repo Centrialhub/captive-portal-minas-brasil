@@ -34,6 +34,8 @@ interface EventRow {
   error_message: string | null;
   latency_ms: number | null;
   payload: any;
+  session_id?: string | null;
+  trace_id?: string | null;
 }
 
 const STEPS = ["params", "form", "unifi", "redirect"] as const;
