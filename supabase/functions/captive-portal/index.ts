@@ -4265,6 +4265,11 @@ Deno.serve(async (req: Request) => {
     if (path === "/verify-code" && req.method === "POST") return await handleVerifyCode(req);
     if (path === "/client-event" && req.method === "POST") return await handleClientEvent(req);
 
+    // New account-based auth flow (email + password)
+    if (path === "/signup" && req.method === "POST") return await handleSignup(req);
+    if (path === "/login" && req.method === "POST") return await handleLogin(req);
+    if (path === "/authorize-existing" && req.method === "POST") return await handleAuthorizeExisting(req);
+
     // Diagnostic: list clients the AP currently sees (to find real MAC behind randomization)
     // GET /diag/list-aps?store=matriz — list all APs adopted by the controller with their WLANs
     if (path === "/diag/list-aps" && req.method === "GET") {
