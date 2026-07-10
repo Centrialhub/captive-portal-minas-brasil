@@ -3979,6 +3979,73 @@ function validatePasswordStrength(pw: unknown): { ok: boolean; reason?: string }
   return { ok: true };
 }
 
+/** Compute site base URL for building password-reset redirect */
+function getSiteBaseUrl(req: Request): string {
+  const origin = req.headers.get("origin") || req.headers.get("referer");
+  if (origin) {
+    try { const u = new URL(origin); return `${u.protocol}//${u.host}`; } catch { /* ignore */ }
+  }
+  try {
+    const u = new URL(DEFAULT_REDIRECT_URL);
+    // Prefer the wifi captive host if configured; otherwise use whatever's in the secret
+    return `${u.protocol}//${u.host}`;
+  } catch { /* ignore */ }
+  return "https://wifi.guedesepaixao.com.br";
+}
+
+async function handleRequestPasswordReset(req: Request): Promise<Response> {
+  const db = supabaseAdmin();
+  const clientIp = getPublicIp(req);
+  const ua = req.headers.get("user-agent") || "";
+  const body = await safeParseJson(req);
+  if (!body) return errorResponse("Invalid JSON body");
+  const traceId = getTraceId(req, body);
+
+  const email = sanitizeString(body.email, MAX_EMAIL_LEN)?.toLowerCase() || null;
+  if (!email || !isValidEmail(email)) {
+    return jsonResponse({ error: "E-mail inválido.", code: "invalid_email" }, 400);
+  }
+
+  const rl = await checkRateLimitDb(db, `pwreset:ip:${clientIp || "unknown"}:${email}`, 900, 3, 1800);
+  if (!rl.allowed) {
+    // Still respond with generic OK to avoid enumeration; log the throttle.
+    logEvent(db, {
+      trace_id: traceId, event_type: "password_reset_rate_limited", step: "form", status: "warning",
+      payload: { email_masked: maskEmail(email) }, client_ip: clientIp, user_agent: ua,
+    });
+    return jsonResponse({ ok: true });
+  }
+
+  const siteBase = getSiteBaseUrl(req);
+  const redirectTo = `${siteBase}/reset-password`;
+
+  const anonClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  const { error: resetErr } = await anonClient.auth.resetPasswordForEmail(email, { redirectTo });
+
+  logEvent(db, {
+    trace_id: traceId,
+    event_type: resetErr ? "password_reset_failed" : "password_reset_requested",
+    step: "form",
+    status: resetErr ? "error" : "info",
+    error_message: resetErr?.message,
+    payload: { email_masked: maskEmail(email), redirect_to: redirectTo },
+    client_ip: clientIp,
+    user_agent: ua,
+  });
+
+  // Always respond OK to prevent account enumeration
+  return jsonResponse({ ok: true });
+}
+
+function maskEmail(email: string): string {
+  const at = email.indexOf("@");
+  if (at < 1) return "***";
+  const local = email.slice(0, at);
+  const domain = email.slice(at + 1);
+  const shown = local.slice(0, Math.min(2, local.length));
+  return `${shown}${"*".repeat(Math.max(1, local.length - shown.length))}@${domain}`;
+}
+
 async function handleSignup(req: Request): Promise<Response> {
   const db = supabaseAdmin();
   const clientIp = getPublicIp(req);
@@ -4020,6 +4087,20 @@ async function handleSignup(req: Request): Promise<Response> {
     payload: { email }, client_ip: clientIp, user_agent: ua,
   });
 
+  // Pre-check: CPF already registered?
+  const { data: cpfExists } = await db
+    .from("profiles").select("id").eq("cpf_digits", cpfDigits).limit(1).maybeSingle();
+  if (cpfExists?.id) {
+    logEvent(db, {
+      trace_id: traceId, event_type: "signup_failed", step: "form", status: "error",
+      error_code: "cpf_already_registered", payload: { email }, client_ip: clientIp,
+    });
+    return jsonResponse({
+      error: "Este CPF já possui conta. Entre com o e-mail cadastrado ou recupere a senha.",
+      code: "cpf_already_registered",
+    }, 409);
+  }
+
   // Create auth user (email confirmed so captive flow can proceed)
   const { data: created, error: createErr } = await db.auth.admin.createUser({
     email,
@@ -4032,9 +4113,11 @@ async function handleSignup(req: Request): Promise<Response> {
     const msg = (createErr?.message || "").toLowerCase();
     let code = "signup_failed";
     let userMsg = "Não foi possível criar a conta. Tente novamente.";
+    let httpStatus = 400;
     if (msg.includes("already") || msg.includes("registered") || msg.includes("exists")) {
       code = "email_already_registered";
-      userMsg = "Este e-mail já está cadastrado. Faça login.";
+      userMsg = "Este e-mail já possui conta. Faça login ou recupere a senha.";
+      httpStatus = 409;
     } else if (msg.includes("password")) {
       code = "weak_password";
       userMsg = "Senha muito fraca.";
@@ -4043,7 +4126,7 @@ async function handleSignup(req: Request): Promise<Response> {
       trace_id: traceId, event_type: "signup_failed", step: "form", status: "error",
       error_code: code, error_message: createErr?.message, payload: { email }, client_ip: clientIp,
     });
-    return jsonResponse({ error: userMsg, code }, 400);
+    return jsonResponse({ error: userMsg, code }, httpStatus);
   }
 
   const userId = created.user.id;
@@ -4060,6 +4143,18 @@ async function handleSignup(req: Request): Promise<Response> {
     console.error("[signup] profile insert failed:", profErr.message);
     // Roll back the auth user so retry works
     try { await db.auth.admin.deleteUser(userId); } catch { /* ignore */ }
+    // Postgres unique_violation on profiles_cpf_digits_key → race with another signup
+    const isCpfDup = (profErr.code === "23505") || /cpf_digits/i.test(profErr.message || "");
+    if (isCpfDup) {
+      logEvent(db, {
+        trace_id: traceId, event_type: "signup_failed", step: "form", status: "error",
+        error_code: "cpf_already_registered", error_message: profErr.message, client_ip: clientIp,
+      });
+      return jsonResponse({
+        error: "Este CPF já possui conta. Entre com o e-mail cadastrado ou recupere a senha.",
+        code: "cpf_already_registered",
+      }, 409);
+    }
     logEvent(db, {
       trace_id: traceId, event_type: "signup_failed", step: "form", status: "error",
       error_code: "profile_insert_failed", error_message: profErr.message, client_ip: clientIp,
@@ -4269,6 +4364,7 @@ Deno.serve(async (req: Request) => {
     if (path === "/signup" && req.method === "POST") return await handleSignup(req);
     if (path === "/login" && req.method === "POST") return await handleLogin(req);
     if (path === "/authorize-existing" && req.method === "POST") return await handleAuthorizeExisting(req);
+    if (path === "/request-password-reset" && req.method === "POST") return await handleRequestPasswordReset(req);
 
     // Diagnostic: list clients the AP currently sees (to find real MAC behind randomization)
     // GET /diag/list-aps?store=matriz — list all APs adopted by the controller with their WLANs
