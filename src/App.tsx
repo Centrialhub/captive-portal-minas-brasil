@@ -10,7 +10,7 @@ import {
 import logoMinasBrasil from "./assets/logo-minas-brasil.png";
 import "./index.css";
 
-type Step = "loading" | "login" | "signup" | "authorizing" | "success" | "error";
+type Step = "loading" | "login" | "signup" | "forgot" | "forgot_sent" | "authorizing" | "success" | "error";
 
 interface BootstrapData {
   store: { slug: string | null; name: string; city?: string | null };
