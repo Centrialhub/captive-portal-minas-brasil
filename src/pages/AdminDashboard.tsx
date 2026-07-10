@@ -34,6 +34,8 @@ interface EventRow {
   error_message: string | null;
   latency_ms: number | null;
   payload: any;
+  session_id?: string | null;
+  trace_id?: string | null;
 }
 
 const STEPS = ["params", "form", "unifi", "redirect"] as const;
@@ -79,6 +81,7 @@ export default function AdminDashboard() {
   });
   const [totalAccounts, setTotalAccounts] = useState<number>(0);
   const [rangeHours, setRangeHours] = useState<number>(24);
+  const [authAttempts, setAuthAttempts] = useState<EventRow[]>([]);
 
   // Auth gate
   useEffect(() => {
@@ -151,10 +154,29 @@ export default function AdminDashboard() {
     setTotalAccounts(count || 0);
   };
 
+  // Load recent auth attempts (success + failure) from portal_events
+  const loadAuthAttempts = async () => {
+    const since = new Date(Date.now() - rangeHours * 3600 * 1000).toISOString();
+    const { data } = await supabase
+      .from("portal_events")
+      .select("id,created_at,event_type,step,status,error_code,error_message,latency_ms,payload,session_id,trace_id")
+      .in("event_type", [
+        "signup_started", "signup_success", "signup_failed",
+        "login_started", "login_success", "login_failed",
+        "silent_login_success", "silent_login_failed",
+        "password_reset_requested", "password_reset_rate_limited", "password_reset_failed",
+      ])
+      .gte("created_at", since)
+      .order("created_at", { ascending: false })
+      .limit(100);
+    setAuthAttempts((data as EventRow[]) || []);
+  };
+
   useEffect(() => {
     if (isAdmin) {
       loadSessions();
       loadAuthCounts();
+      loadAuthAttempts();
     }
     /* eslint-disable-next-line */
   }, [isAdmin, statusFilter, stepFilter, authMethodFilter, rangeHours]);
@@ -293,10 +315,49 @@ export default function AdminDashboard() {
               onKeyDown={(e) => { if (e.key === "Enter") loadSessions(); }}
             />
           </Field>
-          <button onClick={() => { loadSessions(); loadAuthCounts(); }} style={btnPrimary}>
+          <button onClick={() => { loadSessions(); loadAuthCounts(); loadAuthAttempts(); }} style={btnPrimary}>
             {loading ? "Carregando…" : "Atualizar"}
           </button>
         </div>
+      </section>
+
+      {/* Auth attempts (success + failure) */}
+      <section style={{ ...cardStyle, marginTop: 16, overflowX: "auto" }}>
+        <h2 style={h2Style}>
+          Tentativas de autenticação ({authAttempts.length}){" "}
+          <span style={{ fontSize: 12, color: "#6b7280", fontWeight: 400 }}>
+            — últimas {rangeHours === 1 ? "1h" : rangeHours === 24 ? "24h" : "7d"}
+          </span>
+        </h2>
+        <table style={{ width: "100%", fontSize: 13, borderCollapse: "collapse", marginTop: 8 }}>
+          <thead>
+            <tr style={{ background: "#f3f4f6", textAlign: "left" }}>
+              <Th>Quando</Th><Th>Tipo</Th><Th>Status</Th><Th>Erro</Th><Th>E-mail / info</Th><Th>Trace</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {authAttempts.map(ev => {
+              const info =
+                ev.payload?.email ||
+                ev.payload?.email_masked ||
+                ev.payload?.store_slug ||
+                (ev.session_id ? `session ${ev.session_id.slice(0, 8)}` : "—");
+              return (
+                <tr key={ev.id} style={{ borderBottom: "1px solid #e5e7eb" }}>
+                  <Td>{fmt(ev.created_at)}</Td>
+                  <Td><AuthEventPill type={ev.event_type} /></Td>
+                  <Td><StatusPill status={ev.status} /></Td>
+                  <Td style={{ color: "#b91c1c" }}>{ev.error_code || "—"}</Td>
+                  <Td style={{ fontFamily: "monospace", fontSize: 11 }}>{info}</Td>
+                  <Td style={{ fontFamily: "monospace", fontSize: 10 }}>{ev.trace_id ? ev.trace_id.slice(0, 8) : "—"}</Td>
+                </tr>
+              );
+            })}
+            {authAttempts.length === 0 && (
+              <tr><td colSpan={6} style={{ padding: 24, textAlign: "center", color: "#6b7280" }}>Nenhuma tentativa registrada nesta janela.</td></tr>
+            )}
+          </tbody>
+        </table>
       </section>
 
       {/* Sessions table */}
@@ -454,3 +515,22 @@ const inputStyle: React.CSSProperties = { padding: "6px 10px", border: "1px soli
 const btnPrimary: React.CSSProperties = { padding: "8px 14px", background: "#E30613", color: "white", border: 0, borderRadius: 6, fontWeight: 600, cursor: "pointer" };
 const btnSecondary: React.CSSProperties = { padding: "6px 12px", background: "#f3f4f6", border: "1px solid #d1d5db", borderRadius: 6, cursor: "pointer", fontSize: 13 };
 const btnLink: React.CSSProperties = { background: "none", border: 0, color: "#E30613", fontWeight: 600, cursor: "pointer", padding: 0 };
+
+function AuthEventPill({ type }: { type: string }) {
+  const map: Record<string, [string, string, string]> = {
+    signup_started: ["#e0e7ff", "#3730a3", "signup"],
+    signup_success: ["#dcfce7", "#166534", "signup ok"],
+    signup_failed: ["#fee2e2", "#b91c1c", "signup falhou"],
+    login_started: ["#dbeafe", "#1d4ed8", "login"],
+    login_success: ["#dcfce7", "#166534", "login ok"],
+    login_failed: ["#fee2e2", "#b91c1c", "login falhou"],
+    silent_login_success: ["#ecfeff", "#0e7490", "silent ok"],
+    silent_login_failed: ["#fef3c7", "#92400e", "silent falhou"],
+    password_reset_requested: ["#f3e8ff", "#6b21a8", "reset enviado"],
+    password_reset_rate_limited: ["#fef3c7", "#92400e", "reset limitado"],
+    password_reset_failed: ["#fee2e2", "#b91c1c", "reset falhou"],
+  };
+  const [bg, fg, label] = map[type] || ["#f3f4f6", "#374151", type];
+  return <span style={{ background: bg, color: fg, padding: "2px 8px", borderRadius: 999, fontSize: 11, fontWeight: 600 }}>{label}</span>;
+}
+

@@ -3879,7 +3879,8 @@ async function authorizeAuthenticatedUser(args: {
   const storeId = detected.store_id;
   const nowIso = new Date().toISOString();
 
-  // Create captive_sessions row for this visit
+  // Create captive_sessions row for this visit.
+  // Column names here MUST match public.captive_sessions (see information_schema).
   const sessionInsert: Record<string, unknown> = {
     store_id: storeId,
     user_id: userId,
@@ -3892,12 +3893,11 @@ async function authorizeAuthenticatedUser(args: {
     captive_timestamp: ctx.captiveTimestamp,
     trace_id: traceId,
     submitted_at: nowIso,
-    lead_name: profile.full_name,
-    lead_email: profile.email,
-    lead_phone: profile.phone_digits,
-    lead_cpf: profile.cpf_digits,
+    form_submitted_at: nowIso,
+    params_received_at: nowIso,
+    last_step: "form",
     user_agent: userAgent ? userAgent.slice(0, 500) : null,
-    ip_address: clientIp,
+    client_ip: clientIp,
   };
 
   const { data: session, error: sErr } = await db
@@ -3908,6 +3908,18 @@ async function authorizeAuthenticatedUser(args: {
 
   if (sErr || !session?.id) {
     console.error("[auth] captive_sessions insert failed:", sErr?.message);
+    logEvent(db, {
+      trace_id: traceId,
+      store_id: storeId,
+      event_type: "session_insert_failed",
+      step: "form",
+      status: "error",
+      error_code: "session_insert_failed",
+      error_message: sErr?.message,
+      payload: { auth_method: authMethod, user_id: userId },
+      client_ip: clientIp,
+      user_agent: userAgent,
+    });
     return {
       session_id: null,
       authorized: false,
