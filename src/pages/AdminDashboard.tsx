@@ -152,10 +152,29 @@ export default function AdminDashboard() {
     setTotalAccounts(count || 0);
   };
 
+  // Load recent auth attempts (success + failure) from portal_events
+  const loadAuthAttempts = async () => {
+    const since = new Date(Date.now() - rangeHours * 3600 * 1000).toISOString();
+    const { data } = await supabase
+      .from("portal_events")
+      .select("id,created_at,event_type,step,status,error_code,error_message,latency_ms,payload,session_id,trace_id")
+      .in("event_type", [
+        "signup_started", "signup_success", "signup_failed",
+        "login_started", "login_success", "login_failed",
+        "silent_login_success", "silent_login_failed",
+        "password_reset_requested", "password_reset_rate_limited", "password_reset_failed",
+      ])
+      .gte("created_at", since)
+      .order("created_at", { ascending: false })
+      .limit(100);
+    setAuthAttempts((data as EventRow[]) || []);
+  };
+
   useEffect(() => {
     if (isAdmin) {
       loadSessions();
       loadAuthCounts();
+      loadAuthAttempts();
     }
     /* eslint-disable-next-line */
   }, [isAdmin, statusFilter, stepFilter, authMethodFilter, rangeHours]);
