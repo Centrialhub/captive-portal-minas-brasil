@@ -321,6 +321,45 @@ export default function AdminDashboard() {
         </div>
       </section>
 
+      {/* Auth attempts (success + failure) */}
+      <section style={{ ...cardStyle, marginTop: 16, overflowX: "auto" }}>
+        <h2 style={h2Style}>
+          Tentativas de autenticação ({authAttempts.length}){" "}
+          <span style={{ fontSize: 12, color: "#6b7280", fontWeight: 400 }}>
+            — últimas {rangeHours === 1 ? "1h" : rangeHours === 24 ? "24h" : "7d"}
+          </span>
+        </h2>
+        <table style={{ width: "100%", fontSize: 13, borderCollapse: "collapse", marginTop: 8 }}>
+          <thead>
+            <tr style={{ background: "#f3f4f6", textAlign: "left" }}>
+              <Th>Quando</Th><Th>Tipo</Th><Th>Status</Th><Th>Erro</Th><Th>E-mail / info</Th><Th>Trace</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {authAttempts.map(ev => {
+              const info =
+                ev.payload?.email ||
+                ev.payload?.email_masked ||
+                ev.payload?.store_slug ||
+                (ev.session_id ? `session ${ev.session_id.slice(0, 8)}` : "—");
+              return (
+                <tr key={ev.id} style={{ borderBottom: "1px solid #e5e7eb" }}>
+                  <Td>{fmt(ev.created_at)}</Td>
+                  <Td><AuthEventPill type={ev.event_type} /></Td>
+                  <Td><StatusPill status={ev.status} /></Td>
+                  <Td style={{ color: "#b91c1c" }}>{ev.error_code || "—"}</Td>
+                  <Td style={{ fontFamily: "monospace", fontSize: 11 }}>{info}</Td>
+                  <Td style={{ fontFamily: "monospace", fontSize: 10 }}>{ev.trace_id ? ev.trace_id.slice(0, 8) : "—"}</Td>
+                </tr>
+              );
+            })}
+            {authAttempts.length === 0 && (
+              <tr><td colSpan={6} style={{ padding: 24, textAlign: "center", color: "#6b7280" }}>Nenhuma tentativa registrada nesta janela.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </section>
+
       {/* Sessions table */}
       <section style={{ ...cardStyle, marginTop: 16, overflowX: "auto" }}>
         <h2 style={h2Style}>Sessões</h2>
