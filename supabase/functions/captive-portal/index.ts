@@ -3830,6 +3830,407 @@ async function handleClientEvent(req: Request): Promise<Response> {
   return jsonResponse({ ok: true });
 }
 
+// ========== Auth (email + password) handlers ==========
+
+interface AuthAuthorizeContext {
+  clientMac: string | null;
+  apMac: string | null;
+  ssid: string | null;
+  redirectUrl: string | null;
+  captiveTimestamp: string | null;
+}
+
+function extractAuthContext(body: Record<string, unknown>): AuthAuthorizeContext {
+  return {
+    clientMac: normalizeMac(body.client_mac),
+    apMac: normalizeMac(body.ap_mac),
+    ssid: sanitizeString(body.ssid, 64),
+    redirectUrl: sanitizeString(body.redirect_url, 500),
+    captiveTimestamp: sanitizeString(body.captive_timestamp, 32),
+  };
+}
+
+/**
+ * Runs authorization for a logged-in user after signup/login/silent-login.
+ * Creates (or reuses) a captive_sessions row for this visit, upserts
+ * leads by user_id, and calls unifiAuthorize on the detected store.
+ */
+async function authorizeAuthenticatedUser(args: {
+  db: ReturnType<typeof supabaseAdmin>;
+  userId: string;
+  profile: { full_name: string; cpf_digits: string; phone_digits: string; email: string };
+  ctx: AuthAuthorizeContext;
+  req: Request;
+  authMethod: "password" | "silent";
+  traceId: string;
+  clientIp: string | null;
+  userAgent: string | null;
+}): Promise<{
+  session_id: string | null;
+  authorized: boolean;
+  redirect_url: string;
+  fail_reason?: string;
+  store_slug: string;
+}> {
+  const { db, userId, profile, ctx, req, authMethod, traceId, clientIp, userAgent } = args;
+
+  const detected = await detectStoreFromRequest(db, req, ctx.apMac);
+  const storeSlug = detected.store_slug;
+  const storeId = detected.store_id;
+  const nowIso = new Date().toISOString();
+
+  // Create captive_sessions row for this visit
+  const sessionInsert: Record<string, unknown> = {
+    store_id: storeId,
+    user_id: userId,
+    auth_method: authMethod,
+    status: "submitted",
+    client_mac: ctx.clientMac,
+    ap_mac: ctx.apMac,
+    ssid: ctx.ssid,
+    redirect_url: ctx.redirectUrl,
+    captive_timestamp: ctx.captiveTimestamp,
+    trace_id: traceId,
+    submitted_at: nowIso,
+    lead_name: profile.full_name,
+    lead_email: profile.email,
+    lead_phone: profile.phone_digits,
+    lead_cpf: profile.cpf_digits,
+    user_agent: userAgent ? userAgent.slice(0, 500) : null,
+    ip_address: clientIp,
+  };
+
+  const { data: session, error: sErr } = await db
+    .from("captive_sessions")
+    .insert(sessionInsert)
+    .select("id")
+    .single();
+
+  if (sErr || !session?.id) {
+    console.error("[auth] captive_sessions insert failed:", sErr?.message);
+    return {
+      session_id: null,
+      authorized: false,
+      redirect_url: detected.redirect_url || DEFAULT_REDIRECT_URL,
+      fail_reason: "SESSION_INSERT_FAILED",
+      store_slug: storeSlug,
+    };
+  }
+
+  const sessionId = session.id as string;
+
+  // Upsert lead by user_id
+  try {
+    const { data: existingLead } = await db
+      .from("leads")
+      .select("id")
+      .eq("user_id", userId)
+      .maybeSingle();
+    const leadPayload: Record<string, unknown> = {
+      user_id: userId,
+      name: profile.full_name,
+      email: profile.email,
+      phone: profile.phone_digits,
+      cpf: profile.cpf_digits,
+      client_mac: ctx.clientMac,
+      last_seen_at: nowIso,
+      last_seen_store_id: storeId,
+      store_id: storeId,
+    };
+    if (existingLead?.id) {
+      await db.from("leads").update(leadPayload).eq("id", existingLead.id);
+    } else {
+      await db.from("leads").insert({ ...leadPayload, first_seen_at: nowIso, consent_version: "1.0" });
+    }
+  } catch (e) {
+    console.warn("[auth] lead upsert failed:", (e as Error).message);
+  }
+
+  logEvent(db, {
+    session_id: sessionId,
+    trace_id: traceId,
+    store_id: storeId,
+    event_type: "unifi_authorize_from_auth_flow",
+    step: "unifi",
+    status: "info",
+    payload: { auth_method: authMethod, store_slug: storeSlug },
+    client_ip: clientIp,
+    user_agent: userAgent,
+  });
+
+  const authResult = await authorizeClient(
+    db, storeId, storeSlug, ctx.clientMac, sessionId, clientIp || "",
+    { apMac: ctx.apMac, ssid: ctx.ssid, fastReturn: false },
+  );
+
+  return {
+    session_id: sessionId,
+    authorized: !!authResult.ok,
+    redirect_url: detected.redirect_url || DEFAULT_REDIRECT_URL,
+    fail_reason: authResult.ok ? undefined : (authResult.reason || "AUTHORIZE_FAILED"),
+    store_slug: storeSlug,
+  };
+}
+
+function validatePasswordStrength(pw: unknown): { ok: boolean; reason?: string } {
+  if (typeof pw !== "string" || pw.length < 8) return { ok: false, reason: "weak_password" };
+  if (pw.length > 200) return { ok: false, reason: "weak_password" };
+  if (!/[A-Za-z]/.test(pw) || !/[0-9]/.test(pw)) return { ok: false, reason: "weak_password" };
+  return { ok: true };
+}
+
+async function handleSignup(req: Request): Promise<Response> {
+  const db = supabaseAdmin();
+  const clientIp = getPublicIp(req);
+  const ua = req.headers.get("user-agent") || "";
+  const body = await safeParseJson(req);
+  if (!body) return errorResponse("Invalid JSON body");
+  const traceId = getTraceId(req, body);
+
+  const name = sanitizeString(body.name, MAX_NAME_LEN);
+  const email = sanitizeString(body.email, MAX_EMAIL_LEN)?.toLowerCase() || null;
+  const cpfDigits = typeof body.cpf === "string" ? body.cpf.replace(/\D/g, "") : "";
+  const phoneDigits = typeof body.phone === "string" ? body.phone.replace(/\D/g, "") : "";
+  const password = typeof body.password === "string" ? body.password : "";
+
+  if (!name || name.length < 2) {
+    return jsonResponse({ error: "Nome inválido.", code: "invalid_name" }, 400);
+  }
+  if (!email || !isValidEmail(email)) {
+    return jsonResponse({ error: "E-mail inválido.", code: "invalid_email" }, 400);
+  }
+  if (!isValidCPF(cpfDigits)) {
+    return jsonResponse({ error: "CPF inválido.", code: "invalid_cpf" }, 400);
+  }
+  if (!isValidPhone(phoneDigits)) {
+    return jsonResponse({ error: "Telefone inválido.", code: "invalid_phone" }, 400);
+  }
+  const pwCheck = validatePasswordStrength(password);
+  if (!pwCheck.ok) {
+    return jsonResponse({ error: "A senha deve ter ao menos 8 caracteres, com letras e números.", code: "weak_password" }, 400);
+  }
+
+  const rl = await checkRateLimitDb(db, `signup:ip:${clientIp || "unknown"}`, 3600, 5, 1800);
+  if (!rl.allowed) {
+    return jsonResponse({ error: "Muitas tentativas. Aguarde alguns minutos.", code: "rate_limited" }, 429);
+  }
+
+  logEvent(db, {
+    trace_id: traceId, event_type: "signup_started", step: "form", status: "info",
+    payload: { email }, client_ip: clientIp, user_agent: ua,
+  });
+
+  // Create auth user (email confirmed so captive flow can proceed)
+  const { data: created, error: createErr } = await db.auth.admin.createUser({
+    email,
+    password,
+    email_confirm: true,
+    user_metadata: { full_name: name, cpf_digits: cpfDigits, phone_digits: phoneDigits },
+  });
+
+  if (createErr || !created?.user?.id) {
+    const msg = (createErr?.message || "").toLowerCase();
+    let code = "signup_failed";
+    let userMsg = "Não foi possível criar a conta. Tente novamente.";
+    if (msg.includes("already") || msg.includes("registered") || msg.includes("exists")) {
+      code = "email_already_registered";
+      userMsg = "Este e-mail já está cadastrado. Faça login.";
+    } else if (msg.includes("password")) {
+      code = "weak_password";
+      userMsg = "Senha muito fraca.";
+    }
+    logEvent(db, {
+      trace_id: traceId, event_type: "signup_failed", step: "form", status: "error",
+      error_code: code, error_message: createErr?.message, payload: { email }, client_ip: clientIp,
+    });
+    return jsonResponse({ error: userMsg, code }, 400);
+  }
+
+  const userId = created.user.id;
+
+  // Insert profile
+  const { error: profErr } = await db.from("profiles").insert({
+    id: userId,
+    full_name: name,
+    cpf_digits: cpfDigits,
+    phone_digits: phoneDigits,
+    email,
+  });
+  if (profErr) {
+    console.error("[signup] profile insert failed:", profErr.message);
+    // Roll back the auth user so retry works
+    try { await db.auth.admin.deleteUser(userId); } catch { /* ignore */ }
+    logEvent(db, {
+      trace_id: traceId, event_type: "signup_failed", step: "form", status: "error",
+      error_code: "profile_insert_failed", error_message: profErr.message, client_ip: clientIp,
+    });
+    return jsonResponse({ error: "Erro ao criar perfil.", code: "profile_insert_failed" }, 500);
+  }
+
+  // Sign in to get tokens
+  const anonClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  const { data: sessionData, error: signInErr } = await anonClient.auth.signInWithPassword({ email, password });
+  if (signInErr || !sessionData?.session) {
+    logEvent(db, {
+      trace_id: traceId, event_type: "signup_failed", step: "form", status: "error",
+      error_code: "post_signup_signin_failed", error_message: signInErr?.message, client_ip: clientIp,
+    });
+    return jsonResponse({ error: "Conta criada, mas não foi possível entrar. Tente fazer login.", code: "post_signup_signin_failed" }, 500);
+  }
+
+  const ctx = extractAuthContext(body);
+  const result = await authorizeAuthenticatedUser({
+    db, userId, ctx, req, authMethod: "password", traceId, clientIp, userAgent: ua,
+    profile: { full_name: name, cpf_digits: cpfDigits, phone_digits: phoneDigits, email },
+  });
+
+  logEvent(db, {
+    session_id: result.session_id, trace_id: traceId, event_type: "signup_success",
+    step: "form", status: "success", payload: { email, store_slug: result.store_slug }, client_ip: clientIp,
+  });
+
+  return jsonResponse({
+    session_id: result.session_id,
+    authorized: result.authorized,
+    redirect_url: result.redirect_url,
+    fail_reason: result.fail_reason,
+    access_token: sessionData.session.access_token,
+    refresh_token: sessionData.session.refresh_token,
+    trace_id: traceId,
+  });
+}
+
+async function handleLogin(req: Request): Promise<Response> {
+  const db = supabaseAdmin();
+  const clientIp = getPublicIp(req);
+  const ua = req.headers.get("user-agent") || "";
+  const body = await safeParseJson(req);
+  if (!body) return errorResponse("Invalid JSON body");
+  const traceId = getTraceId(req, body);
+
+  const email = sanitizeString(body.email, MAX_EMAIL_LEN)?.toLowerCase() || null;
+  const password = typeof body.password === "string" ? body.password : "";
+  if (!email || !isValidEmail(email) || !password) {
+    return jsonResponse({ error: "E-mail ou senha inválidos.", code: "invalid_credentials" }, 400);
+  }
+
+  const rlIp = await checkRateLimitDb(db, `login:ip:${clientIp || "unknown"}`, 300, 20, 900);
+  if (!rlIp.allowed) {
+    return jsonResponse({ error: "Muitas tentativas. Aguarde alguns minutos.", code: "rate_limited" }, 429);
+  }
+  const rlEmail = await checkRateLimitDb(db, `login:email:${email}`, 300, 5, 900);
+  if (!rlEmail.allowed) {
+    return jsonResponse({ error: "Muitas tentativas para este e-mail. Aguarde.", code: "rate_limited" }, 429);
+  }
+
+  logEvent(db, { trace_id: traceId, event_type: "login_started", step: "form", status: "info", payload: { email }, client_ip: clientIp, user_agent: ua });
+
+  const anonClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  const { data: sessionData, error: signInErr } = await anonClient.auth.signInWithPassword({ email, password });
+  if (signInErr || !sessionData?.session || !sessionData?.user) {
+    logEvent(db, {
+      trace_id: traceId, event_type: "login_failed", step: "form", status: "error",
+      error_code: "invalid_credentials", error_message: signInErr?.message, payload: { email }, client_ip: clientIp,
+    });
+    return jsonResponse({ error: "E-mail ou senha inválidos.", code: "invalid_credentials" }, 401);
+  }
+
+  const userId = sessionData.user.id;
+
+  // Load profile
+  const { data: profile, error: profErr } = await db
+    .from("profiles").select("full_name, cpf_digits, phone_digits, email").eq("id", userId).maybeSingle();
+  if (profErr || !profile) {
+    logEvent(db, {
+      trace_id: traceId, event_type: "login_failed", step: "form", status: "error",
+      error_code: "profile_not_found", error_message: profErr?.message, client_ip: clientIp,
+    });
+    return jsonResponse({ error: "Perfil não encontrado. Faça um novo cadastro.", code: "profile_not_found" }, 404);
+  }
+
+  const ctx = extractAuthContext(body);
+  const result = await authorizeAuthenticatedUser({
+    db, userId, ctx, req, authMethod: "password", traceId, clientIp, userAgent: ua, profile,
+  });
+
+  logEvent(db, {
+    session_id: result.session_id, trace_id: traceId, event_type: "login_success",
+    step: "form", status: "success", payload: { email, store_slug: result.store_slug }, client_ip: clientIp,
+  });
+
+  return jsonResponse({
+    session_id: result.session_id,
+    authorized: result.authorized,
+    redirect_url: result.redirect_url,
+    fail_reason: result.fail_reason,
+    access_token: sessionData.session.access_token,
+    refresh_token: sessionData.session.refresh_token,
+    trace_id: traceId,
+  });
+}
+
+async function handleAuthorizeExisting(req: Request): Promise<Response> {
+  const db = supabaseAdmin();
+  const clientIp = getPublicIp(req);
+  const ua = req.headers.get("user-agent") || "";
+  const body = await safeParseJson(req);
+  if (!body) return errorResponse("Invalid JSON body");
+  const traceId = getTraceId(req, body);
+
+  const accessToken = typeof body.access_token === "string" ? body.access_token : "";
+  if (!accessToken || accessToken.length < 20) {
+    return jsonResponse({ needs_login: true, error: "missing_token" }, 401);
+  }
+
+  const ctx = extractAuthContext(body);
+  if (ctx.clientMac) {
+    const rlMac = await checkRateLimitDb(db, `authexisting:mac:${ctx.clientMac}`, 60, 20, 60);
+    if (!rlMac.allowed) {
+      return jsonResponse({ error: "Muitas tentativas. Aguarde.", code: "rate_limited" }, 429);
+    }
+  }
+
+  // Validate token via getUser (project rule: use getUser, not getClaims)
+  const anonClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    global: { headers: { Authorization: `Bearer ${accessToken}` } },
+  });
+  const { data: userRes, error: userErr } = await anonClient.auth.getUser(accessToken);
+  if (userErr || !userRes?.user?.id) {
+    logEvent(db, {
+      trace_id: traceId, event_type: "silent_login_failed", step: "form", status: "warning",
+      error_code: "invalid_token", error_message: userErr?.message, client_ip: clientIp,
+    });
+    return jsonResponse({ needs_login: true, error: "invalid_token" }, 401);
+  }
+  const userId = userRes.user.id;
+
+  const { data: profile } = await db
+    .from("profiles").select("full_name, cpf_digits, phone_digits, email").eq("id", userId).maybeSingle();
+  if (!profile) {
+    return jsonResponse({ needs_login: true, error: "profile_not_found" }, 404);
+  }
+
+  const result = await authorizeAuthenticatedUser({
+    db, userId, ctx, req, authMethod: "silent", traceId, clientIp, userAgent: ua, profile,
+  });
+
+  logEvent(db, {
+    session_id: result.session_id, trace_id: traceId,
+    event_type: result.authorized ? "silent_login_success" : "silent_login_failed",
+    step: "form", status: result.authorized ? "success" : "warning",
+    payload: { store_slug: result.store_slug, fail_reason: result.fail_reason }, client_ip: clientIp,
+  });
+
+  return jsonResponse({
+    session_id: result.session_id,
+    authorized: result.authorized,
+    redirect_url: result.redirect_url,
+    fail_reason: result.fail_reason,
+    store_slug: result.store_slug,
+    trace_id: traceId,
+  });
+}
+
 // ========== Main Router ==========
 
 Deno.serve(async (req: Request) => {
@@ -3863,6 +4264,11 @@ Deno.serve(async (req: Request) => {
     if (path === "/request-code" && req.method === "POST") return await handleRequestCode(req);
     if (path === "/verify-code" && req.method === "POST") return await handleVerifyCode(req);
     if (path === "/client-event" && req.method === "POST") return await handleClientEvent(req);
+
+    // New account-based auth flow (email + password)
+    if (path === "/signup" && req.method === "POST") return await handleSignup(req);
+    if (path === "/login" && req.method === "POST") return await handleLogin(req);
+    if (path === "/authorize-existing" && req.method === "POST") return await handleAuthorizeExisting(req);
 
     // Diagnostic: list clients the AP currently sees (to find real MAC behind randomization)
     // GET /diag/list-aps?store=matriz — list all APs adopted by the controller with their WLANs
