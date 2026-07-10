@@ -290,6 +290,47 @@ export const api = {
     catch { return false; }
   },
 
+  // ===== Account-based auth (nome/e-mail/CPF/telefone/senha) =====
+
+  signup(data: {
+    name: string;
+    email: string;
+    cpf: string;
+    phone: string;
+    password: string;
+    client_mac?: string;
+    ap_mac?: string;
+    ssid?: string;
+    redirect_url?: string;
+    captive_timestamp?: string;
+    consent_version: string;
+  }) {
+    return xhrRequest<any>("/signup", { method: "POST", body: data, timeoutMs: 25000 });
+  },
+
+  login(data: {
+    email: string;
+    password: string;
+    client_mac?: string;
+    ap_mac?: string;
+    ssid?: string;
+    redirect_url?: string;
+    captive_timestamp?: string;
+  }) {
+    return xhrRequest<any>("/login", { method: "POST", body: data, timeoutMs: 20000 });
+  },
+
+  authorizeExisting(data: {
+    access_token: string;
+    client_mac?: string;
+    ap_mac?: string;
+    ssid?: string;
+    redirect_url?: string;
+    captive_timestamp?: string;
+  }) {
+    return xhrRequest<any>("/authorize-existing", { method: "POST", body: data, timeoutMs: 20000 });
+  },
+
   /** Fire-and-forget client telemetry. Uses sendBeacon first (survives CNA),
    * falls back to XHR. Never throws. */
   clientEvent(data: { session_id?: string | null; event: string; step?: string; status?: string; error_code?: string; error_message?: string; payload?: Record<string, unknown> }) {
