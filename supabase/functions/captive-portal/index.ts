@@ -3979,6 +3979,73 @@ function validatePasswordStrength(pw: unknown): { ok: boolean; reason?: string }
   return { ok: true };
 }
 
+/** Compute site base URL for building password-reset redirect */
+function getSiteBaseUrl(req: Request): string {
+  const origin = req.headers.get("origin") || req.headers.get("referer");
+  if (origin) {
+    try { const u = new URL(origin); return `${u.protocol}//${u.host}`; } catch { /* ignore */ }
+  }
+  try {
+    const u = new URL(DEFAULT_REDIRECT_URL);
+    // Prefer the wifi captive host if configured; otherwise use whatever's in the secret
+    return `${u.protocol}//${u.host}`;
+  } catch { /* ignore */ }
+  return "https://wifi.guedesepaixao.com.br";
+}
+
+async function handleRequestPasswordReset(req: Request): Promise<Response> {
+  const db = supabaseAdmin();
+  const clientIp = getPublicIp(req);
+  const ua = req.headers.get("user-agent") || "";
+  const body = await safeParseJson(req);
+  if (!body) return errorResponse("Invalid JSON body");
+  const traceId = getTraceId(req, body);
+
+  const email = sanitizeString(body.email, MAX_EMAIL_LEN)?.toLowerCase() || null;
+  if (!email || !isValidEmail(email)) {
+    return jsonResponse({ error: "E-mail inválido.", code: "invalid_email" }, 400);
+  }
+
+  const rl = await checkRateLimitDb(db, `pwreset:ip:${clientIp || "unknown"}:${email}`, 900, 3, 1800);
+  if (!rl.allowed) {
+    // Still respond with generic OK to avoid enumeration; log the throttle.
+    logEvent(db, {
+      trace_id: traceId, event_type: "password_reset_rate_limited", step: "form", status: "warning",
+      payload: { email_masked: maskEmail(email) }, client_ip: clientIp, user_agent: ua,
+    });
+    return jsonResponse({ ok: true });
+  }
+
+  const siteBase = getSiteBaseUrl(req);
+  const redirectTo = `${siteBase}/reset-password`;
+
+  const anonClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  const { error: resetErr } = await anonClient.auth.resetPasswordForEmail(email, { redirectTo });
+
+  logEvent(db, {
+    trace_id: traceId,
+    event_type: resetErr ? "password_reset_failed" : "password_reset_requested",
+    step: "form",
+    status: resetErr ? "error" : "info",
+    error_message: resetErr?.message,
+    payload: { email_masked: maskEmail(email), redirect_to: redirectTo },
+    client_ip: clientIp,
+    user_agent: ua,
+  });
+
+  // Always respond OK to prevent account enumeration
+  return jsonResponse({ ok: true });
+}
+
+function maskEmail(email: string): string {
+  const at = email.indexOf("@");
+  if (at < 1) return "***";
+  const local = email.slice(0, at);
+  const domain = email.slice(at + 1);
+  const shown = local.slice(0, Math.min(2, local.length));
+  return `${shown}${"*".repeat(Math.max(1, local.length - shown.length))}@${domain}`;
+}
+
 async function handleSignup(req: Request): Promise<Response> {
   const db = supabaseAdmin();
   const clientIp = getPublicIp(req);
