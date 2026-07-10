@@ -79,6 +79,7 @@ export default function AdminDashboard() {
   });
   const [totalAccounts, setTotalAccounts] = useState<number>(0);
   const [rangeHours, setRangeHours] = useState<number>(24);
+  const [authAttempts, setAuthAttempts] = useState<EventRow[]>([]);
 
   // Auth gate
   useEffect(() => {
