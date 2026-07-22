@@ -423,20 +423,13 @@ export default function App() {
               required className="portal-input" placeholder="email@exemplo.com"
             />
 
-            <label className="portal-label">CPF *</label>
-            <input
-              type="text" value={cpf}
-              onChange={(e) => setCpf(formatCPF(e.target.value))}
-              required inputMode="numeric" maxLength={14}
-              className="portal-input" placeholder="000.000.000-00"
-            />
-
-            <label className="portal-label">Telefone *</label>
+            <label className="portal-label">Telefone (opcional)</label>
             <input
               type="tel" value={phone}
               onChange={(e) => setPhone(formatPhoneBR(e.target.value))}
-              required className="portal-input" placeholder="(11) 99999-9999"
+              className="portal-input" placeholder="(11) 99999-9999"
             />
+
 
             <label className="portal-label">Senha *</label>
             <input
