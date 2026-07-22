@@ -327,9 +327,11 @@ export const api = {
     ssid?: string;
     redirect_url?: string;
     captive_timestamp?: string;
+    auth_method?: "silent" | "google" | "apple";
   }) {
     return xhrRequest<any>("/authorize-existing", { method: "POST", body: data, timeoutMs: 20000 });
   },
+
 
   requestPasswordReset(data: { email: string }) {
     return xhrRequest<any>("/request-password-reset", { method: "POST", body: data, timeoutMs: 15000 });
