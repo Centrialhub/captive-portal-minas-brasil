@@ -3858,10 +3858,10 @@ function extractAuthContext(body: Record<string, unknown>): AuthAuthorizeContext
 async function authorizeAuthenticatedUser(args: {
   db: ReturnType<typeof supabaseAdmin>;
   userId: string;
-  profile: { full_name: string; cpf_digits: string; phone_digits: string; email: string };
+  profile: { full_name: string; cpf_digits: string | null; phone_digits: string | null; email: string };
   ctx: AuthAuthorizeContext;
   req: Request;
-  authMethod: "password" | "silent";
+  authMethod: "password" | "silent" | "google" | "apple";
   traceId: string;
   clientIp: string | null;
   userAgent: string | null;
@@ -3872,6 +3872,7 @@ async function authorizeAuthenticatedUser(args: {
   fail_reason?: string;
   store_slug: string;
 }> {
+
   const { db, userId, profile, ctx, req, authMethod, traceId, clientIp, userAgent } = args;
 
   const detected = await detectStoreFromRequest(db, req, ctx.apMac);
