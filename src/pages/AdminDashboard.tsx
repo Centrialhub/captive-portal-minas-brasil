@@ -42,9 +42,12 @@ const STEPS = ["params", "form", "unifi", "redirect"] as const;
 const STATUSES = ["started", "submitted", "authorized", "failed"] as const;
 const AUTH_METHODS = [
   { value: "", label: "Todos" },
-  { value: "password", label: "Signup/Login" },
+  { value: "password", label: "E-mail/senha" },
+  { value: "google", label: "Google" },
+  { value: "apple", label: "Apple" },
   { value: "silent", label: "Silent login" },
 ] as const;
+
 
 const fmt = (iso: string | null) => iso ? new Date(iso).toLocaleString("pt-BR", { hour12: false }) : "—";
 const dur = (a: string | null, b: string | null) => {
