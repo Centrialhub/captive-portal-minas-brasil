@@ -3,13 +3,13 @@
  */
 
 /**
- * Public HTTP base URL for the captive portal.
+ * Public HTTPS base URL for the captive portal.
  *
- * The Android Captive Network Assistant aborts with a certificate error if
- * we redirect the client to HTTPS during the captive flow. We MUST keep the
- * client in HTTP same-origin while the user is being authorized.
+ * The controllers now serve valid public certificates, so we can safely stay
+ * on HTTPS end-to-end. HTTPS is also required for Google/Apple OAuth.
  */
-export const PUBLIC_CAPTIVE_BASE_URL = "http://wifi.guedesepaixao.com.br";
+export const PUBLIC_CAPTIVE_BASE_URL = "https://drogariaminasbrasilapp.com.br";
+
 
 /** Kept exported for backward-compat. NOT used as a client fallback anymore. */
 export const SUPABASE_DIRECT_BASE =
