@@ -497,9 +497,12 @@ function AuthPill({ method, hasUser }: { method: string | null; hasUser: boolean
   }
   const map: Record<string, [string, string, string]> = {
     password: ["#e0e7ff", "#3730a3", "senha"],
+    google: ["#fee2e2", "#991b1b", "Google"],
+    apple: ["#111827", "#f9fafb", "Apple"],
     silent: ["#ecfeff", "#0e7490", "silent"],
     otp_legacy: ["#fef3c7", "#92400e", "otp (legado)"],
   };
+
   const [bg, fg, label] = map[method || ""] || ["#f3f4f6", "#374151", method || "—"];
   return <span style={{ background: bg, color: fg, padding: "2px 8px", borderRadius: 999, fontSize: 11, fontWeight: 600 }}>{label}</span>;
 }
