@@ -4201,7 +4201,7 @@ async function handleSignup(req: Request): Promise<Response> {
   const ctx = extractAuthContext(body);
   const result = await authorizeAuthenticatedUser({
     db, userId, ctx, req, authMethod: "password", traceId, clientIp, userAgent: ua,
-    profile: { full_name: name, cpf_digits: cpfDigits, phone_digits: phoneDigits, email },
+    profile: { full_name: name, cpf_digits: cpfDigits || null, phone_digits: phoneDigits || null, email },
   });
 
   logEvent(db, {
