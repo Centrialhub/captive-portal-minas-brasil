@@ -4,13 +4,44 @@ import { supabase } from "./integrations/supabase/client";
 import {
   getQueryParams,
   sanitizeCaptiveRedirect,
-  isValidCPF,
-  formatCPF,
 } from "./lib/portal-utils";
 import logoMinasBrasil from "./assets/logo-minas-brasil.png";
 import "./index.css";
 
 type Step = "loading" | "login" | "signup" | "forgot" | "forgot_sent" | "authorizing" | "success" | "error";
+
+const CAPTIVE_PARAM_KEYS = ["id", "mac", "ap", "ssid", "url", "t", "site", "store"] as const;
+const CAPTIVE_PARAMS_STORAGE_KEY = "mb_captive_params";
+
+/** Preserve UniFi captive params across an OAuth round-trip. */
+function stashCaptiveParams() {
+  try {
+    const p = new URLSearchParams(window.location.search);
+    const out: Record<string, string> = {};
+    CAPTIVE_PARAM_KEYS.forEach((k) => {
+      const v = p.get(k);
+      if (v) out[k] = v;
+    });
+    if (Object.keys(out).length) sessionStorage.setItem(CAPTIVE_PARAMS_STORAGE_KEY, JSON.stringify(out));
+  } catch { /* ignore */ }
+}
+
+/** Restore captive params into the current URL when coming back from OAuth. */
+function restoreCaptiveParamsIfNeeded() {
+  try {
+    const current = new URLSearchParams(window.location.search);
+    const hasAny = CAPTIVE_PARAM_KEYS.some((k) => current.get(k));
+    if (hasAny) return;
+    const raw = sessionStorage.getItem(CAPTIVE_PARAMS_STORAGE_KEY);
+    if (!raw) return;
+    const saved = JSON.parse(raw) as Record<string, string>;
+    Object.entries(saved).forEach(([k, v]) => current.set(k, v));
+    const qs = current.toString();
+    const newUrl = window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash;
+    window.history.replaceState(null, "", newUrl);
+  } catch { /* ignore */ }
+}
+
 
 interface BootstrapData {
   store: { slug: string | null; name: string; city?: string | null };
@@ -51,20 +82,23 @@ export default function App() {
   // forgot password
   const [forgotEmail, setForgotEmail] = useState("");
 
-  // signup form
+  // signup form (CPF is no longer collected)
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
-  const [cpf, setCpf] = useState("");
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
   const [password2, setPassword2] = useState("");
   const [consented, setConsented] = useState(false);
+
 
   // Boot: fetch bootstrap + try silent login
   useEffect(() => {
     // Hide vanilla-JS fallback
     const fb = document.getElementById("fb");
     if (fb) fb.style.display = "none";
+
+    // Restore UniFi captive params if we're coming back from OAuth roundtrip.
+    restoreCaptiveParamsIfNeeded();
 
     // Non-blocking bootstrap (store name / consent text)
     api.bootstrap().then(
@@ -77,6 +111,7 @@ export default function App() {
     (async () => {
       if (silentTriedRef.current) return;
       silentTriedRef.current = true;
+
       try {
         const { data } = await supabase.auth.getSession();
         const session = data?.session;
@@ -166,9 +201,8 @@ export default function App() {
 
     if (!name || name.trim().length < 2) return setError("Informe seu nome completo.");
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return setError("E-mail inválido.");
-    if (!isValidCPF(cpf)) return setError("CPF inválido.");
     const phoneDigits = phone.replace(/\D/g, "");
-    if (phoneDigits.length < 10 || phoneDigits.length > 11) return setError("Telefone inválido.");
+    if (phoneDigits && (phoneDigits.length < 10 || phoneDigits.length > 11)) return setError("Telefone inválido.");
     if (password.length < 8) return setError("A senha deve ter ao menos 8 caracteres.");
     if (!/[A-Za-z]/.test(password) || !/[0-9]/.test(password))
       return setError("A senha deve conter letras e números.");
@@ -181,7 +215,7 @@ export default function App() {
       const result = await api.signup({
         name: name.trim(),
         email: email.trim().toLowerCase(),
-        cpf: cpf.replace(/\D/g, ""),
+        cpf: "",
         phone: phoneDigits,
         password,
         client_mac: params.client_mac,
@@ -191,6 +225,7 @@ export default function App() {
         captive_timestamp: params.captive_timestamp,
         consent_version: boot.consent?.version || "1.0",
       });
+
       if (result?.error) {
         setError(result.error);
         setBusy(false);
@@ -235,6 +270,29 @@ export default function App() {
       setStep("forgot_sent");
     }
     setBusy(false);
+  };
+
+  const handleOAuth = async (provider: "google" | "apple") => {
+    if (busy) return;
+    setError("");
+    setBusy(true);
+    try {
+      stashCaptiveParams();
+      const qs = window.location.search || "";
+      const redirectTo = `${window.location.origin}/${qs}`;
+      const { error: err } = await supabase.auth.signInWithOAuth({
+        provider,
+        options: { redirectTo },
+      });
+      if (err) {
+        setError(`Não foi possível iniciar login com ${provider === "google" ? "Google" : "Apple"}.`);
+        setBusy(false);
+      }
+      // On success, the browser navigates away — no further UI update needed.
+    } catch {
+      setError("Erro ao iniciar login social. Tente novamente.");
+      setBusy(false);
+    }
   };
 
 
@@ -392,20 +450,13 @@ export default function App() {
               required className="portal-input" placeholder="email@exemplo.com"
             />
 
-            <label className="portal-label">CPF *</label>
-            <input
-              type="text" value={cpf}
-              onChange={(e) => setCpf(formatCPF(e.target.value))}
-              required inputMode="numeric" maxLength={14}
-              className="portal-input" placeholder="000.000.000-00"
-            />
-
-            <label className="portal-label">Telefone *</label>
+            <label className="portal-label">Telefone (opcional)</label>
             <input
               type="tel" value={phone}
               onChange={(e) => setPhone(formatPhoneBR(e.target.value))}
-              required className="portal-input" placeholder="(11) 99999-9999"
+              className="portal-input" placeholder="(11) 99999-9999"
             />
+
 
             <label className="portal-label">Senha *</label>
             <input
@@ -473,6 +524,52 @@ export default function App() {
         </p>
 
         {error && <div className="portal-error">{error}</div>}
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 16 }}>
+          <button
+            type="button"
+            onClick={() => handleOAuth("google")}
+            disabled={busy}
+            style={{
+              display: "flex", alignItems: "center", justifyContent: "center", gap: 10,
+              padding: "12px 16px", background: "#fff", color: "#3c4043",
+              border: "1px solid #dadce0", borderRadius: 8, fontSize: 15, fontWeight: 500,
+              cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1,
+            }}
+          >
+            <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
+              <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+              <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+              <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+              <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+            </svg>
+            Continuar com Google
+          </button>
+          <button
+            type="button"
+            onClick={() => handleOAuth("apple")}
+            disabled={busy}
+            style={{
+              display: "flex", alignItems: "center", justifyContent: "center", gap: 10,
+              padding: "12px 16px", background: "#000", color: "#fff",
+              border: "1px solid #000", borderRadius: 8, fontSize: 15, fontWeight: 500,
+              cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1,
+            }}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d="M17.05 20.28c-.98.95-2.05.8-3.08.35-1.09-.46-2.09-.48-3.24 0-1.44.62-2.2.44-3.06-.35C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.08zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/>
+            </svg>
+            Continuar com Apple
+          </button>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "8px 0 16px", color: "#999", fontSize: 12 }}>
+          <div style={{ flex: 1, height: 1, background: "#e5e7eb" }} />
+          <span>ou entre com e-mail</span>
+          <div style={{ flex: 1, height: 1, background: "#e5e7eb" }} />
+        </div>
+
+
 
         <form onSubmit={handleLogin}>
           <label className="portal-label">E-mail</label>

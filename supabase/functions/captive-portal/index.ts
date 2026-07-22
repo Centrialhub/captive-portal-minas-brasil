@@ -3858,10 +3858,10 @@ function extractAuthContext(body: Record<string, unknown>): AuthAuthorizeContext
 async function authorizeAuthenticatedUser(args: {
   db: ReturnType<typeof supabaseAdmin>;
   userId: string;
-  profile: { full_name: string; cpf_digits: string; phone_digits: string; email: string };
+  profile: { full_name: string; cpf_digits: string | null; phone_digits: string | null; email: string };
   ctx: AuthAuthorizeContext;
   req: Request;
-  authMethod: "password" | "silent";
+  authMethod: "password" | "silent" | "google" | "apple";
   traceId: string;
   clientIp: string | null;
   userAgent: string | null;
@@ -3872,6 +3872,7 @@ async function authorizeAuthenticatedUser(args: {
   fail_reason?: string;
   store_slug: string;
 }> {
+
   const { db, userId, profile, ctx, req, authMethod, traceId, clientIp, userAgent } = args;
 
   const detected = await detectStoreFromRequest(db, req, ctx.apMac);
@@ -4078,10 +4079,13 @@ async function handleSignup(req: Request): Promise<Response> {
   if (!email || !isValidEmail(email)) {
     return jsonResponse({ error: "E-mail inválido.", code: "invalid_email" }, 400);
   }
-  if (!isValidCPF(cpfDigits)) {
+  // CPF is now OPTIONAL (Google/Apple accounts don't provide it).
+  // If sent, must be a valid CPF.
+  if (cpfDigits && !isValidCPF(cpfDigits)) {
     return jsonResponse({ error: "CPF inválido.", code: "invalid_cpf" }, 400);
   }
-  if (!isValidPhone(phoneDigits)) {
+  // Phone is optional too now.
+  if (phoneDigits && !isValidPhone(phoneDigits)) {
     return jsonResponse({ error: "Telefone inválido.", code: "invalid_phone" }, 400);
   }
   const pwCheck = validatePasswordStrength(password);
@@ -4099,27 +4103,36 @@ async function handleSignup(req: Request): Promise<Response> {
     payload: { email }, client_ip: clientIp, user_agent: ua,
   });
 
-  // Pre-check: CPF already registered?
-  const { data: cpfExists } = await db
-    .from("profiles").select("id").eq("cpf_digits", cpfDigits).limit(1).maybeSingle();
-  if (cpfExists?.id) {
-    logEvent(db, {
-      trace_id: traceId, event_type: "signup_failed", step: "form", status: "error",
-      error_code: "cpf_already_registered", payload: { email }, client_ip: clientIp,
-    });
-    return jsonResponse({
-      error: "Este CPF já possui conta. Entre com o e-mail cadastrado ou recupere a senha.",
-      code: "cpf_already_registered",
-    }, 409);
+  // Pre-check: CPF already registered? (only when CPF was provided)
+  if (cpfDigits) {
+    const { data: cpfExists } = await db
+      .from("profiles").select("id").eq("cpf_digits", cpfDigits).limit(1).maybeSingle();
+    if (cpfExists?.id) {
+      logEvent(db, {
+        trace_id: traceId, event_type: "signup_failed", step: "form", status: "error",
+        error_code: "cpf_already_registered", payload: { email }, client_ip: clientIp,
+      });
+      return jsonResponse({
+        error: "Este CPF já possui conta. Entre com o e-mail cadastrado ou recupere a senha.",
+        code: "cpf_already_registered",
+      }, 409);
+    }
   }
+
 
   // Create auth user (email confirmed so captive flow can proceed)
   const { data: created, error: createErr } = await db.auth.admin.createUser({
     email,
     password,
     email_confirm: true,
-    user_metadata: { full_name: name, cpf_digits: cpfDigits, phone_digits: phoneDigits },
+    user_metadata: {
+      full_name: name,
+      cpf_digits: cpfDigits || null,
+      phone_digits: phoneDigits || null,
+    },
   });
+
+
 
   if (createErr || !created?.user?.id) {
     const msg = (createErr?.message || "").toLowerCase();
@@ -4147,10 +4160,11 @@ async function handleSignup(req: Request): Promise<Response> {
   const { error: profErr } = await db.from("profiles").insert({
     id: userId,
     full_name: name,
-    cpf_digits: cpfDigits,
-    phone_digits: phoneDigits,
+    cpf_digits: cpfDigits || null,
+    phone_digits: phoneDigits || null,
     email,
   });
+
   if (profErr) {
     console.error("[signup] profile insert failed:", profErr.message);
     // Roll back the auth user so retry works
@@ -4188,7 +4202,7 @@ async function handleSignup(req: Request): Promise<Response> {
   const ctx = extractAuthContext(body);
   const result = await authorizeAuthenticatedUser({
     db, userId, ctx, req, authMethod: "password", traceId, clientIp, userAgent: ua,
-    profile: { full_name: name, cpf_digits: cpfDigits, phone_digits: phoneDigits, email },
+    profile: { full_name: name, cpf_digits: cpfDigits || null, phone_digits: phoneDigits || null, email },
   });
 
   logEvent(db, {
@@ -4311,21 +4325,65 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
   }
   const userId = userRes.user.id;
 
-  const { data: profile } = await db
+  const { data: existingProfile } = await db
     .from("profiles").select("full_name, cpf_digits, phone_digits, email").eq("id", userId).maybeSingle();
+
+  let profile = existingProfile;
+
+  // Auto-provision profile for OAuth users (Google/Apple) on first sign-in.
   if (!profile) {
-    return jsonResponse({ needs_login: true, error: "profile_not_found" }, 404);
+    const meta = (userRes.user.user_metadata || {}) as Record<string, unknown>;
+    const fullName =
+      (typeof meta.full_name === "string" && meta.full_name) ||
+      (typeof meta.name === "string" && meta.name) ||
+      (typeof meta.given_name === "string" && meta.given_name) ||
+      (userRes.user.email ? userRes.user.email.split("@")[0] : "Cliente");
+    const emailValue = userRes.user.email || (typeof meta.email === "string" ? meta.email : null);
+    if (!emailValue) {
+      return jsonResponse({ needs_login: true, error: "profile_missing_email" }, 400);
+    }
+    const { error: insErr } = await db.from("profiles").insert({
+      id: userId,
+      full_name: String(fullName).slice(0, MAX_NAME_LEN),
+      email: emailValue.toLowerCase(),
+      cpf_digits: null,
+      phone_digits: null,
+    });
+    if (insErr) {
+      console.error("[authorize-existing] profile auto-create failed:", insErr.message);
+      return jsonResponse({ needs_login: true, error: "profile_create_failed" }, 500);
+    }
+    profile = {
+      full_name: String(fullName),
+      email: emailValue.toLowerCase(),
+      cpf_digits: null,
+      phone_digits: null,
+    };
+    logEvent(db, {
+      trace_id: traceId, event_type: "profile_auto_created", step: "form", status: "info",
+      payload: { provider: (userRes.user.app_metadata as Record<string, unknown> | undefined)?.provider, email: emailValue }, client_ip: clientIp,
+    });
   }
 
+  // Auth method hint from client (google/apple/silent). Falls back to provider from token.
+  const hint = typeof body.auth_method === "string" ? body.auth_method.toLowerCase() : "";
+  const provider = String(
+    (userRes.user.app_metadata as Record<string, unknown> | undefined)?.provider || "",
+  ).toLowerCase();
+  const authMethod: "silent" | "google" | "apple" =
+    hint === "google" || provider === "google" ? "google" :
+    hint === "apple" || provider === "apple" ? "apple" :
+    "silent";
+
   const result = await authorizeAuthenticatedUser({
-    db, userId, ctx, req, authMethod: "silent", traceId, clientIp, userAgent: ua, profile,
+    db, userId, ctx, req, authMethod, traceId, clientIp, userAgent: ua, profile,
   });
 
   logEvent(db, {
     session_id: result.session_id, trace_id: traceId,
     event_type: result.authorized ? "silent_login_success" : "silent_login_failed",
     step: "form", status: result.authorized ? "success" : "warning",
-    payload: { store_slug: result.store_slug, fail_reason: result.fail_reason }, client_ip: clientIp,
+    payload: { store_slug: result.store_slug, fail_reason: result.fail_reason, auth_method: authMethod }, client_ip: clientIp,
   });
 
   return jsonResponse({
@@ -4334,9 +4392,11 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
     redirect_url: result.redirect_url,
     fail_reason: result.fail_reason,
     store_slug: result.store_slug,
+    auth_method: authMethod,
     trace_id: traceId,
   });
 }
+
 
 // ========== Main Router ==========
 

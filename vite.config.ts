@@ -8,7 +8,7 @@ export default defineConfig(({ mode }) => ({
   server: {
     host: "::",
     port: 8080,
-    allowedHosts: ["wifi-minasbrasil-wifi-minasbrasil.tqchy2.easypanel.host", "wifi.guedesepaixao.com.br"],
+    allowedHosts: ["wifi-minasbrasil-wifi-minasbrasil.tqchy2.easypanel.host", "wifi.guedesepaixao.com.br", "drogariaminasbrasilapp.com.br"],
     hmr: {
       overlay: false,
     },
@@ -16,7 +16,8 @@ export default defineConfig(({ mode }) => ({
   preview: {
     host: "::",
     port: 3000,
-    allowedHosts: ["wifi-minasbrasil-wifi-minasbrasil.tqchy2.easypanel.host", "wifi.guedesepaixao.com.br"],
+    allowedHosts: ["wifi-minasbrasil-wifi-minasbrasil.tqchy2.easypanel.host", "wifi.guedesepaixao.com.br", "drogariaminasbrasilapp.com.br"],
+
   },
   build: {
     target: "es2015",

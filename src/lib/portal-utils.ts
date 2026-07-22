@@ -3,13 +3,13 @@
  */
 
 /**
- * Public HTTP base URL for the captive portal.
+ * Public HTTPS base URL for the captive portal.
  *
- * The Android Captive Network Assistant aborts with a certificate error if
- * we redirect the client to HTTPS during the captive flow. We MUST keep the
- * client in HTTP same-origin while the user is being authorized.
+ * The controllers now serve valid public certificates, so we can safely stay
+ * on HTTPS end-to-end. HTTPS is also required for Google/Apple OAuth.
  */
-export const PUBLIC_CAPTIVE_BASE_URL = "http://wifi.guedesepaixao.com.br";
+export const PUBLIC_CAPTIVE_BASE_URL = "https://drogariaminasbrasilapp.com.br";
+
 
 /** Kept exported for backward-compat. NOT used as a client fallback anymore. */
 export const SUPABASE_DIRECT_BASE =
@@ -42,28 +42,25 @@ export function sanitizeCaptiveRedirect(url: string | null | undefined): string 
   if (!url) return safeFallback;
   try {
     const u = new URL(url, PUBLIC_CAPTIVE_BASE_URL);
-    // Captive flow MUST stay on HTTP same-origin to avoid Android CNA cert errors.
-    if (u.protocol !== "http:") return safeFallback;
+    // Controllers now use valid public certs → HTTPS is safe. Still block IPs/backend hosts.
+    if (u.protocol !== "http:" && u.protocol !== "https:") return safeFallback;
     const h = u.hostname.toLowerCase();
-    // Block any IPv4 literal (e.g. 31.97.170.23) and any IPv6 literal.
     if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h)) return safeFallback;
     if (h.indexOf(":") !== -1) return safeFallback;
-    // Block known controller/backend hosts.
     if (
       h === "31.97.170.23" ||
       h.indexOf("rwificontroller") !== -1 ||
       h.endsWith("supabase.co") ||
       h.endsWith(".supabase.co")
     ) return safeFallback;
-    // Block any non-default port (UniFi controller uses 8443).
-    if (u.port && u.port !== "80") return safeFallback;
-    // Block UniFi hotspot redirect path explicitly.
+    if (u.port && u.port !== "80" && u.port !== "443") return safeFallback;
     if (u.pathname.indexOf("/guest/s/") === 0) return safeFallback;
     return u.toString();
   } catch {
     return safeFallback;
   }
 }
+
 
 const TRACE_KEY = "mb_trace_id";
 

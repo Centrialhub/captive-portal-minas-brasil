@@ -528,30 +528,30 @@ export type Database = {
       }
       profiles: {
         Row: {
-          cpf_digits: string
+          cpf_digits: string | null
           created_at: string
           email: string
           full_name: string
           id: string
-          phone_digits: string
+          phone_digits: string | null
           updated_at: string
         }
         Insert: {
-          cpf_digits: string
+          cpf_digits?: string | null
           created_at?: string
           email: string
           full_name: string
           id: string
-          phone_digits: string
+          phone_digits?: string | null
           updated_at?: string
         }
         Update: {
-          cpf_digits?: string
+          cpf_digits?: string | null
           created_at?: string
           email?: string
           full_name?: string
           id?: string
-          phone_digits?: string
+          phone_digits?: string | null
           updated_at?: string
         }
         Relationships: []
