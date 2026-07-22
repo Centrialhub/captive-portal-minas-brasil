@@ -97,6 +97,9 @@ export default function App() {
     const fb = document.getElementById("fb");
     if (fb) fb.style.display = "none";
 
+    // Restore UniFi captive params if we're coming back from OAuth roundtrip.
+    restoreCaptiveParamsIfNeeded();
+
     // Non-blocking bootstrap (store name / consent text)
     api.bootstrap().then(
       (b) => {
@@ -108,6 +111,7 @@ export default function App() {
     (async () => {
       if (silentTriedRef.current) return;
       silentTriedRef.current = true;
+
       try {
         const { data } = await supabase.auth.getSession();
         const session = data?.session;
