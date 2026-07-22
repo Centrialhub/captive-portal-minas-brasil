@@ -4159,10 +4159,11 @@ async function handleSignup(req: Request): Promise<Response> {
   const { error: profErr } = await db.from("profiles").insert({
     id: userId,
     full_name: name,
-    cpf_digits: cpfDigits,
-    phone_digits: phoneDigits,
+    cpf_digits: cpfDigits || null,
+    phone_digits: phoneDigits || null,
     email,
   });
+
   if (profErr) {
     console.error("[signup] profile insert failed:", profErr.message);
     // Roll back the auth user so retry works
