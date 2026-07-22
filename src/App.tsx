@@ -82,14 +82,14 @@ export default function App() {
   // forgot password
   const [forgotEmail, setForgotEmail] = useState("");
 
-  // signup form
+  // signup form (CPF is no longer collected)
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
-  const [cpf, setCpf] = useState("");
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
   const [password2, setPassword2] = useState("");
   const [consented, setConsented] = useState(false);
+
 
   // Boot: fetch bootstrap + try silent login
   useEffect(() => {
