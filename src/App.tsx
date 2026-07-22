@@ -272,6 +272,29 @@ export default function App() {
     setBusy(false);
   };
 
+  const handleOAuth = async (provider: "google" | "apple") => {
+    if (busy) return;
+    setError("");
+    setBusy(true);
+    try {
+      stashCaptiveParams();
+      const qs = window.location.search || "";
+      const redirectTo = `${window.location.origin}/${qs}`;
+      const { error: err } = await supabase.auth.signInWithOAuth({
+        provider,
+        options: { redirectTo },
+      });
+      if (err) {
+        setError(`Não foi possível iniciar login com ${provider === "google" ? "Google" : "Apple"}.`);
+        setBusy(false);
+      }
+      // On success, the browser navigates away — no further UI update needed.
+    } catch {
+      setError("Erro ao iniciar login social. Tente novamente.");
+      setBusy(false);
+    }
+  };
+
 
 
   // ── LOADING / AUTHORIZING ──
