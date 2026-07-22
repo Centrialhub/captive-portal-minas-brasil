@@ -75,19 +75,18 @@ RUN printf 'server {\n\
     }\n\
 \n\
     # Redirect do captive portal UniFi (IP) para dominio com SSL valido\n\
-    # Quando o UniFi redireciona para https://31.97.170.23/guest/s/default/?ap=...&id=...\n\
-    # este bloco faz 302 para http://wifi.guedesepaixao.com.br com todos os params (HTTP only — Android CNA cert safety)\n\
-    # Multi-loja: NAO cravar store=, deixar edge function detectar via ?store= (injetado pelo UniFi) ou IP NAT.\n\
+    # Controladoras agora tem certificado publico, entao redirect HTTPS eh seguro.\n\
     location /guest/s/default/ {\n\
-        return 302 http://wifi.guedesepaixao.com.br/?$args;\n\
+        return 302 https://drogariaminasbrasilapp.com.br/?$args;\n\
     }\n\
 \n\
-    location = /generate_204 { return 302 http://wifi.guedesepaixao.com.br/?$args; }\n\
-    location = /gen_204 { return 302 http://wifi.guedesepaixao.com.br/?$args; }\n\
-    location = /hotspot-detect.html { return 302 http://wifi.guedesepaixao.com.br/?$args; }\n\
-    location = /library/test/success.html { return 302 http://wifi.guedesepaixao.com.br/?$args; }\n\
-    location = /connecttest.txt { return 302 http://wifi.guedesepaixao.com.br/?$args; }\n\
-    location = /ncsi.txt { return 302 http://wifi.guedesepaixao.com.br/?$args; }\n\
+    location = /generate_204 { return 302 https://drogariaminasbrasilapp.com.br/?$args; }\n\
+    location = /gen_204 { return 302 https://drogariaminasbrasilapp.com.br/?$args; }\n\
+    location = /hotspot-detect.html { return 302 https://drogariaminasbrasilapp.com.br/?$args; }\n\
+    location = /library/test/success.html { return 302 https://drogariaminasbrasilapp.com.br/?$args; }\n\
+    location = /connecttest.txt { return 302 https://drogariaminasbrasilapp.com.br/?$args; }\n\
+    location = /ncsi.txt { return 302 https://drogariaminasbrasilapp.com.br/?$args; }\n\
+
 \n\
     # SPA fallback - preserva query params\n\
     location / {\n\
