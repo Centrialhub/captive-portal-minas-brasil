@@ -4078,10 +4078,13 @@ async function handleSignup(req: Request): Promise<Response> {
   if (!email || !isValidEmail(email)) {
     return jsonResponse({ error: "E-mail inválido.", code: "invalid_email" }, 400);
   }
-  if (!isValidCPF(cpfDigits)) {
+  // CPF is now OPTIONAL (Google/Apple accounts don't provide it).
+  // If sent, must be a valid CPF.
+  if (cpfDigits && !isValidCPF(cpfDigits)) {
     return jsonResponse({ error: "CPF inválido.", code: "invalid_cpf" }, 400);
   }
-  if (!isValidPhone(phoneDigits)) {
+  // Phone is optional too now.
+  if (phoneDigits && !isValidPhone(phoneDigits)) {
     return jsonResponse({ error: "Telefone inválido.", code: "invalid_phone" }, 400);
   }
   const pwCheck = validatePasswordStrength(password);
@@ -4099,19 +4102,22 @@ async function handleSignup(req: Request): Promise<Response> {
     payload: { email }, client_ip: clientIp, user_agent: ua,
   });
 
-  // Pre-check: CPF already registered?
-  const { data: cpfExists } = await db
-    .from("profiles").select("id").eq("cpf_digits", cpfDigits).limit(1).maybeSingle();
-  if (cpfExists?.id) {
-    logEvent(db, {
-      trace_id: traceId, event_type: "signup_failed", step: "form", status: "error",
-      error_code: "cpf_already_registered", payload: { email }, client_ip: clientIp,
-    });
-    return jsonResponse({
-      error: "Este CPF já possui conta. Entre com o e-mail cadastrado ou recupere a senha.",
-      code: "cpf_already_registered",
-    }, 409);
+  // Pre-check: CPF already registered? (only when CPF was provided)
+  if (cpfDigits) {
+    const { data: cpfExists } = await db
+      .from("profiles").select("id").eq("cpf_digits", cpfDigits).limit(1).maybeSingle();
+    if (cpfExists?.id) {
+      logEvent(db, {
+        trace_id: traceId, event_type: "signup_failed", step: "form", status: "error",
+        error_code: "cpf_already_registered", payload: { email }, client_ip: clientIp,
+      });
+      return jsonResponse({
+        error: "Este CPF já possui conta. Entre com o e-mail cadastrado ou recupere a senha.",
+        code: "cpf_already_registered",
+      }, 409);
+    }
   }
+
 
   // Create auth user (email confirmed so captive flow can proceed)
   const { data: created, error: createErr } = await db.auth.admin.createUser({
