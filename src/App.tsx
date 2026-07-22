@@ -4,13 +4,44 @@ import { supabase } from "./integrations/supabase/client";
 import {
   getQueryParams,
   sanitizeCaptiveRedirect,
-  isValidCPF,
-  formatCPF,
 } from "./lib/portal-utils";
 import logoMinasBrasil from "./assets/logo-minas-brasil.png";
 import "./index.css";
 
 type Step = "loading" | "login" | "signup" | "forgot" | "forgot_sent" | "authorizing" | "success" | "error";
+
+const CAPTIVE_PARAM_KEYS = ["id", "mac", "ap", "ssid", "url", "t", "site", "store"] as const;
+const CAPTIVE_PARAMS_STORAGE_KEY = "mb_captive_params";
+
+/** Preserve UniFi captive params across an OAuth round-trip. */
+function stashCaptiveParams() {
+  try {
+    const p = new URLSearchParams(window.location.search);
+    const out: Record<string, string> = {};
+    CAPTIVE_PARAM_KEYS.forEach((k) => {
+      const v = p.get(k);
+      if (v) out[k] = v;
+    });
+    if (Object.keys(out).length) sessionStorage.setItem(CAPTIVE_PARAMS_STORAGE_KEY, JSON.stringify(out));
+  } catch { /* ignore */ }
+}
+
+/** Restore captive params into the current URL when coming back from OAuth. */
+function restoreCaptiveParamsIfNeeded() {
+  try {
+    const current = new URLSearchParams(window.location.search);
+    const hasAny = CAPTIVE_PARAM_KEYS.some((k) => current.get(k));
+    if (hasAny) return;
+    const raw = sessionStorage.getItem(CAPTIVE_PARAMS_STORAGE_KEY);
+    if (!raw) return;
+    const saved = JSON.parse(raw) as Record<string, string>;
+    Object.entries(saved).forEach(([k, v]) => current.set(k, v));
+    const qs = current.toString();
+    const newUrl = window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash;
+    window.history.replaceState(null, "", newUrl);
+  } catch { /* ignore */ }
+}
+
 
 interface BootstrapData {
   store: { slug: string | null; name: string; city?: string | null };
