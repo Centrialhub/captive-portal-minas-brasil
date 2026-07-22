@@ -197,9 +197,8 @@ export default function App() {
 
     if (!name || name.trim().length < 2) return setError("Informe seu nome completo.");
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return setError("E-mail inválido.");
-    if (!isValidCPF(cpf)) return setError("CPF inválido.");
     const phoneDigits = phone.replace(/\D/g, "");
-    if (phoneDigits.length < 10 || phoneDigits.length > 11) return setError("Telefone inválido.");
+    if (phoneDigits && (phoneDigits.length < 10 || phoneDigits.length > 11)) return setError("Telefone inválido.");
     if (password.length < 8) return setError("A senha deve ter ao menos 8 caracteres.");
     if (!/[A-Za-z]/.test(password) || !/[0-9]/.test(password))
       return setError("A senha deve conter letras e números.");
@@ -212,7 +211,7 @@ export default function App() {
       const result = await api.signup({
         name: name.trim(),
         email: email.trim().toLowerCase(),
-        cpf: cpf.replace(/\D/g, ""),
+        cpf: "",
         phone: phoneDigits,
         password,
         client_mac: params.client_mac,
@@ -222,6 +221,7 @@ export default function App() {
         captive_timestamp: params.captive_timestamp,
         consent_version: boot.consent?.version || "1.0",
       });
+
       if (result?.error) {
         setError(result.error);
         setBusy(false);
