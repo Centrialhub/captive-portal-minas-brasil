@@ -4124,8 +4124,14 @@ async function handleSignup(req: Request): Promise<Response> {
     email,
     password,
     email_confirm: true,
-    user_metadata: { full_name: name, cpf_digits: cpfDigits, phone_digits: phoneDigits },
+    user_metadata: {
+      full_name: name,
+      cpf_digits: cpfDigits || null,
+      phone_digits: phoneDigits || null,
+    },
   });
+
+
 
   if (createErr || !created?.user?.id) {
     const msg = (createErr?.message || "").toLowerCase();
