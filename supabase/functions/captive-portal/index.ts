@@ -4325,21 +4325,65 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
   }
   const userId = userRes.user.id;
 
-  const { data: profile } = await db
+  const { data: existingProfile } = await db
     .from("profiles").select("full_name, cpf_digits, phone_digits, email").eq("id", userId).maybeSingle();
+
+  let profile = existingProfile;
+
+  // Auto-provision profile for OAuth users (Google/Apple) on first sign-in.
   if (!profile) {
-    return jsonResponse({ needs_login: true, error: "profile_not_found" }, 404);
+    const meta = (userRes.user.user_metadata || {}) as Record<string, unknown>;
+    const fullName =
+      (typeof meta.full_name === "string" && meta.full_name) ||
+      (typeof meta.name === "string" && meta.name) ||
+      (typeof meta.given_name === "string" && meta.given_name) ||
+      (userRes.user.email ? userRes.user.email.split("@")[0] : "Cliente");
+    const emailValue = userRes.user.email || (typeof meta.email === "string" ? meta.email : null);
+    if (!emailValue) {
+      return jsonResponse({ needs_login: true, error: "profile_missing_email" }, 400);
+    }
+    const { error: insErr } = await db.from("profiles").insert({
+      id: userId,
+      full_name: String(fullName).slice(0, MAX_NAME_LEN),
+      email: emailValue.toLowerCase(),
+      cpf_digits: null,
+      phone_digits: null,
+    });
+    if (insErr) {
+      console.error("[authorize-existing] profile auto-create failed:", insErr.message);
+      return jsonResponse({ needs_login: true, error: "profile_create_failed" }, 500);
+    }
+    profile = {
+      full_name: String(fullName),
+      email: emailValue.toLowerCase(),
+      cpf_digits: null,
+      phone_digits: null,
+    };
+    logEvent(db, {
+      trace_id: traceId, event_type: "profile_auto_created", step: "form", status: "info",
+      payload: { provider: (userRes.user.app_metadata as Record<string, unknown> | undefined)?.provider, email: emailValue }, client_ip: clientIp,
+    });
   }
 
+  // Auth method hint from client (google/apple/silent). Falls back to provider from token.
+  const hint = typeof body.auth_method === "string" ? body.auth_method.toLowerCase() : "";
+  const provider = String(
+    (userRes.user.app_metadata as Record<string, unknown> | undefined)?.provider || "",
+  ).toLowerCase();
+  const authMethod: "silent" | "google" | "apple" =
+    hint === "google" || provider === "google" ? "google" :
+    hint === "apple" || provider === "apple" ? "apple" :
+    "silent";
+
   const result = await authorizeAuthenticatedUser({
-    db, userId, ctx, req, authMethod: "silent", traceId, clientIp, userAgent: ua, profile,
+    db, userId, ctx, req, authMethod, traceId, clientIp, userAgent: ua, profile,
   });
 
   logEvent(db, {
     session_id: result.session_id, trace_id: traceId,
     event_type: result.authorized ? "silent_login_success" : "silent_login_failed",
     step: "form", status: result.authorized ? "success" : "warning",
-    payload: { store_slug: result.store_slug, fail_reason: result.fail_reason }, client_ip: clientIp,
+    payload: { store_slug: result.store_slug, fail_reason: result.fail_reason, auth_method: authMethod }, client_ip: clientIp,
   });
 
   return jsonResponse({
@@ -4348,9 +4392,11 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
     redirect_url: result.redirect_url,
     fail_reason: result.fail_reason,
     store_slug: result.store_slug,
+    auth_method: authMethod,
     trace_id: traceId,
   });
 }
+
 
 // ========== Main Router ==========
 
