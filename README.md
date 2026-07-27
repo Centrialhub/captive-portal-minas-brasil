@@ -77,7 +77,7 @@ Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/c
 Para o captive portal funcionar corretamente no Android/iOS, adicione os seguintes domínios na lista **Pre-Authorization Access** (Walled Garden) da rede convidado no UniFi Controller:
 
 | Domínio / IP | Motivo |
-|---|---|---|
+|---|---|
 | `drogariaminasbrasilapp.com.br` | Portal captive (frontend) |
 | `*.drogariaminasbrasilapp.com.br` | Subdomínios do portal |
 | `fqamejlyytrhovawgtwg.supabase.co` | API backend (Supabase) |
