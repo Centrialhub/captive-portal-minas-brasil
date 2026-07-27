@@ -272,7 +272,7 @@ export default function App() {
     setBusy(false);
   };
 
-  const handleOAuth = async (provider: "google" | "apple") => {
+  const handleGoogleOAuth = async () => {
     if (busy) return;
     setError("");
     setBusy(true);
@@ -281,16 +281,16 @@ export default function App() {
       const qs = window.location.search || "";
       const redirectTo = `${window.location.origin}/${qs}`;
       const { error: err } = await supabase.auth.signInWithOAuth({
-        provider,
+        provider: "google",
         options: { redirectTo },
       });
       if (err) {
-        setError(`Não foi possível iniciar login com ${provider === "google" ? "Google" : "Apple"}.`);
+        setError("Não foi possível iniciar login com Google.");
         setBusy(false);
       }
       // On success, the browser navigates away — no further UI update needed.
     } catch {
-      setError("Erro ao iniciar login social. Tente novamente.");
+      setError("Erro ao iniciar login com Google. Tente novamente.");
       setBusy(false);
     }
   };
