@@ -272,7 +272,7 @@ export default function App() {
     setBusy(false);
   };
 
-  const handleOAuth = async (provider: "google" | "apple") => {
+  const handleGoogleOAuth = async () => {
     if (busy) return;
     setError("");
     setBusy(true);
@@ -281,16 +281,16 @@ export default function App() {
       const qs = window.location.search || "";
       const redirectTo = `${window.location.origin}/${qs}`;
       const { error: err } = await supabase.auth.signInWithOAuth({
-        provider,
+        provider: "google",
         options: { redirectTo },
       });
       if (err) {
-        setError(`Não foi possível iniciar login com ${provider === "google" ? "Google" : "Apple"}.`);
+        setError("Não foi possível iniciar login com Google.");
         setBusy(false);
       }
       // On success, the browser navigates away — no further UI update needed.
     } catch {
-      setError("Erro ao iniciar login social. Tente novamente.");
+      setError("Erro ao iniciar login com Google. Tente novamente.");
       setBusy(false);
     }
   };
@@ -528,7 +528,7 @@ export default function App() {
         <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 16 }}>
           <button
             type="button"
-            onClick={() => handleOAuth("google")}
+            onClick={() => handleGoogleOAuth()}
             disabled={busy}
             style={{
               display: "flex", alignItems: "center", justifyContent: "center", gap: 10,
@@ -544,22 +544,6 @@ export default function App() {
               <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
             </svg>
             Continuar com Google
-          </button>
-          <button
-            type="button"
-            onClick={() => handleOAuth("apple")}
-            disabled={busy}
-            style={{
-              display: "flex", alignItems: "center", justifyContent: "center", gap: 10,
-              padding: "12px 16px", background: "#000", color: "#fff",
-              border: "1px solid #000", borderRadius: 8, fontSize: 15, fontWeight: 500,
-              cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1,
-            }}
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-              <path d="M17.05 20.28c-.98.95-2.05.8-3.08.35-1.09-.46-2.09-.48-3.24 0-1.44.62-2.2.44-3.06-.35C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.08zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/>
-            </svg>
-            Continuar com Apple
           </button>
         </div>
 
