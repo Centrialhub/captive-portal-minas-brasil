@@ -1,53 +1,34 @@
-## Migração para HTTPS + Login Social (Google/Apple)
+# Plano: Atualizar/validar Dockerfile para o novo domínio HTTPS
 
-### 1. Novo domínio e HTTPS
-- Domínio único do portal: `drogariaminasbrasilapp.com.br` (HTTPS).
-- Atualizar Nginx (`Dockerfile`) — todos os redirects `/guest/s/default/`, `/generate_204`, `/gen_204`, `/hotspot-detect.html`, etc. passam a apontar para `https://drogariaminasbrasilapp.com.br/?$args`.
-- Atualizar `vite.config.ts` `allowedHosts` com o novo domínio.
-- Atualizar Walled Garden esperado (documentar): adicionar `drogariaminasbrasilapp.com.br`, `accounts.google.com`, `appleid.apple.com`, `*.googleusercontent.com`, `*.apple.com` (o usuário aplica no UniFi).
-- Como controladoras agora têm certificado público, o redirect UniFi → portal continua funcionando sem CNA quebrar em HTTPS.
+## O que foi enviado
 
-### 2. Autenticação Google + Apple (Supabase OAuth)
-- Habilitar providers Google e Apple no Supabase Dashboard (o usuário configura client IDs/secrets no painel — não vai para código).
-- Fluxo no portal:
-  1. Tela inicial: botões **Continuar com Google**, **Continuar com Apple**, e link "Entrar com e-mail e senha" (fallback).
-  2. `supabase.auth.signInWithOAuth({ provider, options: { redirectTo: 'https://drogariaminasbrasilapp.com.br/?<params captive preservados>' } })`.
-  3. Ao voltar autenticado, portal detecta sessão, cria/atualiza `profiles` (sem CPF), chama `/authorize-existing` com o `access_token` — mesmo fluxo silencioso já existente.
-- Preservar `id`, `ap`, `mac`, `ssid`, `url`, `t` do UniFi durante o round-trip OAuth (guardar em `sessionStorage` antes do redirect e restaurar no retorno).
+O Dockerfile correto já foi fornecido na resposta acima. Ele reflete o estado atual do repositório com as seguintes características:
 
-### 3. Ajustes de dados (CPF opcional)
-- Migração:
-  - `ALTER TABLE profiles ALTER COLUMN cpf DROP NOT NULL` (se aplicável) e remover `UNIQUE INDEX` de `cpf_digits` (ou torná-lo parcial: `WHERE cpf_digits IS NOT NULL`).
-  - `leads.cpf` e `captive_sessions.cpf` continuam existindo apenas para registros antigos; novos signups podem enviar `null`.
-- Backend `/signup`: tornar CPF opcional; pular checagem de duplicidade quando não fornecido.
-- Frontend cadastro e-mail/senha (fallback): remover campo CPF.
+- Escuta na porta `3000`
+- Redireciona todos os probes do Captive Network Assistant para `https://drogariaminasbrasilapp.com.br`
+- Mantém o proxy `/api/captive-portal/` para o Supabase Edge Function
+- Remove os locations `/unifi/` e `/unifi-proxy/` (pois as controladoras agora possuem certificado público válido e a Edge Function se conecta diretamente)
+- Inclui SPA fallback preservando query params
 
-### 4. Fluxo unificado no frontend (`src/App.tsx`)
-```text
-Loading → tenta silent login (sessão Supabase existente)
-   ├─ sucesso → authorize-existing → Success
-   └─ sem sessão → Tela de escolha:
-        [Continuar com Google]
-        [Continuar com Apple]
-        [Entrar com e-mail e senha]  (fallback: login/signup/forgot já existentes, sem CPF)
-```
-- Após OAuth callback, mesma rotina de `authorize-existing` já implementada — só muda a origem do `access_token`.
+## Alterações principais em relação ao arquivo antigo
 
-### 5. Backend (`supabase/functions/captive-portal/index.ts`)
-- `/signup`: `cpf` opcional; sem check de duplicidade quando ausente.
-- Novo endpoint (ou reuso de `/authorize-existing`): já aceita qualquer `access_token` Supabase, portanto Google/Apple funcionam sem endpoint novo. Garantir que `profiles` é criado no primeiro login OAuth (nome vem do provider; e-mail idem; telefone/cpf ficam null).
-- Observabilidade: novos valores `auth_method`: `google`, `apple` (além de `email`, `silent`), refletidos em `portal_events` e no dashboard.
+1. **Porta**: `listen 80` → `listen 3000` (alinhado ao Dockerfile atual do repositório)
+2. **Domínio**: `http://wifi.guedesepaixao.com.br` → `https://drogariaminasbrasilapp.com.br`
+3. **Protocolo**: `X-Forwarded-Proto http` → `X-Forwarded-Proto https`
+4. **Probes CNA**: adicionados `/generate_204`, `/gen_204`, `/hotspot-detect.html`, `/library/test/success.html`, `/connecttest.txt`, `/ncsi.txt`
+5. **SPA fallback**: `try_files $uri /index.html?$args`
+6. **Remoção de proxies**: `/unifi/` e `/unifi-proxy/` removidos por obsolescência
 
-### 6. Dashboard (`src/pages/AdminDashboard.tsx`)
-- Adicionar contadores/pills para `google` e `apple` nas seções "Contas & Autenticação" e "Auth" da tabela de sessões.
+## Próximos passos
 
-### Detalhes técnicos
-- Supabase OAuth exige Site URL e Redirect URL atualizados no dashboard: `https://drogariaminasbrasilapp.com.br` (usuário faz).
-- Apple: usar Services ID + private key no Supabase Dashboard (usuário configura com sua conta de developer).
-- Contas e-mail/senha existentes continuam válidas (mesmo `auth.users`); nada a migrar.
-- OAuth dentro do CNA: com HTTPS válido no portal + certificado público nas controladoras, o webview do CNA aceita o fluxo. Mesmo assim mantemos o fallback e-mail/senha por segurança (iOS às vezes bloqueia popups).
+1. Aplicar o Dockerfile fornecido ao repositório.
+2. Atualizar `README.md` para refletir o novo domínio no Walled Garden.
+3. Validar o build do container (`docker build -t captive-proxy .`).
+4. Verificar se a porta exposta no EasyPanel está configurada para `3000` (ou ajustar para `80` se necessário).
 
-### Fora do escopo (confirmar depois se necessário)
-- Configuração dos providers no dashboard Supabase (feita pelo usuário).
-- Ajustes de Walled Garden no UniFi (feito pelo usuário).
-- Configuração DNS/SSL do novo domínio.
+## Decisões pendentes
+
+- A porta do EasyPanel é `80` ou `3000`?
+- É necessário manter algum proxy legado (`/unifi/` ou `/unifi-proxy/`) por algum outro serviço?
+
+Aprovar este plano para aplicar o Dockerfile e os ajustes de documentação.

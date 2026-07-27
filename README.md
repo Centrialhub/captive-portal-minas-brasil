@@ -40,14 +40,14 @@ npm run dev
 
 - Navigate to the desired file(s).
 - Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+- Click the changes and commit the changes.
 
 **Use GitHub Codespaces**
 
 - Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
+- Click the "Code" button (green button) near the top right.
 - Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
+- Click "New codespace" to launch a new Codespace.
 - Edit files directly within the Codespace and commit and push your changes once you're done.
 
 ## What technologies are used for this project?
@@ -78,12 +78,15 @@ Para o captive portal funcionar corretamente no Android/iOS, adicione os seguint
 
 | Domínio / IP | Motivo |
 |---|---|
-| `wifi.guedesepaixao.com.br` | Portal captive (frontend) |
+| `drogariaminasbrasilapp.com.br` | Portal captive (frontend) |
+| `*.drogariaminasbrasilapp.com.br` | Subdomínios do portal |
 | `fqamejlyytrhovawgtwg.supabase.co` | API backend (Supabase) |
 | `*.vercel.app` | CDN do Vercel (assets JS/CSS) |
 | `76.76.21.21` | IP do Vercel |
+| `accounts.google.com` | Autenticação OAuth Google |
+| `oauth.googleapis.com` | Fluxo OAuth Google (tokens) |
 | `ocsp.pki.goog` | Validação de certificado SSL (Google) |
 | `ocsp.digicert.com` | Validação de certificado SSL (DigiCert) |
 | `o.pki.goog` | Validação de certificado SSL (Google) |
 
-> **Dica:** Desative a opção "Secure Portal" no UniFi se o captive assistant do Android continuar com tela branca.
+> **Dica:** Desative a opção "Secure Portal" no UniFi se o captive assistant do Android continuar com tela branca. Como as controladoras e o portal agora usam certificados públicos válidos, o fluxo HTTPS funciona normalmente.
