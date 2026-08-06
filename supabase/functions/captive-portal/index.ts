@@ -2574,6 +2574,29 @@ async function handleVerifyCode(req: Request): Promise<Response> {
     client_ip: clientIp, user_agent: ua,
   });
 
+  // Sync with external CRM on OTP success (lead fully verified)
+  const bgCrmSync = (async () => {
+    try {
+      const { data: lead } = await db.from("leads").select("name, cpf, email, phone, store_id").eq("id", verification.lead_id).maybeSingle();
+      if (lead) {
+        await syncWithClubeMais({
+          cpf: lead.cpf!,
+          name: lead.name!,
+          phone: lead.phone!,
+          email: lead.email,
+          store_id: lead.store_id,
+        }, db, traceId);
+      }
+    } catch (e) {
+      console.warn("[verify-code] CRM sync failed (bg):", (e as Error).message);
+    }
+  })();
+  // @ts-ignore
+  if (typeof EdgeRuntime !== "undefined" && EdgeRuntime?.waitUntil) {
+    // @ts-ignore
+    EdgeRuntime.waitUntil(bgCrmSync);
+  }
+
   // Code is correct; only mark the verification as completed after UniFi confirms access.
   // This lets the same valid OTP be retried when the controller returns HTTP 200
   // but does not actually confirm the client as authorized.
