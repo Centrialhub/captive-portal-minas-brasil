@@ -38,6 +38,10 @@ const OTP_RESEND_COOLDOWN_SEC = 60;
 // Cron secret for scheduled housekeeping
 const CRON_SECRET = Deno.env.get("CRON_SECRET") || "";
 
+// External CRM API (ClubeMais)
+const CLUBEMAIS_API_URL = "https://painelzoombox.drogariaminasbrasil.com.br:510/api2/v3/cliente";
+const CLUBEMAIS_API_TOKEN = Deno.env.get("CLUBEMAIS_API_TOKEN") || "";
+
 // ========== Helpers ==========
 function supabaseAdmin() {
   return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
@@ -149,6 +153,84 @@ function toE164BR(phone: string): string {
   }
   // Fallback: retorna como veio (já validado por isValidPhone)
   return digits;
+}
+
+function toE164BR(phone: string): string {
+  let digits = (phone || "").replace(/\D/g, "");
+  // Remove zero à esquerda (formato antigo de discagem nacional)
+  digits = digits.replace(/^0+/, "");
+  // Se já começa com 55 e tem 12-13 dígitos, já está OK
+  if (digits.startsWith("55") && (digits.length === 12 || digits.length === 13)) {
+    return digits;
+  }
+  // Se tem 10 ou 11 dígitos (DDD + número), prefixar 55
+  if (digits.length === 10 || digits.length === 11) {
+    return "55" + digits;
+  }
+  // Fallback: retorna como veio (já validado por isValidPhone)
+  return digits;
+}
+
+/**
+ * Sync lead with external CRM API (ClubeMais).
+ * POST /api2/v3/cliente
+ */
+async function syncWithClubeMais(lead: {
+  cpf: string;
+  name: string;
+  phone: string;
+  email?: string | null;
+  store_id?: string | null;
+}, db: any, traceId?: string | null): Promise<{ ok: boolean; message?: string; error?: string }> {
+  if (!CLUBEMAIS_API_TOKEN) {
+    console.warn("[clubemais] Sync skipped: CLUBEMAIS_API_TOKEN not set");
+    return { ok: false, error: "TOKEN_MISSING" };
+  }
+
+  const cpfOnlyDigits = lead.cpf.replace(/\D/g, "");
+  const phoneOnlyDigits = lead.phone.replace(/\D/g, "");
+  
+  // Try to find the store slug to use as idlojacliente if needed, 
+  // though typically it might be a specific ID.
+  let storeSlug = "matriz";
+  if (lead.store_id) {
+    const { data: store } = await db.from("stores").select("slug").eq("id", lead.store_id).maybeSingle();
+    if (store) storeSlug = store.slug;
+  }
+
+  const payload = {
+    token: CLUBEMAIS_API_TOKEN,
+    cpfcnpj: cpfOnlyDigits,
+    nome: lead.name,
+    celular: phoneOnlyDigits,
+    email: lead.email || "",
+    aceitesms: "S",
+    idlojacliente: storeSlug, // Using slug as identifier
+    idmodulo: "portal_wifi",
+  };
+
+  const t0 = Date.now();
+  try {
+    const res = await fetch(CLUBEMAIS_API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    const status = res.status;
+    const bodyText = await res.text();
+    const latency = Date.now() - t0;
+
+    console.log(`[clubemais] Sync response: status=${status} latency=${latency}ms body=${bodyText.slice(0, 200)}`);
+
+    if (status >= 200 && status < 300) {
+      return { ok: true, message: bodyText };
+    }
+    return { ok: false, status, error: bodyText };
+  } catch (err) {
+    console.error(`[clubemais] Sync exception: ${(err as Error).message}`);
+    return { ok: false, error: (err as Error).message };
+  }
 }
 
 function isValidSlug(slug: string): boolean {
@@ -1594,7 +1676,7 @@ async function handleBootstrap(req: Request): Promise<Response> {
     consent: consent || null,
     required_fields: {
       name: { required: true },
-      email: { required: false },
+      email: { required: true },
       phone: { required: true },
       at_least_one_contact: true,
     },
@@ -2149,6 +2231,19 @@ async function handleSubmit(req: Request): Promise<Response> {
   const storeName = detected.store_name || "Drogaria Minas Brasil";
   const bgWork = (async () => {
     try {
+      // Sync with external CRM
+      await syncWithClubeMais({
+        cpf: cpf!,
+        name: name!,
+        phone: phone!,
+        email: email,
+        store_id: storeId,
+      }, db, traceId);
+    } catch (e) {
+      console.warn("[submit] ClubeMais sync failed (bg):", (e as Error).message);
+    }
+
+    try {
       // Update session status (non-essential for client)
       db.from("captive_sessions")
         .update({ status: "submitted", submitted_at: new Date().toISOString(), client_mac: clientMac })
@@ -2478,6 +2573,29 @@ async function handleVerifyCode(req: Request): Promise<Response> {
     session_patch: { otp_verified_at: new Date().toISOString() },
     client_ip: clientIp, user_agent: ua,
   });
+
+  // Sync with external CRM on OTP success (lead fully verified)
+  const bgCrmSync = (async () => {
+    try {
+      const { data: lead } = await db.from("leads").select("name, cpf, email, phone, store_id").eq("id", verification.lead_id).maybeSingle();
+      if (lead) {
+        await syncWithClubeMais({
+          cpf: lead.cpf!,
+          name: lead.name!,
+          phone: lead.phone!,
+          email: lead.email,
+          store_id: lead.store_id,
+        }, db, traceId);
+      }
+    } catch (e) {
+      console.warn("[verify-code] CRM sync failed (bg):", (e as Error).message);
+    }
+  })();
+  // @ts-ignore
+  if (typeof EdgeRuntime !== "undefined" && EdgeRuntime?.waitUntil) {
+    // @ts-ignore
+    EdgeRuntime.waitUntil(bgCrmSync);
+  }
 
   // Code is correct; only mark the verification as completed after UniFi confirms access.
   // This lets the same valid OTP be retried when the controller returns HTTP 200
@@ -4379,6 +4497,28 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
     db, userId, ctx, req, authMethod, traceId, clientIp, userAgent: ua, profile,
   });
 
+  // Background sync with CRM on authenticated login success (if lead is complete)
+  if (result.authorized && profile?.cpf_digits && profile?.full_name && profile?.phone_digits) {
+    const bgSync = (async () => {
+      try {
+        await syncWithClubeMais({
+          cpf: profile.cpf_digits!,
+          name: profile.full_name!,
+          phone: profile.phone_digits!,
+          email: profile.email,
+          store_id: result.store_id || null,
+        }, db, traceId);
+      } catch (e) {
+        console.warn("[authorize-existing] CRM sync failed (bg):", (e as Error).message);
+      }
+    })();
+    // @ts-ignore
+    if (typeof EdgeRuntime !== "undefined" && EdgeRuntime?.waitUntil) {
+      // @ts-ignore
+      EdgeRuntime.waitUntil(bgSync);
+    }
+  }
+
   logEvent(db, {
     session_id: result.session_id, trace_id: traceId,
     event_type: result.authorized ? "silent_login_success" : "silent_login_failed",
@@ -4434,10 +4574,33 @@ async function handleUpdateProfile(req: Request): Promise<Response> {
 
   if (Object.keys(updatePayload).length === 0) return jsonResponse({ ok: true });
 
+  const { data: userProfile } = await db.from("profiles").select("email").eq("id", userId).maybeSingle();
+
   const { error: updErr } = await db.from("profiles").update(updatePayload).eq("id", userId);
   if (updErr) {
     if (updErr.code === "23505") return errorResponse("Este CPF já está cadastrado em outra conta.", 409);
     return errorResponse("Erro ao atualizar perfil.");
+  }
+
+  // Background sync with CRM on profile update
+  if (cpfDigits && name && phoneDigits) {
+    const bgSync = (async () => {
+      try {
+        await syncWithClubeMais({
+          cpf: cpfDigits,
+          name: name,
+          phone: phoneDigits,
+          email: userProfile?.email || null,
+        }, db, traceId);
+      } catch (e) {
+        console.warn("[update-profile] ClubeMais sync failed (bg):", (e as Error).message);
+      }
+    })();
+    // @ts-ignore
+    if (typeof EdgeRuntime !== "undefined" && EdgeRuntime?.waitUntil) {
+      // @ts-ignore
+      EdgeRuntime.waitUntil(bgSync);
+    }
   }
 
   logEvent(db, {
