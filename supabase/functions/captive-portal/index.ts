@@ -4487,6 +4487,7 @@ Deno.serve(async (req: Request) => {
     if (path === "/signup" && req.method === "POST") return await handleSignup(req);
     if (path === "/login" && req.method === "POST") return await handleLogin(req);
     if (path === "/authorize-existing" && req.method === "POST") return await handleAuthorizeExisting(req);
+    if (path === "/update-profile" && req.method === "POST") return await handleUpdateProfile(req);
     if (path === "/request-password-reset" && req.method === "POST") return await handleRequestPasswordReset(req);
 
     // Diagnostic: list clients the AP currently sees (to find real MAC behind randomization)
