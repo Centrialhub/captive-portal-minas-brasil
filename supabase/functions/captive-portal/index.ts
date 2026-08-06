@@ -38,6 +38,10 @@ const OTP_RESEND_COOLDOWN_SEC = 60;
 // Cron secret for scheduled housekeeping
 const CRON_SECRET = Deno.env.get("CRON_SECRET") || "";
 
+// External CRM API (ClubeMais)
+const CLUBEMAIS_API_URL = "https://painelzoombox.drogariaminasbrasil.com.br:510/api2/v3/cliente";
+const CLUBEMAIS_API_TOKEN = Deno.env.get("CLUBEMAIS_API_TOKEN") || "";
+
 // ========== Helpers ==========
 function supabaseAdmin() {
   return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
