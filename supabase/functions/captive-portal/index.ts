@@ -4497,6 +4497,28 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
     db, userId, ctx, req, authMethod, traceId, clientIp, userAgent: ua, profile,
   });
 
+  // Background sync with CRM on authenticated login success (if lead is complete)
+  if (result.authorized && profile?.cpf_digits && profile?.full_name && profile?.phone_digits) {
+    const bgSync = (async () => {
+      try {
+        await syncWithClubeMais({
+          cpf: profile.cpf_digits!,
+          name: profile.full_name!,
+          phone: profile.phone_digits!,
+          email: profile.email,
+          store_id: result.store_id || null,
+        }, db, traceId);
+      } catch (e) {
+        console.warn("[authorize-existing] CRM sync failed (bg):", (e as Error).message);
+      }
+    })();
+    // @ts-ignore
+    if (typeof EdgeRuntime !== "undefined" && EdgeRuntime?.waitUntil) {
+      // @ts-ignore
+      EdgeRuntime.waitUntil(bgSync);
+    }
+  }
+
   logEvent(db, {
     session_id: result.session_id, trace_id: traceId,
     event_type: result.authorized ? "silent_login_success" : "silent_login_failed",
