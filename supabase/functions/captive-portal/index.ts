@@ -1594,7 +1594,7 @@ async function handleBootstrap(req: Request): Promise<Response> {
     consent: consent || null,
     required_fields: {
       name: { required: true },
-      email: { required: false },
+      email: { required: true },
       phone: { required: true },
       at_least_one_contact: true,
     },
