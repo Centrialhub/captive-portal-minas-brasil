@@ -4398,7 +4398,58 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
 }
 
 
+async function handleUpdateProfile(req: Request): Promise<Response> {
+  const db = supabaseAdmin();
+  const clientIp = getPublicIp(req);
+  const ua = req.headers.get("user-agent") || "";
+  const body = await safeParseJson(req);
+  if (!body) return errorResponse("Invalid JSON body");
+  const traceId = getTraceId(req, body);
+
+  const accessToken = typeof body.access_token === "string" ? body.access_token : "";
+  if (!accessToken) return errorResponse("Unauthorized", 401);
+
+  const anonClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    global: { headers: { Authorization: `Bearer ${accessToken}` } },
+  });
+  const { data: userRes, error: userErr } = await anonClient.auth.getUser(accessToken);
+  if (userErr || !userRes?.user?.id) return errorResponse("Unauthorized", 401);
+  const userId = userRes.user.id;
+
+  const cpfDigits = typeof body.cpf === "string" ? body.cpf.replace(/\D/g, "") : null;
+  const phoneDigits = typeof body.phone === "string" ? body.phone.replace(/\D/g, "") : null;
+  const name = typeof body.name === "string" ? sanitizeString(body.name, MAX_NAME_LEN) : null;
+
+  const updatePayload: Record<string, any> = {};
+  if (cpfDigits) {
+    if (!isValidCPF(cpfDigits)) return errorResponse("CPF inválido.");
+    updatePayload.cpf_digits = cpfDigits;
+    updatePayload.cpf_required = false;
+  }
+  if (phoneDigits) {
+    if (!isValidPhone(phoneDigits)) return errorResponse("Telefone inválido.");
+    updatePayload.phone_digits = phoneDigits;
+  }
+  if (name) updatePayload.full_name = name;
+
+  if (Object.keys(updatePayload).length === 0) return jsonResponse({ ok: true });
+
+  const { error: updErr } = await db.from("profiles").update(updatePayload).eq("id", userId);
+  if (updErr) {
+    if (updErr.code === "23505") return errorResponse("Este CPF já está cadastrado em outra conta.", 409);
+    return errorResponse("Erro ao atualizar perfil.");
+  }
+
+  logEvent(db, {
+    trace_id: traceId, event_type: "profile_updated", step: "form", status: "success",
+    payload: { fields: Object.keys(updatePayload) }, client_ip: clientIp, user_agent: ua,
+  });
+
+  return jsonResponse({ ok: true });
+}
+
 // ========== Main Router ==========
+
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
