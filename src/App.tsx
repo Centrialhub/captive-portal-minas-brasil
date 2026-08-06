@@ -459,11 +459,11 @@ export default function App() {
               required className="portal-input" placeholder="email@exemplo.com"
             />
 
-            <label className="portal-label">Telefone (opcional)</label>
+            <label className="portal-label">Telefone *</label>
             <input
               type="tel" value={phone}
               onChange={(e) => setPhone(formatPhoneBR(e.target.value))}
-              className="portal-input" placeholder="(11) 99999-9999"
+              required className="portal-input" placeholder="(11) 99999-9999"
             />
 
 
