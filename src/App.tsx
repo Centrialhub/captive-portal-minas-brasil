@@ -8,7 +8,7 @@ import {
 import logoMinasBrasil from "./assets/logo-minas-brasil.png";
 import "./index.css";
 
-type Step = "loading" | "login" | "signup" | "forgot" | "forgot_sent" | "authorizing" | "success" | "error";
+type Step = "loading" | "login" | "signup" | "forgot" | "forgot_sent" | "authorizing" | "success" | "error" | "cpf_prompt";
 
 const CAPTIVE_PARAM_KEYS = ["id", "mac", "ap", "ssid", "url", "t", "site", "store"] as const;
 const CAPTIVE_PARAMS_STORAGE_KEY = "mb_captive_params";
@@ -82,6 +82,9 @@ export default function App() {
   // forgot password
   const [forgotEmail, setForgotEmail] = useState("");
 
+  // CPF Prompt (for Google users)
+  const [promptCpf, setPromptCpf] = useState("");
+
   // signup form (CPF is no longer collected)
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -129,6 +132,12 @@ export default function App() {
           redirect_url: params.redirect_url,
           captive_timestamp: params.captive_timestamp,
         });
+
+        if (result?.needs_cpf) {
+          setStep("cpf_prompt");
+          return;
+        }
+
         if (result?.needs_login) {
           setStep("login");
           return;

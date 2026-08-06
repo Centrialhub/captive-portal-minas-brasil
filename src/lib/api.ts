@@ -337,6 +337,10 @@ export const api = {
     return xhrRequest<any>("/request-password-reset", { method: "POST", body: data, timeoutMs: 15000 });
   },
 
+  updateProfile(data: { access_token: string; name?: string; phone?: string; cpf?: string }) {
+    return xhrRequest<any>("/update-profile", { method: "POST", body: data, timeoutMs: 20000 });
+  },
+
   /** Fire-and-forget client telemetry. Uses sendBeacon first (survives CNA),
    * falls back to XHR. Never throws. */
   clientEvent(data: { session_id?: string | null; event: string; step?: string; status?: string; error_code?: string; error_message?: string; payload?: Record<string, unknown> }) {
