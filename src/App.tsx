@@ -608,7 +608,7 @@ export default function App() {
           onClick={() => { setError(""); setStep("signup"); }}
           className="portal-btn-secondary"
         >
-          Criar conta
+          Não tem conta? Cadastre-se
         </button>
 
         <p className="portal-footer">Drogaria Minas Brasil © {new Date().getFullYear()}</p>
