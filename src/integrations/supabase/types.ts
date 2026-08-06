@@ -529,6 +529,7 @@ export type Database = {
       profiles: {
         Row: {
           cpf_digits: string | null
+          cpf_required: boolean | null
           created_at: string
           email: string
           full_name: string
@@ -538,6 +539,7 @@ export type Database = {
         }
         Insert: {
           cpf_digits?: string | null
+          cpf_required?: boolean | null
           created_at?: string
           email: string
           full_name: string
@@ -547,6 +549,7 @@ export type Database = {
         }
         Update: {
           cpf_digits?: string | null
+          cpf_required?: boolean | null
           created_at?: string
           email?: string
           full_name?: string
