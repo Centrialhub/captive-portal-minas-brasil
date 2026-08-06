@@ -4529,10 +4529,33 @@ async function handleUpdateProfile(req: Request): Promise<Response> {
 
   if (Object.keys(updatePayload).length === 0) return jsonResponse({ ok: true });
 
+  const { data: userProfile } = await db.from("profiles").select("email").eq("id", userId).maybeSingle();
+
   const { error: updErr } = await db.from("profiles").update(updatePayload).eq("id", userId);
   if (updErr) {
     if (updErr.code === "23505") return errorResponse("Este CPF já está cadastrado em outra conta.", 409);
     return errorResponse("Erro ao atualizar perfil.");
+  }
+
+  // Background sync with CRM on profile update
+  if (cpfDigits && name && phoneDigits) {
+    const bgSync = (async () => {
+      try {
+        await syncWithClubeMais({
+          cpf: cpfDigits,
+          name: name,
+          phone: phoneDigits,
+          email: userProfile?.email || null,
+        }, db, traceId);
+      } catch (e) {
+        console.warn("[update-profile] ClubeMais sync failed (bg):", (e as Error).message);
+      }
+    })();
+    // @ts-ignore
+    if (typeof EdgeRuntime !== "undefined" && EdgeRuntime?.waitUntil) {
+      // @ts-ignore
+      EdgeRuntime.waitUntil(bgSync);
+    }
   }
 
   logEvent(db, {
