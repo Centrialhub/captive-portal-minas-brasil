@@ -532,9 +532,6 @@ export default function App() {
           {boot.store.city ? `${boot.store.name} — ${boot.store.city}` : boot.store.name}
         </p>
 
-        <p className="portal-subtitle" style={{ fontSize: '11px', color: '#888', marginBottom: 20, textAlign: 'left', lineHeight: '1.4' }}>
-          vou passar a documentação para integração. O uso da API é caso o usuário não seja cadastrado no clubemais o sistema devera fornecer as informações via api para cadastra-lo caso já seja pela rota de consulta liberar o uso do wifi.
-        </p>
 
         {error && <div className="portal-error">{error}</div>}
 
