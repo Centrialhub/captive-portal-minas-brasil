@@ -8,7 +8,7 @@ import {
 import logoMinasBrasil from "./assets/logo-minas-brasil.png";
 import "./index.css";
 
-type Step = "loading" | "login" | "signup" | "forgot" | "forgot_sent" | "authorizing" | "success" | "error";
+type Step = "loading" | "login" | "signup" | "forgot" | "forgot_sent" | "authorizing" | "success" | "error" | "cpf_prompt";
 
 const CAPTIVE_PARAM_KEYS = ["id", "mac", "ap", "ssid", "url", "t", "site", "store"] as const;
 const CAPTIVE_PARAMS_STORAGE_KEY = "mb_captive_params";
