@@ -155,6 +155,84 @@ function toE164BR(phone: string): string {
   return digits;
 }
 
+function toE164BR(phone: string): string {
+  let digits = (phone || "").replace(/\D/g, "");
+  // Remove zero à esquerda (formato antigo de discagem nacional)
+  digits = digits.replace(/^0+/, "");
+  // Se já começa com 55 e tem 12-13 dígitos, já está OK
+  if (digits.startsWith("55") && (digits.length === 12 || digits.length === 13)) {
+    return digits;
+  }
+  // Se tem 10 ou 11 dígitos (DDD + número), prefixar 55
+  if (digits.length === 10 || digits.length === 11) {
+    return "55" + digits;
+  }
+  // Fallback: retorna como veio (já validado por isValidPhone)
+  return digits;
+}
+
+/**
+ * Sync lead with external CRM API (ClubeMais).
+ * POST /api2/v3/cliente
+ */
+async function syncWithClubeMais(lead: {
+  cpf: string;
+  name: string;
+  phone: string;
+  email?: string | null;
+  store_id?: string | null;
+}, db: any, traceId?: string | null): Promise<{ ok: boolean; message?: string; error?: string }> {
+  if (!CLUBEMAIS_API_TOKEN) {
+    console.warn("[clubemais] Sync skipped: CLUBEMAIS_API_TOKEN not set");
+    return { ok: false, error: "TOKEN_MISSING" };
+  }
+
+  const cpfOnlyDigits = lead.cpf.replace(/\D/g, "");
+  const phoneOnlyDigits = lead.phone.replace(/\D/g, "");
+  
+  // Try to find the store slug to use as idlojacliente if needed, 
+  // though typically it might be a specific ID.
+  let storeSlug = "matriz";
+  if (lead.store_id) {
+    const { data: store } = await db.from("stores").select("slug").eq("id", lead.store_id).maybeSingle();
+    if (store) storeSlug = store.slug;
+  }
+
+  const payload = {
+    token: CLUBEMAIS_API_TOKEN,
+    cpfcnpj: cpfOnlyDigits,
+    nome: lead.name,
+    celular: phoneOnlyDigits,
+    email: lead.email || "",
+    aceitesms: "S",
+    idlojacliente: storeSlug, // Using slug as identifier
+    idmodulo: "portal_wifi",
+  };
+
+  const t0 = Date.now();
+  try {
+    const res = await fetch(CLUBEMAIS_API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    const status = res.status;
+    const bodyText = await res.text();
+    const latency = Date.now() - t0;
+
+    console.log(`[clubemais] Sync response: status=${status} latency=${latency}ms body=${bodyText.slice(0, 200)}`);
+
+    if (status >= 200 && status < 300) {
+      return { ok: true, message: bodyText };
+    }
+    return { ok: false, status, error: bodyText };
+  } catch (err) {
+    console.error(`[clubemais] Sync exception: ${(err as Error).message}`);
+    return { ok: false, error: (err as Error).message };
+  }
+}
+
 function isValidSlug(slug: string): boolean {
   return /^[a-z0-9][a-z0-9_-]{0,48}[a-z0-9]$/.test(slug) || /^[a-z0-9]$/.test(slug);
 }
