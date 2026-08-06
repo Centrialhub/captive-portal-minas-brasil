@@ -2231,6 +2231,19 @@ async function handleSubmit(req: Request): Promise<Response> {
   const storeName = detected.store_name || "Drogaria Minas Brasil";
   const bgWork = (async () => {
     try {
+      // Sync with external CRM
+      await syncWithClubeMais({
+        cpf: cpf!,
+        name: name!,
+        phone: phone!,
+        email: email,
+        store_id: storeId,
+      }, db, traceId);
+    } catch (e) {
+      console.warn("[submit] ClubeMais sync failed (bg):", (e as Error).message);
+    }
+
+    try {
       // Update session status (non-essential for client)
       db.from("captive_sessions")
         .update({ status: "submitted", submitted_at: new Date().toISOString(), client_mac: clientMac })
