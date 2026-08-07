@@ -45,16 +45,16 @@ RUN printf 'server {\n\
 \n\
     # Redirect do captive portal UniFi para o domínio HTTPS público\n\
     location /guest/s/default/ {\n\
-        return 302 https://wifi.guedesepaixao.com.br/?$args;\n\
+        return 302 https://drogariaminasbrasilapp.com.br/?$args;\n\
     }\n\
 \n\
     # Probes do Captive Network Assistant\n\
-    location = /generate_204 { return 302 https://wifi.guedesepaixao.com.br/?$args; }\n\
-    location = /gen_204 { return 302 https://wifi.guedesepaixao.com.br/?$args; }\n\
-    location = /hotspot-detect.html { return 302 https://wifi.guedesepaixao.com.br/?$args; }\n\
-    location = /library/test/success.html { return 302 https://wifi.guedesepaixao.com.br/?$args; }\n\
-    location = /connecttest.txt { return 302 https://wifi.guedesepaixao.com.br/?$args; }\n\
-    location = /ncsi.txt { return 302 https://wifi.guedesepaixao.com.br/?$args; }\n\
+    location = /generate_204 { return 302 https://drogariaminasbrasilapp.com.br/?$args; }\n\
+    location = /gen_204 { return 302 https://drogariaminasbrasilapp.com.br/?$args; }\n\
+    location = /hotspot-detect.html { return 302 https://drogariaminasbrasilapp.com.br/?$args; }\n\
+    location = /library/test/success.html { return 302 https://drogariaminasbrasilapp.com.br/?$args; }\n\
+    location = /connecttest.txt { return 302 https://drogariaminasbrasilapp.com.br/?$args; }\n\
+    location = /ncsi.txt { return 302 https://drogariaminasbrasilapp.com.br/?$args; }\n\
 \n\
     # SPA fallback - preserva query params\n\
     location / {\n\
