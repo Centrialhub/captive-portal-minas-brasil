@@ -306,7 +306,7 @@ export default function App() {
     try {
       stashCaptiveParams();
       const qs = window.location.search || "";
-      const redirectTo = `${window.location.origin}/${qs}`;
+      const redirectTo = `https://minasbrasilwifi.com.br/${qs}`;
       const { error: err } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: { redirectTo },
