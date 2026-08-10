@@ -4,6 +4,7 @@ import App from "./App";
 import AdminLogin from "./pages/AdminLogin";
 import AdminDashboard from "./pages/AdminDashboard";
 import ResetPassword from "./pages/ResetPassword";
+import PrivacyPolicy from "./pages/PrivacyPolicy";
 
 // Do NOT hide fallback here — wait until React App signals it's ready
 createRoot(document.getElementById("root")!).render(
@@ -12,8 +13,10 @@ createRoot(document.getElementById("root")!).render(
       <Route path="/admin/login" element={<AdminLogin />} />
       <Route path="/admin" element={<AdminDashboard />} />
       <Route path="/reset-password" element={<ResetPassword />} />
+      <Route path="/politica-privacidade" element={<PrivacyPolicy />} />
       <Route path="*" element={<App />} />
     </Routes>
   </BrowserRouter>
 );
+
 
