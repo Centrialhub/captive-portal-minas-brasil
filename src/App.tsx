@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { Link } from "react-router-dom";
 import { api } from "./lib/api";
 import { supabase } from "./integrations/supabase/client";
 import {
@@ -7,6 +8,18 @@ import {
 } from "./lib/portal-utils";
 import logoMinasBrasil from "./assets/logo-minas-brasil.png";
 import "./index.css";
+
+function Footer() {
+  return (
+    <p className="portal-footer">
+      Drogaria Minas Brasil © {new Date().getFullYear()} ·{" "}
+      <Link to="/politica-privacidade" style={{ color: "#bbb" }}>
+        Política de Privacidade
+      </Link>
+    </p>
+  );
+}
+
 
 type Step = "loading" | "login" | "signup" | "forgot" | "forgot_sent" | "authorizing" | "success" | "error" | "cpf_prompt";
 
@@ -330,7 +343,7 @@ export default function App() {
           <button onClick={() => { setError(""); setStep("login"); }} className="portal-btn">
             Tentar novamente
           </button>
-          <p className="portal-footer">Drogaria Minas Brasil © {new Date().getFullYear()}</p>
+          <Footer />
         </div>
       </div>
     );
@@ -357,7 +370,7 @@ export default function App() {
               Continuar conexão
             </a>
           )}
-          <p className="portal-footer">Drogaria Minas Brasil © {new Date().getFullYear()}</p>
+          <Footer />
         </div>
       </div>
     );
@@ -396,7 +409,7 @@ export default function App() {
           >
             Voltar
           </button>
-          <p className="portal-footer">Drogaria Minas Brasil © {new Date().getFullYear()}</p>
+          <Footer />
         </div>
       </div>
     );
@@ -423,7 +436,7 @@ export default function App() {
           >
             Voltar ao login
           </button>
-          <p className="portal-footer">Drogaria Minas Brasil © {new Date().getFullYear()}</p>
+          <Footer />
         </div>
       </div>
     );
@@ -512,7 +525,7 @@ export default function App() {
             Já tenho conta
           </button>
 
-          <p className="portal-footer">Drogaria Minas Brasil © {new Date().getFullYear()}</p>
+          <Footer />
         </div>
       </div>
     );
@@ -609,7 +622,7 @@ export default function App() {
           Não tem conta? Cadastre-se
         </button>
 
-        <p className="portal-footer">Drogaria Minas Brasil © {new Date().getFullYear()}</p>
+        <Footer />
       </div>
     </div>
   );
