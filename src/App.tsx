@@ -216,7 +216,7 @@ export default function App() {
         );
       }
     } catch {
-      setError("Erro de conexão. Tente novamente.");
+      setError("Ainda está ocorrendo problemas ao conectar. Tente novamente.");
     }
     setBusy(false);
   };
@@ -274,7 +274,7 @@ export default function App() {
         );
       }
     } catch {
-      setError("Erro de conexão. Tente novamente.");
+      setError("Ainda está ocorrendo problemas ao processar seu cadastro.");
     }
     setBusy(false);
   };
