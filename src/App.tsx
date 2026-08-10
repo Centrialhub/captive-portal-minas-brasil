@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { Link } from "react-router-dom";
 import { api } from "./lib/api";
 import { supabase } from "./integrations/supabase/client";
 import {
@@ -7,6 +8,18 @@ import {
 } from "./lib/portal-utils";
 import logoMinasBrasil from "./assets/logo-minas-brasil.png";
 import "./index.css";
+
+function Footer() {
+  return (
+    <p className="portal-footer">
+      Drogaria Minas Brasil © {new Date().getFullYear()} ·{" "}
+      <Link to="/politica-privacidade" style={{ color: "#bbb" }}>
+        Política de Privacidade
+      </Link>
+    </p>
+  );
+}
+
 
 type Step = "loading" | "login" | "signup" | "forgot" | "forgot_sent" | "authorizing" | "success" | "error" | "cpf_prompt";
 
