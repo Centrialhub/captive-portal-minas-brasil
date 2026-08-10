@@ -343,7 +343,7 @@ export default function App() {
           <button onClick={() => { setError(""); setStep("login"); }} className="portal-btn">
             Tentar novamente
           </button>
-          <p className="portal-footer">Drogaria Minas Brasil © {new Date().getFullYear()}</p>
+          <Footer />
         </div>
       </div>
     );
@@ -370,7 +370,7 @@ export default function App() {
               Continuar conexão
             </a>
           )}
-          <p className="portal-footer">Drogaria Minas Brasil © {new Date().getFullYear()}</p>
+          <Footer />
         </div>
       </div>
     );
@@ -409,7 +409,7 @@ export default function App() {
           >
             Voltar
           </button>
-          <p className="portal-footer">Drogaria Minas Brasil © {new Date().getFullYear()}</p>
+          <Footer />
         </div>
       </div>
     );
@@ -436,7 +436,7 @@ export default function App() {
           >
             Voltar ao login
           </button>
-          <p className="portal-footer">Drogaria Minas Brasil © {new Date().getFullYear()}</p>
+          <Footer />
         </div>
       </div>
     );
@@ -525,7 +525,7 @@ export default function App() {
             Já tenho conta
           </button>
 
-          <p className="portal-footer">Drogaria Minas Brasil © {new Date().getFullYear()}</p>
+          <Footer />
         </div>
       </div>
     );
@@ -622,7 +622,7 @@ export default function App() {
           Não tem conta? Cadastre-se
         </button>
 
-        <p className="portal-footer">Drogaria Minas Brasil © {new Date().getFullYear()}</p>
+        <Footer />
       </div>
     </div>
   );
