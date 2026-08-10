@@ -210,3 +210,104 @@ body {
   justify-content: center;
   margin: 0 auto 14px;
 }
+
+/* Privacy policy page */
+.policy-wrapper {
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  padding: 24px 16px;
+}
+
+.policy-card {
+  background: #fff;
+  border-radius: 14px;
+  padding: 28px 22px;
+  max-width: 720px;
+  width: 100%;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.25);
+}
+
+.policy-header {
+  text-align: center;
+  margin-bottom: 24px;
+}
+
+.policy-back {
+  display: inline-block;
+  font-size: 14px;
+  color: #E30613;
+  text-decoration: none;
+  margin-bottom: 12px;
+  font-weight: 500;
+}
+
+.policy-logo {
+  display: block;
+  height: 48px;
+  object-fit: contain;
+  margin: 0 auto 8px;
+}
+
+.policy-title {
+  font-size: 22px;
+  font-weight: 800;
+  color: #1a1a1a;
+  margin-bottom: 4px;
+}
+
+.policy-slogan {
+  font-size: 12px;
+  color: #888;
+  font-weight: 500;
+}
+
+.policy-body {
+  color: #333;
+  line-height: 1.6;
+  font-size: 14px;
+}
+
+.policy-intro {
+  margin-bottom: 20px;
+}
+
+.policy-section {
+  margin-bottom: 22px;
+}
+
+.policy-section h2 {
+  font-size: 16px;
+  font-weight: 700;
+  color: #1a1a1a;
+  margin-bottom: 10px;
+  margin-top: 18px;
+}
+
+.policy-section p {
+  margin-bottom: 10px;
+}
+
+.policy-section ul,
+.policy-section ol {
+  padding-left: 20px;
+  margin-bottom: 12px;
+}
+
+.policy-section li {
+  margin-bottom: 6px;
+}
+
+.policy-note {
+  background: #fff8e1;
+  border-left: 4px solid #f5c542;
+  padding: 12px 14px;
+  border-radius: 0 8px 8px 0;
+  margin-top: 12px;
+}
+
+.policy-footer {
+  margin-top: 28px;
+  text-align: center;
+}
+
