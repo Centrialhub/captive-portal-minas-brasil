@@ -51,6 +51,7 @@ export function sanitizeCaptiveRedirect(url: string | null | undefined): string 
       h === "31.97.170.23" ||
       h === "187.77.48.59" ||
       h.indexOf("rwificontroller") !== -1 ||
+      h.indexOf("guedesepaixao") !== -1 ||
       h.endsWith("supabase.co") ||
       h.endsWith(".supabase.co")
     ) return safeFallback;
