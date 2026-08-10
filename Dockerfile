@@ -45,10 +45,14 @@ RUN printf 'server {\n\
 \n\
     # Redirect do captive portal UniFi para o domínio HTTPS público\n\
     location /guest/s/default/ {\n\
+        # Se for porta 80, redireciona para HTTPS no domínio principal\n\
+        if ($scheme = http) {\n\
+            return 302 https://minasbrasilwifi.com.br$request_uri;\n\
+        }\n\
         return 302 https://minasbrasilwifi.com.br/?$args;\n\
     }\n\
 \n\
-    # Probes do Captive Network Assistant\n\
+    # Probes do Captive Network Assistant (CNA)\n\
     location = /generate_204 { return 302 https://minasbrasilwifi.com.br/?$args; }\n\
     location = /gen_204 { return 302 https://minasbrasilwifi.com.br/?$args; }\n\
     location = /hotspot-detect.html { return 302 https://minasbrasilwifi.com.br/?$args; }\n\
