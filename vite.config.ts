@@ -17,6 +17,13 @@ export default defineConfig(({ mode }) => ({
     hmr: {
       overlay: false,
     },
+    proxy: {
+      "/api/captive-portal": {
+        target: "https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal",
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/captive-portal/, ""),
+      },
+    },
   },
   preview: {
     host: "::",
