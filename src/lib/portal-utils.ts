@@ -49,6 +49,7 @@ export function sanitizeCaptiveRedirect(url: string | null | undefined): string 
     if (h.indexOf(":") !== -1) return safeFallback;
     if (
       h === "31.97.170.23" ||
+      h === "187.77.48.59" ||
       h.indexOf("rwificontroller") !== -1 ||
       h.endsWith("supabase.co") ||
       h.endsWith(".supabase.co")

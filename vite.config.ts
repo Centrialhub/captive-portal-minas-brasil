@@ -13,6 +13,7 @@ export default defineConfig(({ mode }) => ({
       "wifi.guedesepaixao.com.br",
       "drogariaminasbrasilapp.com.br",
       "minasbrasilwifi.com.br",
+      "187.77.48.59",
     ],
     hmr: {
       overlay: false,
@@ -33,6 +34,7 @@ export default defineConfig(({ mode }) => ({
       "wifi.guedesepaixao.com.br",
       "drogariaminasbrasilapp.com.br",
       "minasbrasilwifi.com.br",
+      "187.77.48.59",
     ],
 
   },
