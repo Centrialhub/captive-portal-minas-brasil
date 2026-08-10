@@ -47,7 +47,7 @@ npm run dev
 - Navigate to the main page of your repository.
 - Click the "Code" button (green button) near the top right.
 - Select the "Codespaces" tab.
-- Click "New codespace" to launch a new Codespace.
+- Click "New codespace" to launch a new codespace.
 - Edit files directly within the Codespace and commit and push your changes once you're done.
 
 ## What technologies are used for this project?
@@ -78,8 +78,8 @@ Para o captive portal funcionar corretamente no Android/iOS, adicione os seguint
 
 | Domínio / IP | Motivo |
 |---|---|
-| `drogariaminasbrasilapp.com.br` | Portal captive (frontend) |
-| `*.drogariaminasbrasilapp.com.br` | Subdomínios do portal |
+| `minasbrasilwifi.com.br` | Portal captive (frontend) |
+| `*.minasbrasilwifi.com.br` | Subdomínios do portal |
 | `fqamejlyytrhovawgtwg.supabase.co` | API backend (Supabase) |
 | `*.vercel.app` | CDN do Vercel (assets JS/CSS) |
 | `76.76.21.21` | IP do Vercel |
@@ -89,4 +89,4 @@ Para o captive portal funcionar corretamente no Android/iOS, adicione os seguint
 | `ocsp.digicert.com` | Validação de certificado SSL (DigiCert) |
 | `o.pki.goog` | Validação de certificado SSL (Google) |
 
-> **Dica:** Desative a opção "Secure Portal" no UniFi se o captive assistant do Android continuar com tela branca. Como as controladoras e o portal agora usam certificados públicos válidos, o fluxo HTTPS funciona normalmente.
+> **Dica:** Como as controladoras e o portal agora usam certificados públicos válidos, mantenha o "Secure Portal" ativado no UniFi. O fluxo HTTPS funciona normalmente.
