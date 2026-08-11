@@ -306,10 +306,10 @@ export default function App() {
     try {
       stashCaptiveParams();
       const qs = window.location.search || "";
-      const redirectTo = `https://minasbrasilwifi.com.br/${qs}`;
+      const redirectTo = `https://minasbrasilwifi.com.br/`;
       const { error: err } = await supabase.auth.signInWithOAuth({
         provider: "google",
-        options: { redirectTo },
+        options: { redirectTo, skipBrowserRedirect: false },
       });
       if (err) {
         setError("Não foi possível iniciar login com Google.");
