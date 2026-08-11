@@ -309,7 +309,7 @@ export default function App() {
       const redirectTo = `https://minasbrasilwifi.com.br/`;
       const { error: err } = await supabase.auth.signInWithOAuth({
         provider: "google",
-        options: { redirectTo },
+        options: { redirectTo, skipBrowserRedirect: false },
       });
       if (err) {
         setError("Não foi possível iniciar login com Google.");
