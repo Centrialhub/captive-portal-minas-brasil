@@ -166,7 +166,7 @@
           if(/^\d{1,3}(\.\d{1,3}){3}$/.test(h)) return safe;
           if(h.indexOf(':') !== -1) return safe;
           if(h === '31.97.170.23' || h === PUBLIC_IPV4 || h.indexOf('rwificontroller') !== -1 ||
-             h.indexOf('guedesepaixao') !== -1 ||
+             h.indexOf('guedesepaixao') !== -1 || h.indexOf('guedesepaixão') !== -1 ||
              h === 'supabase.co' || h.indexOf('.supabase.co') !== -1) return safe;
           if(u.port && u.port !== '80') return safe;
           if((u.pathname||'').indexOf('/guest/s/') === 0) return safe;
