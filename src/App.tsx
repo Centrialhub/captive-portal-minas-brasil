@@ -114,12 +114,15 @@ export default function App() {
 
   // Boot: fetch bootstrap + try silent login
   useEffect(() => {
-    // Hide vanilla-JS fallback
-    const fb = document.getElementById("fb");
-    if (fb) fb.style.display = "none";
+    // Force production domain for OAuth compatibility
+    if (window.location.hostname !== "minasbrasilwifi.com.br" && 
+        window.location.hostname !== "localhost" && 
+        !window.location.hostname.includes("lovable.app")) {
+      window.location.href = "https://minasbrasilwifi.com.br" + window.location.search;
+      return;
+    }
 
-    // Restore UniFi captive params if we're coming back from OAuth roundtrip.
-    restoreCaptiveParamsIfNeeded();
+    // Hide vanilla-JS fallback
 
     // Non-blocking bootstrap (store name / consent text)
     api.bootstrap().then(
