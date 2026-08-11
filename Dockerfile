@@ -15,6 +15,7 @@ RUN printf 'server {\n\
     absolute_redirect off;\n\
     port_in_redirect off;\n\
 \n\
+    # Health check para EasyPanel (precisa vir ANTES do fallback SPA)\n\
     location = /health {\n\
         access_log off;\n\
         default_type text/plain;\n\
@@ -43,18 +44,37 @@ RUN printf 'server {\n\
         if ($request_method = OPTIONS) { return 204; }\n\
     }\n\
 \n\
-    # Redirect do captive portal UniFi para o domínio HTTPS público\n\
+    # Proxy reverso para o UniFi Controller (Backend)\n\
+    location /unifi/ {\n\
+        proxy_pass https://rwificontroller.drogariaminasbrasil.com.br:8083/;\n\
+        proxy_ssl_verify off;\n\
+        proxy_ssl_server_name on;\n\
+        proxy_set_header Host rwificontroller.drogariaminasbrasil.com.br;\n\
+        proxy_set_header X-Real-IP $remote_addr;\n\
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
+        proxy_set_header X-Forwarded-Proto https;\n\
+        proxy_set_header Referer "";\n\
+        proxy_connect_timeout 10s;\n\
+        proxy_read_timeout 30s;\n\
+        proxy_buffering off;\n\
+        proxy_http_version 1.1;\n\
+        proxy_set_header Upgrade $http_upgrade;\n\
+        proxy_set_header Connection "upgrade";\n\
+    }\n\
+\n\
+    # Redirect do captive portal UniFi para o domínio público atualizado\n\
+    # IMPORTANTE: Usamos o domínio de produção correto minasbrasilwifi.com.br\n\
     location /guest/s/default/ {\n\
-        return 302 https://minasbrasilwifi.com.br$request_uri;\n\
+        return 302 http://minasbrasilwifi.com.br/?store=matriz&$args;\n\
     }\n\
 \n\
     # Probes do Captive Network Assistant (CNA)\n\
-    location = /generate_204 { return 302 https://minasbrasilwifi.com.br/; }\n\
-    location = /gen_204 { return 302 https://minasbrasilwifi.com.br/; }\n\
-    location = /hotspot-detect.html { return 302 https://minasbrasilwifi.com.br/; }\n\
-    location = /library/test/success.html { return 302 https://minasbrasilwifi.com.br/; }\n\
-    location = /connecttest.txt { return 302 https://minasbrasilwifi.com.br/; }\n\
-    location = /ncsi.txt { return 302 https://minasbrasilwifi.com.br/; }\n\
+    location = /generate_204 { return 302 http://minasbrasilwifi.com.br/; }\n\
+    location = /gen_204 { return 302 http://minasbrasilwifi.com.br/; }\n\
+    location = /hotspot-detect.html { return 302 http://minasbrasilwifi.com.br/; }\n\
+    location = /library/test/success.html { return 302 http://minasbrasilwifi.com.br/; }\n\
+    location = /connecttest.txt { return 302 http://minasbrasilwifi.com.br/; }\n\
+    location = /ncsi.txt { return 302 http://minasbrasilwifi.com.br/; }\n\
 \n\
     # SPA fallback - preserva query params\n\
     location / {\n\
