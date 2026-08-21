@@ -143,8 +143,9 @@ export default function App() {
         });
 
         if (result?.needs_cpf) {
+          if (result.profile) setGoogleUser(result.profile);
           setStep("cpf_prompt");
-          authCompletedRef.current = true;
+          authCompletedRef.current = false; // Allow re-authorization after CPF
           return result;
         }
 
