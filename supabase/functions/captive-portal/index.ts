@@ -3976,7 +3976,7 @@ function extractAuthContext(body: Record<string, unknown>): AuthAuthorizeContext
 async function authorizeAuthenticatedUser(args: {
   db: ReturnType<typeof supabaseAdmin>;
   userId: string;
-  profile: { full_name: string; cpf_digits: string | null; phone_digits: string | null; email: string };
+  profile: { full_name: string; cpf_digits: string | null; phone_digits: string | null; email: string; cpf_required?: boolean };
   ctx: AuthAuthorizeContext;
   req: Request;
   authMethod: "password" | "silent" | "google" | "apple";
@@ -4444,7 +4444,10 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
   const userId = userRes.user.id;
 
   const { data: existingProfile } = await db
-    .from("profiles").select("full_name, cpf_digits, phone_digits, email").eq("id", userId).maybeSingle();
+    .from("profiles")
+    .select("full_name, cpf_digits, phone_digits, email, cpf_required")
+    .eq("id", userId)
+    .maybeSingle();
 
   let profile = existingProfile;
 
@@ -4466,6 +4469,7 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
       email: emailValue.toLowerCase(),
       cpf_digits: null,
       phone_digits: null,
+      cpf_required: true,
     });
     if (insErr) {
       console.error("[authorize-existing] profile auto-create failed:", insErr.message);
@@ -4476,7 +4480,8 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
       email: emailValue.toLowerCase(),
       cpf_digits: null,
       phone_digits: null,
-    };
+      cpf_required: true,
+    } as any;
     logEvent(db, {
       trace_id: traceId, event_type: "profile_auto_created", step: "form", status: "info",
       payload: { provider: (userRes.user.app_metadata as Record<string, unknown> | undefined)?.provider, email: emailValue }, client_ip: clientIp,
@@ -4492,6 +4497,27 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
     hint === "google" || provider === "google" ? "google" :
     hint === "apple" || provider === "apple" ? "apple" :
     "silent";
+
+  // Check if CPF is required for Google users before UniFi authorization
+  if (authMethod === "google") {
+    const isCpfPending = !profile?.cpf_digits || (profile as any)?.cpf_required === true;
+    if (isCpfPending) {
+      logEvent(db, {
+        trace_id: traceId, event_type: "google_auth_cpf_pending", step: "form", status: "info",
+        payload: { email: profile?.email, mac: ctx.clientMac }, client_ip: clientIp,
+      });
+      return jsonResponse({
+        needs_cpf: true,
+        authorized: false,
+        auth_method: "google",
+        profile: {
+          full_name: profile?.full_name,
+          email: profile?.email
+        },
+        trace_id: traceId,
+      });
+    }
+  }
 
   const result = await authorizeAuthenticatedUser({
     db, userId, ctx, req, authMethod, traceId, clientIp, userAgent: ua, profile,

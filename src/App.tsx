@@ -5,6 +5,8 @@ import { supabase } from "./integrations/supabase/client";
 import {
   getQueryParams,
   sanitizeCaptiveRedirect,
+  formatCPF,
+  isValidCPF,
 } from "./lib/portal-utils";
 import { OAuthTracker } from "./lib/oauth-tracker";
 import logoMinasBrasil from "./assets/logo-minas-brasil.png";
@@ -97,6 +99,7 @@ export default function App() {
   // login form
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
+  const [googleUser, setGoogleUser] = useState<{ full_name: string; email: string } | null>(null);
 
   // forgot password
   const [forgotEmail, setForgotEmail] = useState("");
@@ -142,8 +145,9 @@ export default function App() {
         });
 
         if (result?.needs_cpf) {
+          if (result.profile) setGoogleUser(result.profile);
           setStep("cpf_prompt");
-          authCompletedRef.current = true;
+          authCompletedRef.current = false; // Allow re-authorization after CPF
           return result;
         }
 
@@ -317,6 +321,52 @@ export default function App() {
     setBusy(false);
   };
 
+  const handleCpfSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (busy) return;
+    setError("");
+
+    const digits = promptCpf.replace(/\D/g, "");
+    if (!isValidCPF(digits)) {
+      setError("CPF inválido. Verifique os números informados.");
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        setStep("login");
+        setBusy(false);
+        return;
+      }
+
+      const result = await api.updateProfile({
+        access_token: session.access_token,
+        cpf: digits,
+      });
+
+      if (result?.error) {
+        if (result.error.includes("já está cadastrado")) {
+          setError("Este CPF já está cadastrado em outra conta.");
+        } else {
+          setError(result.error || "Erro ao atualizar CPF.");
+        }
+        setBusy(false);
+        return;
+      }
+
+      // Success! Now authorize UniFi.
+      authCompletedRef.current = false;
+      await completeAuthenticatedSession(session, "google");
+    } catch (err) {
+      console.error("[cpf] submit error:", err);
+      setError("Erro ao processar. Tente novamente.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleSignup = async (e: React.FormEvent) => {
     e.preventDefault();
     if (busy) return;
@@ -432,6 +482,72 @@ export default function App() {
   };
 
 
+
+  // ── CPF PROMPT (Google Auth Gate) ──
+  if (step === "cpf_prompt") {
+    return (
+      <div className="portal-wrapper">
+        <div className="portal-card">
+          <div style={{ textAlign: "center" }}>
+            <img src={logoMinasBrasil} alt="Drogaria Minas Brasil" className="portal-logo" />
+            <p className="portal-slogan">vender barato é tradição</p>
+          </div>
+
+          <h1 className="portal-title">Complete seu acesso</h1>
+          <p className="portal-subtitle">
+            O CPF é necessário para concluir a liberação do seu Wi-Fi.
+          </p>
+
+          {googleUser && (
+            <div style={{ background: "#f8f9fa", padding: 12, borderRadius: 8, marginBottom: 16, fontSize: 14 }}>
+              <p><strong>Nome:</strong> {googleUser.full_name}</p>
+              <p><strong>E-mail:</strong> {googleUser.email}</p>
+            </div>
+          )}
+
+          {error && <div className="portal-error">{error}</div>}
+
+          <form onSubmit={handleCpfSubmit}>
+            <label className="portal-label">CPF</label>
+            <input
+              type="tel"
+              inputMode="numeric"
+              value={promptCpf}
+              onChange={(e) => setPromptCpf(formatCPF(e.target.value))}
+              required
+              className="portal-input"
+              placeholder="000.000.000-00"
+              autoComplete="off"
+              maxLength={14}
+            />
+
+            <button type="submit" disabled={busy} className="portal-btn">
+              {busy ? "Salvando..." : "Salvar CPF e liberar Wi-Fi"}
+            </button>
+          </form>
+
+          <button
+            type="button"
+            onClick={async () => {
+              setBusy(true);
+              await supabase.auth.signOut();
+              setError("");
+              setPromptCpf("");
+              setGoogleUser(null);
+              setStep("oauth_redirecting");
+              handleGoogleOAuth();
+            }}
+            className="portal-btn-secondary"
+            style={{ marginTop: 12 }}
+          >
+            Usar outra conta Google
+          </button>
+          
+          <Footer />
+        </div>
+      </div>
+    );
+  }
 
   // ── LOADING / OAUTH STATES / AUTHORIZING ──
   if (step === "loading" || step === "oauth_redirecting" || step === "oauth_callback" || step === "authorizing") {
