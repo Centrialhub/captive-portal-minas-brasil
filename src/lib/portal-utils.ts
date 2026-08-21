@@ -8,7 +8,7 @@
  * The controllers now serve valid public certificates, so we can safely stay
  * on HTTPS end-to-end. HTTPS is also required for Google/Apple OAuth.
  */
-export const PUBLIC_CAPTIVE_BASE_URL = "https://minasbrasilwifi.com.br";
+export const PUBLIC_CAPTIVE_BASE_URL = "http://minasbrasilwifi.com.br";
 
 
 /** Kept exported for backward-compat. NOT used as a client fallback anymore. */
