@@ -12,7 +12,7 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") || Deno.env.get("SUPABASE_PUBLISHABLE_KEY")!;
 
-const DEFAULT_REDIRECT_URL = Deno.env.get("POST_AUTH_REDIRECT_URL") || "https://www.drogariaminasbrasil.com.br/";
+const DEFAULT_REDIRECT_URL = Deno.env.get("POST_AUTH_REDIRECT_URL") || "http://www.drogariaminasbrasil.com.br/";
 const UNIFI_TIMEOUT_MS = 10_000;
 const UNIFI_RETRY_COUNT = 1;
 const MAC_REGEX = /^[0-9A-F]{12}$/;
@@ -3773,7 +3773,7 @@ var DIRECT_API='${API_BASE}';
 var SAME_ORIGIN_API='/api/captive-portal';
 // Captive flow stays HTTP same-origin to avoid Android CNA cert errors.
 var BASES=[SAME_ORIGIN_API];
-var PUBLIC_CAPTIVE_BASE_URL='https://minasbrasilwifi.com.br';
+const PUBLIC_CAPTIVE_BASE_URL = 'http://minasbrasilwifi.com.br';
 function sanitizeCaptiveRedirect(u){
 var store='matriz';try{var s=new URLSearchParams(location.search).get('store');if(s)store=s;}catch(e){}
 var safe=PUBLIC_CAPTIVE_BASE_URL+'/?success=1&store='+encodeURIComponent(store);
@@ -4121,7 +4121,7 @@ function getSiteBaseUrl(req: Request): string {
     // Prefer the wifi captive host if configured; otherwise use whatever's in the secret
     return `${u.protocol}//${u.host}`;
   } catch { /* ignore */ }
-  return "https://minasbrasilwifi.com.br";
+  return "http://minasbrasilwifi.com.br";
 }
 
 async function handleRequestPasswordReset(req: Request): Promise<Response> {
