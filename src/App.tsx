@@ -118,7 +118,7 @@ export default function App() {
     if (window.location.hostname !== "minasbrasilwifi.com.br" && 
         window.location.hostname !== "localhost" && 
         !window.location.hostname.includes("lovable.app")) {
-      window.location.href = "https://minasbrasilwifi.com.br" + window.location.search;
+      window.location.href = "http://minasbrasilwifi.com.br" + window.location.search;
       return;
     }
 
@@ -309,7 +309,7 @@ export default function App() {
     try {
       stashCaptiveParams();
       const qs = window.location.search || "";
-      const redirectTo = `https://minasbrasilwifi.com.br/`;
+      const redirectTo = `http://minasbrasilwifi.com.br/`;
       const { error: err } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: { redirectTo, skipBrowserRedirect: false },
