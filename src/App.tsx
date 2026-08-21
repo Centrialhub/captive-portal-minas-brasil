@@ -485,7 +485,6 @@ export default function App() {
 
   // ── CPF PROMPT (Google Auth Gate) ──
   if (step === "cpf_prompt") {
-    const { formatCPF } = require("./lib/portal-utils");
     return (
       <div className="portal-wrapper">
         <div className="portal-card">
