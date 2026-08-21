@@ -114,6 +114,8 @@ export default function App() {
   const [password, setPassword] = useState("");
   const [password2, setPassword2] = useState("");
   const [consented, setConsented] = useState(false);
+  const [countdown, setCountdown] = useState(2);
+  const redirectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
 
   const completeAuthenticatedSession = async (session: any, source: "google" | "silent") => {
