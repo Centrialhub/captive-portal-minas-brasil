@@ -17,6 +17,7 @@ createRoot(document.getElementById("root")!).render(
       <Route path="/reset-password" element={<ResetPassword />} />
       <Route path="/politica-privacidade" element={<PrivacyPolicy />} />
       <Route path="/sobre" element={<About />} />
+      <Route path="/oauth/callback" element={<App />} />
       <Route path="*" element={<App />} />
 
     </Routes>
