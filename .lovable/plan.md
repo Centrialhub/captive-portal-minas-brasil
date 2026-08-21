@@ -1,34 +1,21 @@
-# Plano: Atualizar/validar Dockerfile para o novo domínio HTTPS
+# Plan: Fix Certificate Errors in Captive Portal Redirects
 
-## O que foi enviado
+The user reports certificate errors when being redirected to the captive portal at IP `187.77.48.59`. This usually happens because the redirection (302) is pointing to an HTTPS URL while the client is not yet authorized or the browser doesn't trust the IP-based certificate.
 
-O Dockerfile correto já foi fornecido na resposta acima. Ele reflete o estado atual do repositório com as seguintes características:
+## Proposed Changes
 
-- Escuta na porta `3000`
-- Redireciona todos os probes do Captive Network Assistant para `https://drogariaminasbrasilapp.com.br`
-- Mantém o proxy `/api/captive-portal/` para o Supabase Edge Function
-- Remove os locations `/unifi/` e `/unifi-proxy/` (pois as controladoras agora possuem certificado público válido e a Edge Function se conecta diretamente)
-- Inclui SPA fallback preservando query params
+### 1. Nginx Configuration (Dockerfile)
+- Update Nginx configuration in the `Dockerfile` to ensure redirects use the plain HTTP protocol when appropriate.
+- Verify that the `minasbrasilwifi.com.br` domain is used consistently.
+- Add `server_name` explicitly for both the domain and the IP to help with certificate matching if needed, though for captive portals, forcing HTTP for the initial splash is often the most reliable path.
 
-## Alterações principais em relação ao arquivo antigo
+### 2. Frontend Redirect Logic
+- In `src/lib/portal-utils.ts` and `index.html`, review the `sanitizeCaptiveRedirect` logic.
+- Ensure that we are not accidentally forcing HTTPS redirects for the initial portal splash which might trigger certificate warnings on devices before they are authenticated.
 
-1. **Porta**: `listen 80` → `listen 3000` (alinhado ao Dockerfile atual do repositório)
-2. **Domínio**: `http://wifi.guedesepaixao.com.br` → `https://drogariaminasbrasilapp.com.br`
-3. **Protocolo**: `X-Forwarded-Proto http` → `X-Forwarded-Proto https`
-4. **Probes CNA**: adicionados `/generate_204`, `/gen_204`, `/hotspot-detect.html`, `/library/test/success.html`, `/connecttest.txt`, `/ncsi.txt`
-5. **SPA fallback**: `try_files $uri /index.html?$args`
-6. **Remoção de proxies**: `/unifi/` e `/unifi-proxy/` removidos por obsolescência
+### 3. Backend Verification
+- Ensure that the `captive-portal` Edge Function correctly handles the `redirect_url` and doesn't inject HTTPS where it's not supported by the controller's current state.
 
-## Próximos passos
-
-1. Aplicar o Dockerfile fornecido ao repositório.
-2. Atualizar `README.md` para refletir o novo domínio no Walled Garden.
-3. Validar o build do container (`docker build -t captive-proxy .`).
-4. Verificar se a porta exposta no EasyPanel está configurada para `3000` (ou ajustar para `80` se necessário).
-
-## Decisões pendentes
-
-- A porta do EasyPanel é `80` ou `3000`?
-- É necessário manter algum proxy legado (`/unifi/` ou `/unifi-proxy/`) por algum outro serviço?
-
-Aprovar este plano para aplicar o Dockerfile e os ajustes de documentação.
+## Technical Details
+- **Protocol Management**: We will ensure the `302` redirect from Nginx uses `http://` instead of `https://` for the initial landing if it's detected that the device is in a pre-auth state, as this is the primary cause of "Certificate Error" screens in iOS/Android CNA.
+- **Walled Garden**: Remind the user that the IP `187.77.48.59` and domain `minasbrasilwifi.com.br` MUST be in the Walled Garden, but they should be accessible over HTTP.
