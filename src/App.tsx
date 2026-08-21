@@ -29,9 +29,9 @@ function Footer() {
 type Step = "loading" | "login" | "signup" | "forgot" | "forgot_sent" | "authorizing" | "success" | "error" | "cpf_prompt";
 
 const CAPTIVE_PARAM_KEYS = ["id", "mac", "ap", "ssid", "url", "t", "site", "store"] as const;
-const CAPTIVE_PARAMS_STORAGE_KEY = "mb_captive_params";
+const CAPTIVE_PARAMS_STORAGE_KEY = "mb_captive_params_v2";
 
-/** Preserve UniFi captive params across an OAuth round-trip. */
+/** Preserve UniFi captive params across an OAuth round-trip. Using localStorage for better persistence in CNA. */
 function stashCaptiveParams() {
   try {
     const p = new URLSearchParams(window.location.search);
@@ -40,8 +40,13 @@ function stashCaptiveParams() {
       const v = p.get(k);
       if (v) out[k] = v;
     });
-    if (Object.keys(out).length) sessionStorage.setItem(CAPTIVE_PARAMS_STORAGE_KEY, JSON.stringify(out));
-  } catch { /* ignore */ }
+    if (Object.keys(out).length) {
+      localStorage.setItem(CAPTIVE_PARAMS_STORAGE_KEY, JSON.stringify(out));
+      console.log("[params] stashed:", out);
+    }
+  } catch (e) {
+    console.warn("[params] stash failed:", e);
+  }
 }
 
 /** Restore captive params into the current URL when coming back from OAuth. */
@@ -50,15 +55,19 @@ function restoreCaptiveParamsIfNeeded() {
     const current = new URLSearchParams(window.location.search);
     const hasAny = CAPTIVE_PARAM_KEYS.some((k) => current.get(k));
     if (hasAny) return;
-    const raw = sessionStorage.getItem(CAPTIVE_PARAMS_STORAGE_KEY);
+    const raw = localStorage.getItem(CAPTIVE_PARAMS_STORAGE_KEY);
     if (!raw) return;
     const saved = JSON.parse(raw) as Record<string, string>;
+    console.log("[params] restoring from localStorage:", saved);
     Object.entries(saved).forEach(([k, v]) => current.set(k, v));
     const qs = current.toString();
     const newUrl = window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash;
     window.history.replaceState(null, "", newUrl);
-  } catch { /* ignore */ }
+  } catch (e) {
+    console.warn("[params] restore failed:", e);
+  }
 }
+
 
 
 interface BootstrapData {
@@ -115,14 +124,15 @@ export default function App() {
   // Boot: fetch bootstrap + try silent login
   useEffect(() => {
     // Force production domain for OAuth compatibility
-    if (window.location.hostname !== "minasbrasilwifi.com.br" && 
-        window.location.hostname !== "localhost" && 
-        !window.location.hostname.includes("lovable.app")) {
+    const isLocal = window.location.hostname === "localhost" || window.location.hostname.includes("lovable.app");
+    if (!isLocal && window.location.hostname !== "minasbrasilwifi.com.br") {
+      console.log("[boot] non-production domain, redirecting to minasbrasilwifi.com.br");
       window.location.href = "http://minasbrasilwifi.com.br" + window.location.search;
       return;
     }
 
-    // Hide vanilla-JS fallback
+    // Restore captive parameters if coming back from OAuth
+    restoreCaptiveParamsIfNeeded();
 
     // Non-blocking bootstrap (store name / consent text)
     api.bootstrap().then(
@@ -132,51 +142,80 @@ export default function App() {
       () => { /* keep fallback */ },
     );
 
-    (async () => {
-      if (silentTriedRef.current) return;
-      silentTriedRef.current = true;
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      console.log(`[auth] event: ${event}`, session?.user?.id);
+      
+      if ((event === "SIGNED_IN" || event === "INITIAL_SESSION") && session?.access_token) {
+        if (silentTriedRef.current) return;
+        silentTriedRef.current = true;
 
-      try {
-        const { data } = await supabase.auth.getSession();
-        const session = data?.session;
-        if (!session?.access_token) {
+        try {
+          setStep("authorizing");
+          const params = getQueryParams();
+          console.log("[auth] authorizing with params:", params);
+          
+          const result = await api.authorizeExisting({
+            access_token: session.access_token,
+            client_mac: params.client_mac,
+            ap_mac: params.ap_mac,
+            ssid: params.ssid,
+            redirect_url: params.redirect_url,
+            captive_timestamp: params.captive_timestamp,
+            auth_method: "google"
+          });
+
+          if (result?.needs_cpf) {
+            setStep("cpf_prompt");
+            return;
+          }
+
+          if (result?.needs_login) {
+            setStep("login");
+            return;
+          }
+          if (result?.authorized) {
+            setSuccessMsg("Conectado com sucesso!");
+            setRedirectUrl(sanitizeCaptiveRedirect(result.redirect_url));
+            setStep("success");
+            
+            // Auto-redirect signal for CNA
+            const finalUrl = sanitizeCaptiveRedirect(result.redirect_url);
+            if (finalUrl && finalUrl !== window.location.href) {
+              setTimeout(() => { window.location.href = finalUrl; }, 1500);
+            }
+            return;
+          }
+          setError(result?.fail_reason ? "Não foi possível liberar. Faça login novamente." : "");
           setStep("login");
-          return;
-        }
-        setStep("authorizing");
-        const params = getQueryParams();
-        const result = await api.authorizeExisting({
-          access_token: session.access_token,
-          client_mac: params.client_mac,
-          ap_mac: params.ap_mac,
-          ssid: params.ssid,
-          redirect_url: params.redirect_url,
-          captive_timestamp: params.captive_timestamp,
-        });
-
-        if (result?.needs_cpf) {
-          setStep("cpf_prompt");
-          return;
-        }
-
-        if (result?.needs_login) {
+        } catch (err) {
+          console.error("[auth] authorizeExisting failed:", err);
           setStep("login");
-          return;
         }
-        if (result?.authorized) {
-          setSuccessMsg("Conectado com sucesso!");
-          setRedirectUrl(sanitizeCaptiveRedirect(result.redirect_url));
-          setStep("success");
-          return;
-        }
-        // Not authorized but token valid — go to login as safety net
-        setError(result?.fail_reason ? "Não foi possível liberar. Faça login novamente." : "");
+      } else if (event === "SIGNED_OUT") {
         setStep("login");
-      } catch {
-        setStep("login");
+        silentTriedRef.current = false;
       }
-    })();
+    });
+
+    // Initial session check with a fallback timer for redirects
+    const timer = setTimeout(() => {
+      supabase.auth.getSession().then(({ data: { session } }) => {
+        if (session && !silentTriedRef.current) {
+          console.log("[auth] session found in fallback check");
+          // @ts-ignore
+          supabase.auth._notifyAllChannels("SIGNED_IN", session);
+        } else if (!session && step === "loading") {
+          setStep("login");
+        }
+      });
+    }, 1000);
+
+    return () => {
+      clearTimeout(timer);
+      subscription.unsubscribe();
+    };
   }, []);
+
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
