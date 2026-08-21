@@ -4480,7 +4480,8 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
       email: emailValue.toLowerCase(),
       cpf_digits: null,
       phone_digits: null,
-    };
+      cpf_required: true,
+    } as any;
     logEvent(db, {
       trace_id: traceId, event_type: "profile_auto_created", step: "form", status: "info",
       payload: { provider: (userRes.user.app_metadata as Record<string, unknown> | undefined)?.provider, email: emailValue }, client_ip: clientIp,
