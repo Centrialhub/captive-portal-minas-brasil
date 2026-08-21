@@ -125,9 +125,9 @@ export default function App() {
   useEffect(() => {
     // Force production domain for OAuth compatibility
     const isLocal = window.location.hostname === "localhost" || window.location.hostname.includes("lovable.app");
-    if (!isLocal && window.location.hostname !== "minasbrasilwifi.com.br") {
-      console.log("[boot] non-production domain, redirecting to minasbrasilwifi.com.br");
-      window.location.href = "http://minasbrasilwifi.com.br" + window.location.search;
+    if (!isLocal && (window.location.hostname !== "minasbrasilwifi.com.br" || window.location.protocol !== "https:")) {
+      console.log("[boot] non-canonical origin, redirecting to https://minasbrasilwifi.com.br");
+      window.location.href = "https://minasbrasilwifi.com.br" + window.location.pathname + window.location.search + window.location.hash;
       return;
     }
 
@@ -348,7 +348,7 @@ export default function App() {
     try {
       stashCaptiveParams();
       const qs = window.location.search || "";
-      const redirectTo = `http://minasbrasilwifi.com.br/`;
+      const redirectTo = `https://minasbrasilwifi.com.br/`;
       const { error: err } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: { redirectTo, skipBrowserRedirect: false },

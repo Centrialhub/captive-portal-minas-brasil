@@ -3773,7 +3773,7 @@ var DIRECT_API='${API_BASE}';
 var SAME_ORIGIN_API='/api/captive-portal';
 // Captive flow stays HTTP same-origin to avoid Android CNA cert errors.
 var BASES=[SAME_ORIGIN_API];
-const PUBLIC_CAPTIVE_BASE_URL = 'http://minasbrasilwifi.com.br';
+const PUBLIC_CAPTIVE_BASE_URL = 'https://minasbrasilwifi.com.br';
 function sanitizeCaptiveRedirect(u){
 var store='matriz';try{var s=new URLSearchParams(location.search).get('store');if(s)store=s;}catch(e){}
 var safe=PUBLIC_CAPTIVE_BASE_URL+'/?success=1&store='+encodeURIComponent(store);
@@ -4121,7 +4121,7 @@ function getSiteBaseUrl(req: Request): string {
     // Prefer the wifi captive host if configured; otherwise use whatever's in the secret
     return `${u.protocol}//${u.host}`;
   } catch { /* ignore */ }
-  return "http://minasbrasilwifi.com.br";
+  return "https://minasbrasilwifi.com.br";
 }
 
 async function handleRequestPasswordReset(req: Request): Promise<Response> {

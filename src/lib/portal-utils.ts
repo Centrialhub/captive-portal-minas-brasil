@@ -8,7 +8,7 @@
  * The controllers now serve valid public certificates, so we can safely stay
  * on HTTPS end-to-end. HTTPS is also required for Google/Apple OAuth.
  */
-export const PUBLIC_CAPTIVE_BASE_URL = "http://minasbrasilwifi.com.br";
+export const PUBLIC_CAPTIVE_BASE_URL = "https://minasbrasilwifi.com.br";
 
 
 /** Kept exported for backward-compat. NOT used as a client fallback anymore. */
@@ -28,9 +28,9 @@ export function getApiBase(): string {
 }
 
 /**
- * Returns a safe HTTP URL that we can hand to `window.location.href` during
- * the captive flow. Blocks HTTPS, controller hosts, raw IPs and Supabase
- * direct URLs — anything that would trigger the Android CNA cert error.
+ * Returns a safe HTTPS URL that we can hand to `window.location.href` during
+ * the captive flow. Blocks controller hosts, raw IPs and Supabase
+ * direct URLs.
  */
 export function sanitizeCaptiveRedirect(url: string | null | undefined): string {
   const store = (() => {
@@ -43,7 +43,7 @@ export function sanitizeCaptiveRedirect(url: string | null | undefined): string 
   try {
     const u = new URL(url, PUBLIC_CAPTIVE_BASE_URL);
     // Controllers now use valid public certs → HTTPS is safe. Still block IPs/backend hosts.
-    if (u.protocol !== "http:" && u.protocol !== "https:") return safeFallback;
+    if (u.protocol !== "https:") return safeFallback;
     const h = u.hostname.toLowerCase();
     if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h)) return safeFallback;
     if (h.indexOf(":") !== -1) return safeFallback;
