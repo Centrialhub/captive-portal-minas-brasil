@@ -28,38 +28,88 @@ export function getApiBase(): string {
 }
 
 /**
- * Returns a safe HTTPS URL that we can hand to `window.location.href` during
- * the captive flow. Blocks controller hosts, raw IPs and Supabase
- * direct URLs.
+ * Centralized logic to resolve the final destination after authorization.
+ * Follows a strict priority and safety matrix.
  */
-export function sanitizeCaptiveRedirect(url: string | null | undefined): string {
-  const store = (() => {
-    try {
-      return new URLSearchParams(window.location.search).get("store") || "matriz";
-    } catch { return "matriz"; }
-  })();
-  const safeFallback = `${PUBLIC_CAPTIVE_BASE_URL}/?success=1&store=${encodeURIComponent(store)}`;
-  if (!url) return safeFallback;
+export function resolvePostAuthRedirect(
+  backendUrl?: string | null,
+  captiveUrl?: string | null
+): string {
+  const corporateFallback = "https://www.drogariaminasbrasil.com.br/";
+  
+  // Priority 1: Backend-provided URL (store-specific redirect)
+  if (backendUrl && isSafeRedirect(backendUrl)) {
+    return normalizeRedirectUrl(backendUrl);
+  }
+  
+  // Priority 2: Original captive 'url' parameter
+  if (captiveUrl && isSafeRedirect(captiveUrl)) {
+    return normalizeRedirectUrl(captiveUrl);
+  }
+  
+  // Fallback final
+  return corporateFallback;
+}
+
+/**
+ * Checks if a URL is safe to be used as a post-auth destination.
+ */
+export function isSafeRedirect(url: string): boolean {
+  if (!url) return false;
   try {
     const u = new URL(url, PUBLIC_CAPTIVE_BASE_URL);
-    // Controllers now use valid public certs → HTTPS is safe. Still block IPs/backend hosts.
-    if (u.protocol !== "https:") return safeFallback;
+    
+    // Protocol must be HTTPS (or we at least reject non-standard ones)
+    // We strictly prefer HTTPS for the final destination.
+    if (u.protocol !== "https:" && u.protocol !== "http:") return false;
+    
     const h = u.hostname.toLowerCase();
-    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h)) return safeFallback;
-    if (h.indexOf(":") !== -1) return safeFallback;
-    if (
-      h === "31.97.170.23" ||
-      h === "187.77.48.59" ||
-      h.indexOf("rwificontroller") !== -1 ||
-      h.endsWith("supabase.co") ||
-      h.endsWith(".supabase.co")
-    ) return safeFallback;
-    if (u.port && u.port !== "80" && u.port !== "443") return safeFallback;
-    if (u.pathname.indexOf("/guest/s/") === 0) return safeFallback;
+    
+    // Block raw IPs
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h)) return false;
+    
+    // Block specific prohibited hosts
+    const blockedHosts = [
+      "minasbrasilwifi.com.br",
+      "31.97.170.23",
+      "187.77.48.59",
+      "rwificontroller",
+    ];
+    if (blockedHosts.some(bh => h.includes(bh))) return false;
+    
+    // Block Supabase
+    if (h.endsWith("supabase.co") || h.endsWith(".supabase.co")) return false;
+    
+    // Block non-standard ports
+    if (u.port && u.port !== "80" && u.port !== "443") return false;
+    
+    // Block controller guest paths
+    if (u.pathname.indexOf("/guest/s/") === 0) return false;
+    
+    // Block dangerous schemes
+    if (/^(javascript|data|file):/i.test(url)) return false;
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function normalizeRedirectUrl(url: string): string {
+  try {
+    const u = new URL(url);
     return u.toString();
   } catch {
-    return safeFallback;
+    return url;
   }
+}
+
+/**
+ * Legacy wrapper. Now uses resolvePostAuthRedirect.
+ */
+export function sanitizeCaptiveRedirect(url: string | null | undefined): string {
+  const q = getQueryParams();
+  return resolvePostAuthRedirect(null, url || q.redirect_url);
 }
 
 

@@ -4,7 +4,7 @@ import { api } from "./lib/api";
 import { supabase } from "./integrations/supabase/client";
 import {
   getQueryParams,
-  sanitizeCaptiveRedirect,
+  resolvePostAuthRedirect,
   formatCPF,
   isValidCPF,
 } from "./lib/portal-utils";
@@ -114,6 +114,8 @@ export default function App() {
   const [password, setPassword] = useState("");
   const [password2, setPassword2] = useState("");
   const [consented, setConsented] = useState(false);
+  const [countdown, setCountdown] = useState(2);
+  const redirectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
 
   const completeAuthenticatedSession = async (session: any, source: "google" | "silent") => {
@@ -167,10 +169,11 @@ export default function App() {
             payload: { source }
           });
           setSuccessMsg("Wi-Fi liberado com sucesso!");
-          setRedirectUrl(sanitizeCaptiveRedirect(result.redirect_url));
+          const finalUrl = resolvePostAuthRedirect(result.redirect_url, params.redirect_url);
+          setRedirectUrl(finalUrl);
           setStep("success");
           authCompletedRef.current = true;
-          OAuthTracker.clearAll();
+          // OAuthTracker.clearAll() will be called after success confirmation path
           return result;
         }
 
@@ -308,7 +311,8 @@ export default function App() {
       }
       if (result?.authorized) {
         setSuccessMsg("Conectado com sucesso!");
-        setRedirectUrl(sanitizeCaptiveRedirect(result.redirect_url));
+        const finalUrl = resolvePostAuthRedirect(result.redirect_url, params.redirect_url);
+        setRedirectUrl(finalUrl);
         setStep("success");
       } else {
         setError(
@@ -413,7 +417,8 @@ export default function App() {
       }
       if (result?.authorized) {
         setSuccessMsg("Cadastro concluído. Conectado com sucesso!");
-        setRedirectUrl(sanitizeCaptiveRedirect(result.redirect_url));
+        const finalUrl = resolvePostAuthRedirect(result.redirect_url, params.redirect_url);
+        setRedirectUrl(finalUrl);
         setStep("success");
       } else {
         setError(
@@ -594,8 +599,39 @@ export default function App() {
     );
   }
 
-  // ── SUCCESS ──
+  // ── SUCCESS (Post-Auth Redirection) ──
+  useEffect(() => {
+    if (step === "success" && redirectUrl) {
+      // Clear markers since we successfully authorized
+      OAuthTracker.clearAll();
+      
+      // Automatic redirect after 2s
+      redirectTimerRef.current = setTimeout(() => {
+        console.log("[success] Auto-redirecting to:", redirectUrl);
+        window.location.replace(redirectUrl);
+      }, 2000);
+
+      // Countdown interval
+      const interval = setInterval(() => {
+        setCountdown(prev => Math.max(0, prev - 1));
+      }, 1000);
+
+      return () => {
+        if (redirectTimerRef.current) clearTimeout(redirectTimerRef.current);
+        clearInterval(interval);
+      };
+    }
+  }, [step, redirectUrl]);
+
   if (step === "success") {
+    const handleManualRedirect = () => {
+      if (redirectTimerRef.current) clearTimeout(redirectTimerRef.current);
+      if (redirectUrl) {
+        console.log("[success] Manual redirect to:", redirectUrl);
+        window.location.replace(redirectUrl);
+      }
+    };
+
     return (
       <div className="portal-wrapper">
         <div className="portal-card" style={{ textAlign: "center" }}>
@@ -604,17 +640,28 @@ export default function App() {
               <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
             </svg>
           </div>
-          <h1 className="portal-title">Conectado!</h1>
+          <h1 className="portal-title">Wi-Fi liberado com sucesso!</h1>
           <p className="portal-subtitle">{successMsg}</p>
+          
+          <div style={{ marginTop: 20, marginBottom: 20 }}>
+            <p style={{ color: "#666", fontSize: 14 }}>
+              Redirecionando em {countdown} segundos...
+            </p>
+          </div>
+
           {redirectUrl && (
-            <a
-              href={redirectUrl}
+            <button
+              onClick={handleManualRedirect}
               className="portal-btn"
-              style={{ display: "inline-block", marginTop: 16, textDecoration: "none" }}
+              style={{ marginTop: 8 }}
             >
-              Continuar conexão
-            </a>
+              Continuar agora
+            </button>
           )}
+          
+          <p style={{ color: "#999", fontSize: 12, marginTop: 24 }}>
+            Seu acesso já foi liberado. Você pode fechar esta janela.
+          </p>
           <Footer />
         </div>
       </div>
