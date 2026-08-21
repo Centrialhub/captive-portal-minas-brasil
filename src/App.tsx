@@ -124,9 +124,9 @@ export default function App() {
   // Boot: fetch bootstrap + try silent login
   useEffect(() => {
     // Force production domain for OAuth compatibility
-    if (window.location.hostname !== "minasbrasilwifi.com.br" && 
-        window.location.hostname !== "localhost" && 
-        !window.location.hostname.includes("lovable.app")) {
+    const isLocal = window.location.hostname === "localhost" || window.location.hostname.includes("lovable.app");
+    if (!isLocal && window.location.hostname !== "minasbrasilwifi.com.br") {
+      console.log("[boot] non-production domain, redirecting to minasbrasilwifi.com.br");
       window.location.href = "http://minasbrasilwifi.com.br" + window.location.search;
       return;
     }
@@ -142,11 +142,10 @@ export default function App() {
       () => { /* keep fallback */ },
     );
 
-
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       console.log(`[auth] event: ${event}`, session?.user?.id);
       
-      if (event === "SIGNED_IN" && session?.access_token) {
+      if ((event === "SIGNED_IN" || event === "INITIAL_SESSION") && session?.access_token) {
         if (silentTriedRef.current) return;
         silentTriedRef.current = true;
 
@@ -162,7 +161,7 @@ export default function App() {
             ssid: params.ssid,
             redirect_url: params.redirect_url,
             captive_timestamp: params.captive_timestamp,
-            auth_method: event === "SIGNED_IN" ? "google" : "silent"
+            auth_method: "google"
           });
 
           if (result?.needs_cpf) {
@@ -178,6 +177,12 @@ export default function App() {
             setSuccessMsg("Conectado com sucesso!");
             setRedirectUrl(sanitizeCaptiveRedirect(result.redirect_url));
             setStep("success");
+            
+            // Auto-redirect signal for CNA
+            const finalUrl = sanitizeCaptiveRedirect(result.redirect_url);
+            if (finalUrl && finalUrl !== window.location.href) {
+              setTimeout(() => { window.location.href = finalUrl; }, 1500);
+            }
             return;
           }
           setError(result?.fail_reason ? "Não foi possível liberar. Faça login novamente." : "");
@@ -192,22 +197,25 @@ export default function App() {
       }
     });
 
-    // Initial check
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session && !silentTriedRef.current) {
-        // Trigger manual sign-in flow if session exists but didn't fire event yet
-        // @ts-ignore
-        supabase.auth._notifyAllChannels("SIGNED_IN", session);
-      } else if (!session) {
-        setStep("login");
-      }
-    });
+    // Initial session check with a fallback timer for redirects
+    const timer = setTimeout(() => {
+      supabase.auth.getSession().then(({ data: { session } }) => {
+        if (session && !silentTriedRef.current) {
+          console.log("[auth] session found in fallback check");
+          // @ts-ignore
+          supabase.auth._notifyAllChannels("SIGNED_IN", session);
+        } else if (!session && step === "loading") {
+          setStep("login");
+        }
+      });
+    }, 1000);
 
     return () => {
+      clearTimeout(timer);
       subscription.unsubscribe();
     };
-
   }, []);
+
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
