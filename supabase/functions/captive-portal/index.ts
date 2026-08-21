@@ -3976,7 +3976,7 @@ function extractAuthContext(body: Record<string, unknown>): AuthAuthorizeContext
 async function authorizeAuthenticatedUser(args: {
   db: ReturnType<typeof supabaseAdmin>;
   userId: string;
-  profile: { full_name: string; cpf_digits: string | null; phone_digits: string | null; email: string };
+  profile: { full_name: string; cpf_digits: string | null; phone_digits: string | null; email: string; cpf_required?: boolean };
   ctx: AuthAuthorizeContext;
   req: Request;
   authMethod: "password" | "silent" | "google" | "apple";
