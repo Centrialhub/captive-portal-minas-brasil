@@ -4444,7 +4444,10 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
   const userId = userRes.user.id;
 
   const { data: existingProfile } = await db
-    .from("profiles").select("full_name, cpf_digits, phone_digits, email").eq("id", userId).maybeSingle();
+    .from("profiles")
+    .select("full_name, cpf_digits, phone_digits, email, cpf_required")
+    .eq("id", userId)
+    .maybeSingle();
 
   let profile = existingProfile;
 
