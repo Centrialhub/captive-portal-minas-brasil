@@ -326,7 +326,6 @@ export default function App() {
     if (busy) return;
     setError("");
 
-    const { isValidCPF } = await import("./lib/portal-utils");
     const digits = promptCpf.replace(/\D/g, "");
     if (!isValidCPF(digits)) {
       setError("CPF inválido. Verifique os números informados.");
