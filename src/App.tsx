@@ -134,50 +134,70 @@ export default function App() {
     );
 
 
-    (async () => {
-      if (silentTriedRef.current) return;
-      silentTriedRef.current = true;
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      console.log(`[auth] event: ${event}`, session?.user?.id);
+      
+      if (event === "SIGNED_IN" && session?.access_token) {
+        if (silentTriedRef.current) return;
+        silentTriedRef.current = true;
 
-      try {
-        const { data } = await supabase.auth.getSession();
-        const session = data?.session;
-        if (!session?.access_token) {
+        try {
+          setStep("authorizing");
+          const params = getQueryParams();
+          console.log("[auth] authorizing with params:", params);
+          
+          const result = await api.authorizeExisting({
+            access_token: session.access_token,
+            client_mac: params.client_mac,
+            ap_mac: params.ap_mac,
+            ssid: params.ssid,
+            redirect_url: params.redirect_url,
+            captive_timestamp: params.captive_timestamp,
+            auth_method: event === "SIGNED_IN" ? "google" : "silent"
+          });
+
+          if (result?.needs_cpf) {
+            setStep("cpf_prompt");
+            return;
+          }
+
+          if (result?.needs_login) {
+            setStep("login");
+            return;
+          }
+          if (result?.authorized) {
+            setSuccessMsg("Conectado com sucesso!");
+            setRedirectUrl(sanitizeCaptiveRedirect(result.redirect_url));
+            setStep("success");
+            return;
+          }
+          setError(result?.fail_reason ? "Não foi possível liberar. Faça login novamente." : "");
           setStep("login");
-          return;
-        }
-        setStep("authorizing");
-        const params = getQueryParams();
-        const result = await api.authorizeExisting({
-          access_token: session.access_token,
-          client_mac: params.client_mac,
-          ap_mac: params.ap_mac,
-          ssid: params.ssid,
-          redirect_url: params.redirect_url,
-          captive_timestamp: params.captive_timestamp,
-        });
-
-        if (result?.needs_cpf) {
-          setStep("cpf_prompt");
-          return;
-        }
-
-        if (result?.needs_login) {
+        } catch (err) {
+          console.error("[auth] authorizeExisting failed:", err);
           setStep("login");
-          return;
         }
-        if (result?.authorized) {
-          setSuccessMsg("Conectado com sucesso!");
-          setRedirectUrl(sanitizeCaptiveRedirect(result.redirect_url));
-          setStep("success");
-          return;
-        }
-        // Not authorized but token valid — go to login as safety net
-        setError(result?.fail_reason ? "Não foi possível liberar. Faça login novamente." : "");
+      } else if (event === "SIGNED_OUT") {
         setStep("login");
-      } catch {
+        silentTriedRef.current = false;
+      }
+    });
+
+    // Initial check
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session && !silentTriedRef.current) {
+        // Trigger manual sign-in flow if session exists but didn't fire event yet
+        // @ts-ignore
+        supabase.auth._notifyAllChannels("SIGNED_IN", session);
+      } else if (!session) {
         setStep("login");
       }
-    })();
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+
   }, []);
 
   const handleLogin = async (e: React.FormEvent) => {
