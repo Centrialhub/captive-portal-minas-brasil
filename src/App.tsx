@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate, useLocation } from "react-router-dom";
 import { api } from "./lib/api";
 import { supabase } from "./integrations/supabase/client";
 import {
