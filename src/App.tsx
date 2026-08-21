@@ -29,9 +29,9 @@ function Footer() {
 type Step = "loading" | "login" | "signup" | "forgot" | "forgot_sent" | "authorizing" | "success" | "error" | "cpf_prompt";
 
 const CAPTIVE_PARAM_KEYS = ["id", "mac", "ap", "ssid", "url", "t", "site", "store"] as const;
-const CAPTIVE_PARAMS_STORAGE_KEY = "mb_captive_params";
+const CAPTIVE_PARAMS_STORAGE_KEY = "mb_captive_params_v2";
 
-/** Preserve UniFi captive params across an OAuth round-trip. */
+/** Preserve UniFi captive params across an OAuth round-trip. Using localStorage for better persistence in CNA. */
 function stashCaptiveParams() {
   try {
     const p = new URLSearchParams(window.location.search);
@@ -40,8 +40,13 @@ function stashCaptiveParams() {
       const v = p.get(k);
       if (v) out[k] = v;
     });
-    if (Object.keys(out).length) sessionStorage.setItem(CAPTIVE_PARAMS_STORAGE_KEY, JSON.stringify(out));
-  } catch { /* ignore */ }
+    if (Object.keys(out).length) {
+      localStorage.setItem(CAPTIVE_PARAMS_STORAGE_KEY, JSON.stringify(out));
+      console.log("[params] stashed:", out);
+    }
+  } catch (e) {
+    console.warn("[params] stash failed:", e);
+  }
 }
 
 /** Restore captive params into the current URL when coming back from OAuth. */
@@ -50,15 +55,19 @@ function restoreCaptiveParamsIfNeeded() {
     const current = new URLSearchParams(window.location.search);
     const hasAny = CAPTIVE_PARAM_KEYS.some((k) => current.get(k));
     if (hasAny) return;
-    const raw = sessionStorage.getItem(CAPTIVE_PARAMS_STORAGE_KEY);
+    const raw = localStorage.getItem(CAPTIVE_PARAMS_STORAGE_KEY);
     if (!raw) return;
     const saved = JSON.parse(raw) as Record<string, string>;
+    console.log("[params] restoring from localStorage:", saved);
     Object.entries(saved).forEach(([k, v]) => current.set(k, v));
     const qs = current.toString();
     const newUrl = window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash;
     window.history.replaceState(null, "", newUrl);
-  } catch { /* ignore */ }
+  } catch (e) {
+    console.warn("[params] restore failed:", e);
+  }
 }
+
 
 
 interface BootstrapData {
