@@ -167,10 +167,11 @@ export default function App() {
             payload: { source }
           });
           setSuccessMsg("Wi-Fi liberado com sucesso!");
-          setRedirectUrl(sanitizeCaptiveRedirect(result.redirect_url));
+          const finalUrl = resolvePostAuthRedirect(result.redirect_url, params.redirect_url);
+          setRedirectUrl(finalUrl);
           setStep("success");
           authCompletedRef.current = true;
-          OAuthTracker.clearAll();
+          // OAuthTracker.clearAll() will be called after success confirmation path
           return result;
         }
 
