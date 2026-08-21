@@ -25,8 +25,8 @@ RUN printf 'server {\n\
 \n\
     # Proxy para Edge Functions do Supabase\n\
     location /api/captive-portal/ {\n\
-        proxy_pass https://fqameylyytrhovawgtwg.supabase.co/functions/v1/captive-portal/;\n\
-        proxy_set_header Host fqameylyytrhovawgtwg.supabase.co;\n\
+        proxy_pass https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal/;\n\
+        proxy_set_header Host fqamejlyytrhovawgtwg.supabase.co;\n\
         proxy_set_header X-Real-IP $remote_addr;\n\
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
         proxy_set_header X-Forwarded-Proto $scheme;\n\
