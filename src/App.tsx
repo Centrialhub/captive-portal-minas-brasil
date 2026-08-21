@@ -450,13 +450,25 @@ export default function App() {
 
   // ── ERROR ──
   if (step === "error") {
+    const isOAuthError = error.includes("Google") || OAuthTracker.isValidOAuthFlow();
     return (
       <div className="portal-wrapper">
         <div className="portal-card" style={{ textAlign: "center" }}>
           <h1 className="portal-title">Erro</h1>
           <p className="portal-subtitle">{error || "Ocorreu um erro inesperado."}</p>
-          <button onClick={() => { setError(""); setStep("login"); }} className="portal-btn">
-            Tentar novamente
+          <button 
+            onClick={() => { 
+              setError(""); 
+              if (isOAuthError) {
+                OAuthTracker.clearMarker();
+                setStep("login");
+              } else {
+                setStep("login");
+              }
+            }} 
+            className="portal-btn"
+          >
+            {isOAuthError ? "Voltar e tentar novamente" : "Tentar novamente"}
           </button>
           <Footer />
         </div>
