@@ -309,7 +309,8 @@ export default function App() {
       }
       if (result?.authorized) {
         setSuccessMsg("Conectado com sucesso!");
-        setRedirectUrl(sanitizeCaptiveRedirect(result.redirect_url));
+        const finalUrl = resolvePostAuthRedirect(result.redirect_url, params.redirect_url);
+        setRedirectUrl(finalUrl);
         setStep("success");
       } else {
         setError(
