@@ -154,23 +154,36 @@
       // Public HTTPS base for any client redirect during captive flow.
       var PUBLIC_CAPTIVE_BASE_URL = 'https://minasbrasilwifi.com.br';
       var PUBLIC_IPV4 = '187.77.48.59';
-      function sanitizeCaptiveRedirect(url){
-        var store = 'matriz';
-        try { var s = new URLSearchParams(location.search).get('store'); if(s) store = s; } catch(e){}
-        var safe = PUBLIC_CAPTIVE_BASE_URL + '/?success=1&store=' + encodeURIComponent(store);
-        if(!url) return safe;
+
+      function isSafeRedirect(url) {
+        if (!url) return false;
         try {
           var u = new URL(url, PUBLIC_CAPTIVE_BASE_URL);
-          if(u.protocol !== 'https:') return safe;
-          var h = (u.hostname||'').toLowerCase();
-          if(/^\d{1,3}(\.\d{1,3}){3}$/.test(h)) return safe;
-          if(h.indexOf(':') !== -1) return safe;
-          if(h === '31.97.170.23' || h === PUBLIC_IPV4 || h.indexOf('rwificontroller') !== -1 ||
-             h === 'supabase.co' || h.indexOf('.supabase.co') !== -1) return safe;
-          if(u.port && u.port !== '80') return safe;
-          if((u.pathname||'').indexOf('/guest/s/') === 0) return safe;
-          return u.toString();
-        } catch(e){ return safe; }
+          if (u.protocol !== 'https:' && u.protocol !== 'http:') return false;
+          var h = (u.hostname || '').toLowerCase();
+          if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h)) return false;
+          if (h.indexOf(':') !== -1) return false;
+          var blockedHosts = ['minasbrasilwifi.com.br', '31.97.170.23', PUBLIC_IPV4, 'rwificontroller'];
+          for (var i = 0; i < blockedHosts.length; i++) {
+            if (h.indexOf(blockedHosts[i]) !== -1) return false;
+          }
+          if (h.endsWith('supabase.co') || h.indexOf('.supabase.co') !== -1) return false;
+          if (u.port && u.port !== '80' && u.port !== '443') return false;
+          if ((u.pathname || '').indexOf('/guest/s/') === 0) return false;
+          if (/^(javascript|data|file):/i.test(url)) return false;
+          return true;
+        } catch (e) { return false; }
+      }
+
+      function resolvePostAuthRedirect(backendUrl, captiveUrl) {
+        var corporateFallback = 'https://www.drogariaminasbrasil.com.br/';
+        if (backendUrl && isSafeRedirect(backendUrl)) return backendUrl;
+        if (captiveUrl && isSafeRedirect(captiveUrl)) return captiveUrl;
+        return corporateFallback;
+      }
+
+      function sanitizeCaptiveRedirect(url) {
+        return resolvePostAuthRedirect(null, url || params.redirect_url);
       }
 
       // ── Query Params ──
