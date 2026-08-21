@@ -609,16 +609,35 @@
       }
 
       // ── Success ──
+      var successTimer = null;
+      var successInterval = null;
       function showSuccess(msg){
         $('fb-success-msg').textContent=msg;
         var link=$('fb-success-link');
+        var countdownEl=$('fb-countdown');
+        var countdown = 2;
+
         if(state.redirect_url){
-          link.href=state.redirect_url;
-          link.target='_self';
+          link.href='javascript:void(0)';
+          link.onclick = function() {
+            if(successTimer) clearTimeout(successTimer);
+            if(successInterval) clearInterval(successInterval);
+            location.replace(state.redirect_url);
+          };
           link.style.display='inline-block';
-          link.classList.remove('hidden');
+          
+          countdownEl.textContent = countdown;
+          successInterval = setInterval(function(){
+            countdown--;
+            if(countdown >= 0) countdownEl.textContent = countdown;
+          }, 1000);
+
+          successTimer = setTimeout(function(){
+            location.replace(state.redirect_url);
+          }, 2000);
         } else {
           link.style.display='none';
+          $('fb-countdown-box').style.display='none';
         }
         goStep('success');
       }
