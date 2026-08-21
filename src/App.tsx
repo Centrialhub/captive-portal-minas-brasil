@@ -6,6 +6,7 @@ import {
   getQueryParams,
   sanitizeCaptiveRedirect,
 } from "./lib/portal-utils";
+import { OAuthTracker } from "./lib/oauth-tracker";
 import logoMinasBrasil from "./assets/logo-minas-brasil.png";
 import "./index.css";
 
@@ -26,46 +27,30 @@ function Footer() {
 }
 
 
-type Step = "loading" | "login" | "signup" | "forgot" | "forgot_sent" | "authorizing" | "success" | "error" | "cpf_prompt";
+type Step = 
+  | "loading" 
+  | "oauth_redirecting" 
+  | "oauth_callback" 
+  | "login" 
+  | "signup" 
+  | "forgot" 
+  | "forgot_sent" 
+  | "authorizing" 
+  | "success" 
+  | "error" 
+  | "cpf_prompt";
 
-const CAPTIVE_PARAM_KEYS = ["id", "mac", "ap", "ssid", "url", "t", "site", "store"] as const;
-const CAPTIVE_PARAMS_STORAGE_KEY = "mb_captive_params_v2";
+const CAPTIVE_PARAMS_STORAGE_KEY = "mb_captive_params_v2"; // Kept for legacy compat if needed
 
 /** Preserve UniFi captive params across an OAuth round-trip. Using localStorage for better persistence in CNA. */
+/** Legacy stashing - now handled by OAuthTracker */
 function stashCaptiveParams() {
-  try {
-    const p = new URLSearchParams(window.location.search);
-    const out: Record<string, string> = {};
-    CAPTIVE_PARAM_KEYS.forEach((k) => {
-      const v = p.get(k);
-      if (v) out[k] = v;
-    });
-    if (Object.keys(out).length) {
-      localStorage.setItem(CAPTIVE_PARAMS_STORAGE_KEY, JSON.stringify(out));
-      console.log("[params] stashed:", out);
-    }
-  } catch (e) {
-    console.warn("[params] stash failed:", e);
-  }
+  OAuthTracker.stashCaptiveParams();
 }
 
-/** Restore captive params into the current URL when coming back from OAuth. */
+/** Legacy restore - now handled by OAuthTracker */
 function restoreCaptiveParamsIfNeeded() {
-  try {
-    const current = new URLSearchParams(window.location.search);
-    const hasAny = CAPTIVE_PARAM_KEYS.some((k) => current.get(k));
-    if (hasAny) return;
-    const raw = localStorage.getItem(CAPTIVE_PARAMS_STORAGE_KEY);
-    if (!raw) return;
-    const saved = JSON.parse(raw) as Record<string, string>;
-    console.log("[params] restoring from localStorage:", saved);
-    Object.entries(saved).forEach(([k, v]) => current.set(k, v));
-    const qs = current.toString();
-    const newUrl = window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash;
-    window.history.replaceState(null, "", newUrl);
-  } catch (e) {
-    console.warn("[params] restore failed:", e);
-  }
+  OAuthTracker.restoreCaptiveParams();
 }
 
 
@@ -94,13 +79,18 @@ function formatPhoneBR(value: string): string {
 }
 
 export default function App() {
+  const navigate = useNavigate();
+  const location = useLocation();
   const [step, setStep] = useState<Step>("loading");
   const [boot, setBoot] = useState<BootstrapData>(FALLBACK_BOOT);
   const [redirectUrl, setRedirectUrl] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
   const [busy, setBusy] = useState(false);
-  const silentTriedRef = useRef(false);
+  
+  // Processing refs for idempotency
+  const processingAuthRef = useRef<Promise<any> | null>(null);
+  const authCompletedRef = useRef(false);
 
   // login form
   const [loginEmail, setLoginEmail] = useState("");
@@ -121,18 +111,105 @@ export default function App() {
   const [consented, setConsented] = useState(false);
 
 
-  // Boot: fetch bootstrap + try silent login
+  const completeAuthenticatedSession = async (session: any, source: "google" | "silent") => {
+    if (authCompletedRef.current) return;
+    if (processingAuthRef.current) return processingAuthRef.current;
+
+    console.log(`[auth] completeAuthenticatedSession starting. source: ${source}`);
+    
+    processingAuthRef.current = (async () => {
+      try {
+        setStep("authorizing");
+        const params = getQueryParams();
+        
+        api.clientEvent({
+          event: `google_oauth_authorize_started`,
+          step: "auth",
+          status: "processing",
+          payload: { source, mac: params.client_mac }
+        });
+
+        const result = await api.authorizeExisting({
+          access_token: session.access_token,
+          client_mac: params.client_mac,
+          ap_mac: params.ap_mac,
+          ssid: params.ssid,
+          redirect_url: params.redirect_url,
+          captive_timestamp: params.captive_timestamp,
+          auth_method: source
+        });
+
+        if (result?.needs_cpf) {
+          setStep("cpf_prompt");
+          authCompletedRef.current = true;
+          return result;
+        }
+
+        if (result?.needs_login) {
+          await supabase.auth.signOut();
+          setError("Sessão inválida. Por favor, faça login novamente.");
+          setStep("login");
+          authCompletedRef.current = true;
+          return result;
+        }
+
+        if (result?.authorized) {
+          api.clientEvent({
+            event: `google_oauth_authorize_succeeded`,
+            step: "auth",
+            status: "success",
+            payload: { source }
+          });
+          setSuccessMsg("Wi-Fi liberado com sucesso!");
+          setRedirectUrl(sanitizeCaptiveRedirect(result.redirect_url));
+          setStep("success");
+          authCompletedRef.current = true;
+          OAuthTracker.clearAll();
+          return result;
+        }
+
+        api.clientEvent({
+          event: `google_oauth_authorize_failed`,
+          step: "auth",
+          status: "error",
+          payload: { source, reason: result?.fail_reason }
+        });
+        
+        setError(result?.fail_reason || "Não foi possível liberar o acesso.");
+        setStep("login");
+        authCompletedRef.current = true;
+        return result;
+      } catch (err) {
+        console.error("[auth] authorizeExisting failed:", err);
+        setError("Erro ao processar liberação. Tente novamente.");
+        setStep("login");
+        authCompletedRef.current = true;
+        throw err;
+      } finally {
+        processingAuthRef.current = null;
+      }
+    })();
+
+    return processingAuthRef.current;
+  };
+
   useEffect(() => {
     // Force production domain for OAuth compatibility
     const isLocal = window.location.hostname === "localhost" || window.location.hostname.includes("lovable.app");
-    if (!isLocal && (window.location.hostname !== "minasbrasilwifi.com.br" || window.location.protocol !== "https:")) {
+    const isCanonical = window.location.hostname === "minasbrasilwifi.com.br" && window.location.protocol === "https:";
+    
+    if (!isLocal && !isCanonical) {
       console.log("[boot] non-canonical origin, redirecting to https://minasbrasilwifi.com.br");
       window.location.href = "https://minasbrasilwifi.com.br" + window.location.pathname + window.location.search + window.location.hash;
       return;
     }
 
     // Restore captive parameters if coming back from OAuth
-    restoreCaptiveParamsIfNeeded();
+    OAuthTracker.restoreCaptiveParams();
+
+    // Check if we are on the explicit callback route
+    const isCallbackRoute = location.pathname === "/oauth/callback";
+    const isOAuthFlow = OAuthTracker.isValidOAuthFlow();
 
     // Non-blocking bootstrap (store name / consent text)
     api.bootstrap().then(
@@ -142,79 +219,53 @@ export default function App() {
       () => { /* keep fallback */ },
     );
 
+    let callbackTimeout: ReturnType<typeof setTimeout> | null = null;
+
+    if (isCallbackRoute || isOAuthFlow) {
+      setStep("oauth_callback");
+      api.clientEvent({ event: "google_oauth_session_received", step: "oauth" });
+      
+      // Safety timeout for OAuth session (10s)
+      callbackTimeout = setTimeout(() => {
+        if (step === "oauth_callback" || step === "loading") {
+          api.clientEvent({ event: "google_oauth_callback_timeout", step: "oauth", status: "error" });
+          setError("Não foi possível concluir o login do Google. Tempo esgotado.");
+          setStep("error");
+        }
+      }, 10000);
+    }
+
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      console.log(`[auth] event: ${event}`, session?.user?.id);
+      console.log(`[auth] onAuthStateChange event: ${event}`, session?.user?.id);
       
       if ((event === "SIGNED_IN" || event === "INITIAL_SESSION") && session?.access_token) {
-        if (silentTriedRef.current) return;
-        silentTriedRef.current = true;
-
-        try {
-          setStep("authorizing");
-          const params = getQueryParams();
-          console.log("[auth] authorizing with params:", params);
-          
-          const result = await api.authorizeExisting({
-            access_token: session.access_token,
-            client_mac: params.client_mac,
-            ap_mac: params.ap_mac,
-            ssid: params.ssid,
-            redirect_url: params.redirect_url,
-            captive_timestamp: params.captive_timestamp,
-            auth_method: "google"
-          });
-
-          if (result?.needs_cpf) {
-            setStep("cpf_prompt");
-            return;
-          }
-
-          if (result?.needs_login) {
-            setStep("login");
-            return;
-          }
-          if (result?.authorized) {
-            setSuccessMsg("Conectado com sucesso!");
-            setRedirectUrl(sanitizeCaptiveRedirect(result.redirect_url));
-            setStep("success");
-            
-            // Auto-redirect signal for CNA
-            const finalUrl = sanitizeCaptiveRedirect(result.redirect_url);
-            if (finalUrl && finalUrl !== window.location.href) {
-              setTimeout(() => { window.location.href = finalUrl; }, 1500);
-            }
-            return;
-          }
-          setError(result?.fail_reason ? "Não foi possível liberar. Faça login novamente." : "");
-          setStep("login");
-        } catch (err) {
-          console.error("[auth] authorizeExisting failed:", err);
-          setStep("login");
-        }
+        if (authCompletedRef.current) return;
+        
+        const source = OAuthTracker.isValidOAuthFlow() ? "google" : "silent";
+        await completeAuthenticatedSession(session, source);
+        if (callbackTimeout) clearTimeout(callbackTimeout);
       } else if (event === "SIGNED_OUT") {
-        setStep("login");
-        silentTriedRef.current = false;
+        if (step !== "loading") setStep("login");
+        authCompletedRef.current = false;
       }
     });
 
-    // Initial session check with a fallback timer for redirects
-    const timer = setTimeout(() => {
-      supabase.auth.getSession().then(({ data: { session } }) => {
-        if (session && !silentTriedRef.current) {
-          console.log("[auth] session found in fallback check");
-          // @ts-ignore
-          supabase.auth._notifyAllChannels("SIGNED_IN", session);
-        } else if (!session && step === "loading") {
-          setStep("login");
-        }
-      });
-    }, 1000);
+    // Fallback manual check
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session && !authCompletedRef.current) {
+        const source = OAuthTracker.isValidOAuthFlow() ? "google" : "silent";
+        completeAuthenticatedSession(session, source);
+        if (callbackTimeout) clearTimeout(callbackTimeout);
+      } else if (!session && !isCallbackRoute && !isOAuthFlow && step === "loading") {
+        setStep("login");
+      }
+    });
 
     return () => {
-      clearTimeout(timer);
+      if (callbackTimeout) clearTimeout(callbackTimeout);
       subscription.unsubscribe();
     };
-  }, []);
+  }, [location.pathname]);
 
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -243,6 +294,7 @@ export default function App() {
         return;
       }
       if (result?.access_token && result?.refresh_token) {
+        authCompletedRef.current = true; // Prevent listener from firing
         await supabase.auth.setSession({
           access_token: result.access_token,
           refresh_token: result.refresh_token,
@@ -301,6 +353,7 @@ export default function App() {
         return;
       }
       if (result?.access_token && result?.refresh_token) {
+        authCompletedRef.current = true;
         await supabase.auth.setSession({
           access_token: result.access_token,
           refresh_token: result.refresh_token,
@@ -345,36 +398,51 @@ export default function App() {
     if (busy) return;
     setError("");
     setBusy(true);
+    setStep("oauth_redirecting");
+    
     try {
-      stashCaptiveParams();
-      const qs = window.location.search || "";
-      const redirectTo = `https://minasbrasilwifi.com.br/`;
+      api.clientEvent({ event: "google_oauth_started", step: "oauth" });
+      OAuthTracker.stashCaptiveParams();
+      
+      const redirectTo = `https://minasbrasilwifi.com.br/oauth/callback`;
       const { error: err } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: { redirectTo, skipBrowserRedirect: false },
       });
+      
       if (err) {
+        api.clientEvent({ 
+          event: "google_oauth_started", 
+          step: "oauth", 
+          status: "error", 
+          error_message: err.message 
+        });
         setError("Não foi possível iniciar login com Google.");
+        setStep("login");
         setBusy(false);
       }
-      // On success, the browser navigates away — no further UI update needed.
-    } catch {
+    } catch (e) {
+      console.error("[oauth] initiation error:", e);
       setError("Erro ao iniciar login com Google. Tente novamente.");
+      setStep("login");
       setBusy(false);
     }
   };
 
 
 
-  // ── LOADING / AUTHORIZING ──
-  if (step === "loading" || step === "authorizing") {
+  // ── LOADING / OAUTH STATES / AUTHORIZING ──
+  if (step === "loading" || step === "oauth_redirecting" || step === "oauth_callback" || step === "authorizing") {
+    let msg = "Carregando...";
+    if (step === "oauth_redirecting") msg = "Abrindo login do Google...";
+    if (step === "oauth_callback") msg = "Conta Google validada. Preparando conexão...";
+    if (step === "authorizing") msg = "Liberando seu acesso ao Wi-Fi...";
+
     return (
       <div className="portal-wrapper">
         <div className="portal-card" style={{ textAlign: "center" }}>
           <img src={logoMinasBrasil} alt="Drogaria Minas Brasil" className="portal-logo" />
-          <p style={{ color: "#888", marginTop: 12 }}>
-            {step === "authorizing" ? "Liberando seu acesso..." : "Carregando..."}
-          </p>
+          <p style={{ color: "#888", marginTop: 12 }}>{msg}</p>
         </div>
       </div>
     );
