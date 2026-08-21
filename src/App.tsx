@@ -5,6 +5,8 @@ import { supabase } from "./integrations/supabase/client";
 import {
   getQueryParams,
   sanitizeCaptiveRedirect,
+  formatCPF,
+  isValidCPF,
 } from "./lib/portal-utils";
 import { OAuthTracker } from "./lib/oauth-tracker";
 import logoMinasBrasil from "./assets/logo-minas-brasil.png";
