@@ -87,6 +87,8 @@ export default function App() {
   const [error, setError] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
   const [busy, setBusy] = useState(false);
+  const stepRef = useRef<Step>("loading");
+  useEffect(() => { stepRef.current = step; }, [step]);
   
   // Processing refs for idempotency
   const processingAuthRef = useRef<Promise<any> | null>(null);
@@ -227,7 +229,7 @@ export default function App() {
       
       // Safety timeout for OAuth session (10s)
       callbackTimeout = setTimeout(() => {
-        if (step === "oauth_callback" || step === "loading") {
+        if (stepRef.current === "oauth_callback" || stepRef.current === "loading") {
           api.clientEvent({ event: "google_oauth_callback_timeout", step: "oauth", status: "error" });
           setError("Não foi possível concluir o login do Google. Tempo esgotado.");
           setStep("error");
