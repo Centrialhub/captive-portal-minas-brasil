@@ -4469,6 +4469,7 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
       email: emailValue.toLowerCase(),
       cpf_digits: null,
       phone_digits: null,
+      cpf_required: true,
     });
     if (insErr) {
       console.error("[authorize-existing] profile auto-create failed:", insErr.message);
