@@ -61,18 +61,18 @@ RUN printf 'server {\n\
         proxy_set_header Connection "upgrade";\n\
     }\n\
 \n\
-    # Redirect do captive portal UniFi para o portal (USAR HTTP PARA EVITAR ERRO DE CERTIFICADO NO CNA)\n\
+    # Redirect do captive portal UniFi para o portal\n\
     location /guest/s/default/ {\n\
-        return 302 http://minasbrasilwifi.com.br/?store=matriz&$args;\n\
+        return 302 https://minasbrasilwifi.com.br/?store=matriz&$args;\n\
     }\n\
 \n\
     # Probes do CNA\n\
-    location = /generate_204 { return 302 http://minasbrasilwifi.com.br/; }\n\
-    location = /gen_204 { return 302 http://minasbrasilwifi.com.br/; }\n\
-    location = /hotspot-detect.html { return 302 http://minasbrasilwifi.com.br/; }\n\
-    location = /library/test/success.html { return 302 http://minasbrasilwifi.com.br/; }\n\
-    location = /connecttest.txt { return 302 http://minasbrasilwifi.com.br/; }\n\
-    location = /ncsi.txt { return 302 http://minasbrasilwifi.com.br/; }\n\
+    location = /generate_204 { return 302 https://minasbrasilwifi.com.br/; }\n\
+    location = /gen_204 { return 302 https://minasbrasilwifi.com.br/; }\n\
+    location = /hotspot-detect.html { return 302 https://minasbrasilwifi.com.br/; }\n\
+    location = /library/test/success.html { return 302 https://minasbrasilwifi.com.br/; }\n\
+    location = /connecttest.txt { return 302 https://minasbrasilwifi.com.br/; }\n\
+    location = /ncsi.txt { return 302 https://minasbrasilwifi.com.br/; }\n\
 \n\
     # SPA fallback\n\
     location / {\n\
