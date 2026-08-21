@@ -319,6 +319,53 @@ export default function App() {
     setBusy(false);
   };
 
+  const handleCpfSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (busy) return;
+    setError("");
+
+    const { isValidCPF } = await import("./lib/portal-utils");
+    const digits = promptCpf.replace(/\D/g, "");
+    if (!isValidCPF(digits)) {
+      setError("CPF inválido. Verifique os números informados.");
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        setStep("login");
+        setBusy(false);
+        return;
+      }
+
+      const result = await api.updateProfile({
+        access_token: session.access_token,
+        cpf: digits,
+      });
+
+      if (result?.error) {
+        if (result.error.includes("já está cadastrado")) {
+          setError("Este CPF já está cadastrado em outra conta.");
+        } else {
+          setError(result.error || "Erro ao atualizar CPF.");
+        }
+        setBusy(false);
+        return;
+      }
+
+      // Success! Now authorize UniFi.
+      authCompletedRef.current = false;
+      await completeAuthenticatedSession(session, "google");
+    } catch (err) {
+      console.error("[cpf] submit error:", err);
+      setError("Erro ao processar. Tente novamente.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleSignup = async (e: React.FormEvent) => {
     e.preventDefault();
     if (busy) return;
