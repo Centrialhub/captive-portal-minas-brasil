@@ -122,7 +122,8 @@ export default function App() {
       return;
     }
 
-    // Hide vanilla-JS fallback
+    // Restore captive parameters if coming back from OAuth
+    restoreCaptiveParamsIfNeeded();
 
     // Non-blocking bootstrap (store name / consent text)
     api.bootstrap().then(
@@ -131,6 +132,7 @@ export default function App() {
       },
       () => { /* keep fallback */ },
     );
+
 
     (async () => {
       if (silentTriedRef.current) return;
