@@ -4,7 +4,7 @@ import { api } from "./lib/api";
 import { supabase } from "./integrations/supabase/client";
 import {
   getQueryParams,
-  sanitizeCaptiveRedirect,
+  resolvePostAuthRedirect,
   formatCPF,
   isValidCPF,
 } from "./lib/portal-utils";
