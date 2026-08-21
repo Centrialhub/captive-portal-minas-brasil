@@ -97,6 +97,7 @@ export default function App() {
   // login form
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
+  const [googleUser, setGoogleUser] = useState<{ full_name: string; email: string } | null>(null);
 
   // forgot password
   const [forgotEmail, setForgotEmail] = useState("");
