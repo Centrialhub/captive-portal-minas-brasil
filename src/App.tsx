@@ -482,6 +482,73 @@ export default function App() {
 
 
 
+  // ── CPF PROMPT (Google Auth Gate) ──
+  if (step === "cpf_prompt") {
+    const { formatCPF } = require("./lib/portal-utils");
+    return (
+      <div className="portal-wrapper">
+        <div className="portal-card">
+          <div style={{ textAlign: "center" }}>
+            <img src={logoMinasBrasil} alt="Drogaria Minas Brasil" className="portal-logo" />
+            <p className="portal-slogan">vender barato é tradição</p>
+          </div>
+
+          <h1 className="portal-title">Complete seu acesso</h1>
+          <p className="portal-subtitle">
+            O CPF é necessário para concluir a liberação do seu Wi-Fi.
+          </p>
+
+          {googleUser && (
+            <div style={{ background: "#f8f9fa", padding: 12, borderRadius: 8, marginBottom: 16, fontSize: 14 }}>
+              <p><strong>Nome:</strong> {googleUser.full_name}</p>
+              <p><strong>E-mail:</strong> {googleUser.email}</p>
+            </div>
+          )}
+
+          {error && <div className="portal-error">{error}</div>}
+
+          <form onSubmit={handleCpfSubmit}>
+            <label className="portal-label">CPF</label>
+            <input
+              type="tel"
+              inputMode="numeric"
+              value={promptCpf}
+              onChange={(e) => setPromptCpf(formatCPF(e.target.value))}
+              required
+              className="portal-input"
+              placeholder="000.000.000-00"
+              autoComplete="off"
+              maxLength={14}
+            />
+
+            <button type="submit" disabled={busy} className="portal-btn">
+              {busy ? "Salvando..." : "Salvar CPF e liberar Wi-Fi"}
+            </button>
+          </form>
+
+          <button
+            type="button"
+            onClick={async () => {
+              setBusy(true);
+              await supabase.auth.signOut();
+              setError("");
+              setPromptCpf("");
+              setGoogleUser(null);
+              setStep("oauth_redirecting");
+              handleGoogleOAuth();
+            }}
+            className="portal-btn-secondary"
+            style={{ marginTop: 12 }}
+          >
+            Usar outra conta Google
+          </button>
+          
+          <Footer />
+        </div>
+      </div>
+    );
+  }
+
   // ── LOADING / OAUTH STATES / AUTHORIZING ──
   if (step === "loading" || step === "oauth_redirecting" || step === "oauth_callback" || step === "authorizing") {
     let msg = "Carregando...";
