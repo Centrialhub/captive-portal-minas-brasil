@@ -310,7 +310,7 @@ export default function App() {
         );
       }
     } catch {
-      setError("Ainda está ocorrendo problemas ao conectar. Tente novamente.");
+      setError("Não foi possível conectar. Por favor, verifique seus dados e tente novamente.");
     }
     setBusy(false);
   };
@@ -416,7 +416,7 @@ export default function App() {
         );
       }
     } catch {
-      setError("Ainda está ocorrendo problemas ao processar seu cadastro.");
+      setError("Não foi possível concluir seu cadastro. Por favor, verifique os dados e tente novamente.");
     }
     setBusy(false);
   };
