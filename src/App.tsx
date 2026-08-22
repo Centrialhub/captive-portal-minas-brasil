@@ -615,7 +615,7 @@ export default function App() {
       <div className="portal-wrapper">
         <div className="portal-card" style={{ textAlign: "center" }}>
           <img src={logoMinasBrasil} alt="Drogaria Minas Brasil" className="portal-logo" />
-          <p style={{ color: "#888", marginTop: 12 }}>{msg}</p>
+          <p className="mt-4 text-gray-500 font-medium">{msg}</p>
         </div>
       </div>
     );
@@ -657,7 +657,7 @@ export default function App() {
     return (
       <div className="portal-wrapper">
         <div className="portal-card">
-          <div style={{ textAlign: "center" }}>
+          <div className="text-center mb-6">
             <img src={logoMinasBrasil} alt="Drogaria Minas Brasil" className="portal-logo" />
             <p className="portal-slogan">vender barato é tradição</p>
           </div>
@@ -723,7 +723,7 @@ export default function App() {
     return (
       <div className="portal-wrapper">
         <div className="portal-card">
-          <div style={{ textAlign: "center" }}>
+          <div className="text-center mb-6">
             <img src={logoMinasBrasil} alt="Drogaria Minas Brasil" className="portal-logo" />
             <p className="portal-slogan">vender barato é tradição</p>
           </div>
@@ -825,7 +825,7 @@ export default function App() {
   return (
     <div className="portal-wrapper">
       <div className="portal-card">
-        <div style={{ textAlign: "center" }}>
+        <div className="text-center mb-6">
           <img src={logoMinasBrasil} alt="Drogaria Minas Brasil" className="portal-logo" />
           <p className="portal-slogan">vender barato é tradição</p>
         </div>
@@ -839,17 +839,12 @@ export default function App() {
         {error && <div className="portal-error">{error}</div>}
 
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 16 }}>
+        <div className="flex flex-col gap-3 mb-6">
           <button
             type="button"
             onClick={() => handleGoogleOAuth()}
             disabled={busy}
-            style={{
-              display: "flex", alignItems: "center", justifyContent: "center", gap: 10,
-              padding: "12px 16px", background: "#fff", color: "#3c4043",
-              border: "1px solid #dadce0", borderRadius: 8, fontSize: 15, fontWeight: 500,
-              cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1,
-            }}
+            className="flex items-center justify-center gap-3 py-3 px-4 bg-white text-gray-700 border border-gray-300 rounded-xl text-[15px] font-semibold transition-all hover:bg-gray-50 disabled:opacity-60 disabled:cursor-not-allowed"
           >
             <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
               <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
@@ -861,10 +856,10 @@ export default function App() {
           </button>
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "8px 0 16px", color: "#999", fontSize: 12 }}>
-          <div style={{ flex: 1, height: 1, background: "#e5e7eb" }} />
+        <div className="flex items-center gap-3 my-4 text-gray-400 text-xs font-semibold uppercase tracking-wider">
+          <div className="flex-1 h-px bg-gray-200" />
           <span>ou entre com e-mail</span>
-          <div style={{ flex: 1, height: 1, background: "#e5e7eb" }} />
+          <div className="flex-1 h-px bg-gray-200" />
         </div>
 
 
@@ -898,12 +893,7 @@ export default function App() {
         <button
           type="button"
           onClick={() => { setError(""); setForgotEmail(loginEmail); setStep("forgot"); }}
-          className="portal-link-btn"
-          style={{
-            background: "none", border: "none", color: "#E30613",
-            textDecoration: "underline", cursor: "pointer", padding: "8px 0",
-            width: "100%", fontSize: 14,
-          }}
+          className="portal-link-btn w-full py-2 text-sm text-red-600 font-bold hover:underline transition-colors"
         >
           Esqueci minha senha
         </button>
