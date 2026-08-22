@@ -919,8 +919,8 @@ async function sendWhatsAppCode(
 
 
 // ========== UniFi Provider (Legacy Cookie Auth) ==========
-const UNIFI_USERNAME = Deno.env.get("UNIFI_USERNAME") || "";
-const UNIFI_PASSWORD = Deno.env.get("UNIFI_PASSWORD") || "";
+const UNIFI_USERNAME = Deno.env.get("UNIFI_USERNAME");
+const UNIFI_PASSWORD = Deno.env.get("UNIFI_PASSWORD");
 const UNIFI_CA_CERT_RAW = Deno.env.get("UNIFI_CA_CERT") || "";
 
 /** Normalize PEM cert that may have lost newlines in env var storage */
@@ -3356,6 +3356,12 @@ async function handleAdminAccessPoints(req: Request, url: URL): Promise<Response
       const ctrlUrl = store.unifi_controller_url.replace(/\/+$/, "");
       const user = store.unifi_username || UNIFI_USERNAME;
       const pass = store.unifi_password || UNIFI_PASSWORD;
+      
+      if (!user || !pass) {
+        console.error(`[admin-aps] UNIFI_SECRET_NOT_CONFIGURED for store ${store.slug}`);
+        return errorResponse("Configuração de credenciais UniFi ausente ou incompleta", 500);
+      }
+      
       const siteId = store.unifi_site_id || "default";
       const httpClient = createUnifiHttpClient();
       try {
