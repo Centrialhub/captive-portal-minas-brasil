@@ -539,10 +539,19 @@ export default function App() {
         </div>
       </div>
     );
+  if (step === "success") {
+    return (
+      <SuccessView 
+        redirectUrl={redirectUrl} 
+        successMsg={successMsg} 
+        onComplete={() => OAuthTracker.clearAll()} 
+      />
+    );
   }
 
   // ── LOADING / OAUTH STATES / AUTHORIZING ──
   if (step === "loading" || step === "oauth_redirecting" || step === "oauth_callback" || step === "authorizing") {
+
     let msg = "Carregando...";
     if (step === "oauth_redirecting") msg = "Abrindo login do Google...";
     if (step === "oauth_callback") msg = "Conta Google validada. Preparando conexão...";
@@ -586,74 +595,8 @@ export default function App() {
     );
   }
 
-  // ── SUCCESS (Post-Auth Redirection) ──
-  useEffect(() => {
-    if (step === "success" && redirectUrl) {
-      // Clear markers since we successfully authorized
-      OAuthTracker.clearAll();
-      
-      // Automatic redirect after 2s
-      redirectTimerRef.current = setTimeout(() => {
-        console.log("[success] Auto-redirecting to:", redirectUrl);
-        window.location.replace(redirectUrl);
-      }, 2000);
+  // The success effect has been moved to SuccessView component to comply with Rules of Hooks
 
-      // Countdown interval
-      const interval = setInterval(() => {
-        setCountdown(prev => Math.max(0, prev - 1));
-      }, 1000);
-
-      return () => {
-        if (redirectTimerRef.current) clearTimeout(redirectTimerRef.current);
-        clearInterval(interval);
-      };
-    }
-  }, [step, redirectUrl]);
-
-  if (step === "success") {
-    const handleManualRedirect = () => {
-      if (redirectTimerRef.current) clearTimeout(redirectTimerRef.current);
-      if (redirectUrl) {
-        console.log("[success] Manual redirect to:", redirectUrl);
-        window.location.replace(redirectUrl);
-      }
-    };
-
-    return (
-      <div className="portal-wrapper">
-        <div className="portal-card" style={{ textAlign: "center" }}>
-          <div className="success-icon">
-            <svg width="40" height="40" fill="none" stroke="#2e7d32" viewBox="0 0 24 24" strokeWidth={2.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-            </svg>
-          </div>
-          <h1 className="portal-title">Wi-Fi liberado com sucesso!</h1>
-          <p className="portal-subtitle">{successMsg}</p>
-          
-          <div style={{ marginTop: 20, marginBottom: 20 }}>
-            <p style={{ color: "#666", fontSize: 14 }}>
-              Redirecionando em {countdown} segundos...
-            </p>
-          </div>
-
-          {redirectUrl && (
-            <button
-              onClick={handleManualRedirect}
-              className="portal-btn"
-              style={{ marginTop: 8 }}
-            >
-              Continuar agora
-            </button>
-          )}
-          
-          <p style={{ color: "#999", fontSize: 12, marginTop: 24 }}>
-            Seu acesso já foi liberado. Você pode fechar esta janela.
-          </p>
-          <Footer />
-        </div>
-      </div>
-    );
-  }
 
   // ── FORGOT PASSWORD ──
   if (step === "forgot") {
