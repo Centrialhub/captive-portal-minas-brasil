@@ -841,22 +841,26 @@ export default function App() {
 
 
 
-        <form onSubmit={handleLogin}>
-          <label className="portal-label">E-mail</label>
-          <input
-            type="email" value={loginEmail}
-            onChange={(e) => setLoginEmail(e.target.value)}
-            required className="portal-input" placeholder="email@exemplo.com"
-            autoComplete="email"
-          />
+        <form onSubmit={handleLogin} className="space-y-4">
+          <div>
+            <label className="portal-label">E-mail</label>
+            <input
+              type="email" value={loginEmail}
+              onChange={(e) => setLoginEmail(e.target.value)}
+              required className="portal-input" placeholder="seu@email.com"
+              autoComplete="email"
+            />
+          </div>
 
-          <label className="portal-label">Senha</label>
-          <input
-            type="password" value={loginPassword}
-            onChange={(e) => setLoginPassword(e.target.value)}
-            required className="portal-input" placeholder="Sua senha"
-            autoComplete="current-password"
-          />
+          <div>
+            <label className="portal-label">Senha</label>
+            <input
+              type="password" value={loginPassword}
+              onChange={(e) => setLoginPassword(e.target.value)}
+              required className="portal-input" placeholder="Sua senha"
+              autoComplete="current-password"
+            />
+          </div>
 
           <button type="submit" disabled={busy} className="portal-btn">
             {busy ? "Entrando..." : "Entrar"}
