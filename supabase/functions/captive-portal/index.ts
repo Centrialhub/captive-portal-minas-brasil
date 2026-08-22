@@ -2891,9 +2891,12 @@ async function handleLogin(req: Request): Promise<Response> {
   }
 
   const ctx = extractAuthContext(body);
+  const attemptId = typeof body.attempt_id === "string" ? body.attempt_id : null;
   const result = await authorizeAuthenticatedUser({
     db, userId, ctx, req, authMethod: "password", traceId, clientIp, userAgent: ua, profile,
+    attemptId
   });
+
 
   logEvent(db, {
     session_id: result.session_id, trace_id: traceId, event_type: "login_success",
