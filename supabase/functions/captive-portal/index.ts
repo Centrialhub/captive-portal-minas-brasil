@@ -499,7 +499,7 @@ async function discoverStoreByClientMac(
 
   const { data: stores } = await db
     .from("stores")
-    .select("id, slug, name, city, post_auth_redirect_url, unifi_controller_url, unifi_site_id, unifi_username, unifi_password")
+    .select("id, slug, name, city, post_auth_redirect_url, unifi_controller_url, unifi_site_id")
     .eq("is_active", true)
     .not("unifi_controller_url", "is", null);
 
