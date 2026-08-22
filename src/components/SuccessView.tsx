@@ -13,14 +13,14 @@ export const SuccessView: React.FC<SuccessViewProps> = ({
   onComplete
 }) => {
   const [countdown, setCountdown] = useState(2);
-  const [navigated, setNavigated] = useState(false);
+  const navigatedRef = React.useRef(false);
 
   useEffect(() => {
-    if (!redirectUrl) return;
+    if (!redirectUrl || navigatedRef.current) return;
 
     const handleRedirect = () => {
-      if (navigated) return;
-      setNavigated(true);
+      if (navigatedRef.current) return;
+      navigatedRef.current = true;
       if (onComplete) onComplete();
       window.location.replace(redirectUrl);
     };
@@ -37,11 +37,11 @@ export const SuccessView: React.FC<SuccessViewProps> = ({
       clearTimeout(timer);
       clearInterval(interval);
     };
-  }, [redirectUrl, navigated, onComplete]);
+  }, [redirectUrl, onComplete]);
 
   const handleManualRedirect = () => {
-    if (!redirectUrl || navigated) return;
-    setNavigated(true);
+    if (!redirectUrl || navigatedRef.current) return;
+    navigatedRef.current = true;
     if (onComplete) onComplete();
     window.location.replace(redirectUrl);
   };
