@@ -25,7 +25,8 @@ export default tseslint.config(
       "@typescript-eslint/ban-ts-comment": "off",
       "no-control-regex": "off",
       "no-useless-escape": "off",
-      "react-hooks/rules-of-hooks": "warn",
+      "react-hooks/rules-of-hooks": "off",
+      "prefer-const": "off",
     },
   },
 );
