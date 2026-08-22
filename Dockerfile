@@ -1,14 +1,34 @@
-# Node.js LTS 24.x
+# Build arguments for Supabase (required for frontend compilation)
+ARG VITE_SUPABASE_URL
+ARG VITE_SUPABASE_PUBLISHABLE_KEY
+ARG COMMIT_SHA=unknown
+
+# Stage 1: Build frontend
 FROM node:24-alpine@sha256:79a5446059b5edc74a0c8b6d859e9b25a2df6b5c0c9394628d08c8e1e75685a4 AS build
 WORKDIR /app
+
+# Re-declare ARGs in the build stage to make them available as environment variables
+ARG VITE_SUPABASE_URL
+ARG VITE_SUPABASE_PUBLISHABLE_KEY
+ENV VITE_SUPABASE_URL=$VITE_SUPABASE_URL
+ENV VITE_SUPABASE_PUBLISHABLE_KEY=$VITE_SUPABASE_PUBLISHABLE_KEY
+
 COPY package*.json ./
 # Use npm ci for deterministic builds based on lockfile
 RUN npm ci
 COPY . .
+
+# Run validation checks before building
+RUN npm run lint && npm run typecheck
+
 RUN npm run build
 
-# Nginx alpine stable
+# Stage 2: Production server (Nginx)
 FROM nginx:1.27-alpine@sha256:4ff37a47b85e0513e4b3c0628e378c3a10526017a54a014283c847ec0537fd97
+
+LABEL org.opencontainers.image.revision=$COMMIT_SHA
+LABEL org.opencontainers.image.source="https://github.com/drogariaminasbrasil/captive-portal"
+
 COPY --from=build /app/dist /usr/share/nginx/html
 
 RUN printf 'server {\n\
@@ -19,7 +39,7 @@ RUN printf 'server {\n\
     absolute_redirect off;\n\
     port_in_redirect off;\n\
 \n\
-    # Health check for EasyPanel\n\
+    # Health check for EasyPanel / Orchestrators\n\
     location = /health {\n\
         access_log off;\n\
         default_type text/plain;\n\
@@ -47,15 +67,12 @@ RUN printf 'server {\n\
         if ($request_method = OPTIONS) { return 204; }\n\
     }\n\
 \n\
-    # Public UniFi diagnostics removed for security.
-
-\n\
     # UniFi redirect alias\n\
     location /guest/s/default/ {\n\
         return 302 https://minasbrasilwifi.com.br/?store=matriz&$args;\n\
     }\n\
 \n\
-    # CNA Probes\n\
+    # CNA Probes (redirect to portal to force interaction)\n\
     location = /generate_204 { return 302 https://minasbrasilwifi.com.br/; }\n\
     location = /gen_204 { return 302 https://minasbrasilwifi.com.br/; }\n\
     location = /hotspot-detect.html { return 302 https://minasbrasilwifi.com.br/; }\n\
@@ -71,3 +88,4 @@ RUN printf 'server {\n\
 
 EXPOSE 80
 CMD ["nginx", "-g", "daemon off;"]
+
