@@ -3676,49 +3676,7 @@ async function handlePortalHtml(req: Request, url: URL): Promise<Response> {
   
   return Response.redirect(target.toString(), 302);
 }
-if(rec&&applyVerifyResult(rec))return;
-showErr(oe,err);verifyInFlight=false;otpAutoSubmitted=false;btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';
-});
-return;
-}
-if(r.error){showErr(oe,r.error);verifyInFlight=false;otpAutoSubmitted=false;btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';document.querySelectorAll('.otp-input').forEach(function(i){i.value='';});document.querySelector('.otp-input').focus();return;}
-if(applyVerifyResult(r))return;
-showErr(oe,r.message||'Cadastro confirmado, mas o UniFi n\\u00e3o confirmou a libera\\u00e7\\u00e3o. Desconecte e conecte novamente \\u00e0 rede.');verifyInFlight=false;otpAutoSubmitted=false;btn.disabled=false;btn.textContent='Verificar c\\u00f3digo';document.querySelectorAll('.otp-input').forEach(function(i){i.value='';});document.querySelector('.otp-input').focus();
-});
-});
-document.getElementById('resend-btn').addEventListener('click',function(){
-if(!sessionId||resendSeconds>0)return;var btn=this;btn.disabled=true;btn.textContent='Reenviando...';
-var oe=document.getElementById('otp-error');hideErr(oe);
-var ph=document.getElementById('otp-phone-msg').querySelector('strong');
-req('POST','/request-code',{session_id:sessionId,phone:ph?ph.textContent:''},function(err,r){
-if(err||r.error){showErr(oe,err||r.error);btn.disabled=false;btn.textContent='Reenviar c\\u00f3digo';return;}
-startCooldown(60);
-});
-});
-function startCooldown(s){resendSeconds=s;var btn=document.getElementById('resend-btn');btn.disabled=true;btn.textContent='Reenviar ('+s+'s)';
-if(resendTimer)clearInterval(resendTimer);
-resendTimer=setInterval(function(){resendSeconds--;if(resendSeconds<=0){clearInterval(resendTimer);btn.disabled=false;btn.textContent='Reenviar c\\u00f3digo';}else btn.textContent='Reenviar ('+resendSeconds+'s)';},1000);
-}
-function showSuccess(msg,auth){
-document.getElementById('form-view').style.display='none';document.getElementById('otp-view').style.display='none';document.getElementById('success-view').style.display='block';
-document.getElementById('success-title').textContent=auth?'Conectado!':'Cadastro realizado!';document.getElementById('success-msg').textContent=msg;
-if(redirectUrl){document.getElementById('success-redirect').style.display='block';document.getElementById('redirect-link').href=redirectUrl;if(auth)setTimeout(function(){location.replace(sanitizeCaptiveRedirect(redirectUrl));},1500);}
-}
-})();
-</script>
-</body>
-</html>`;
 
-  return new Response(html, {
-    headers: {
-      ...corsHeaders,
-      "Content-Type": "text/html; charset=utf-8",
-      "Cache-Control": "no-cache, no-store, must-revalidate",
-      "Content-Security-Policy": "default-src 'self' https:; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https:",
-      "X-Content-Type-Options": "nosniff",
-    },
-  });
-}
 
 // ========== Client-side telemetry ==========
 async function handleClientEvent(req: Request): Promise<Response> {
