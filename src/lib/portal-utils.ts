@@ -220,7 +220,7 @@ export function buildSubmitPayload(fields: {
   };
 }
 
-export type PortalStep = "loading" | "form" | "otp" | "success" | "error";
+export type PortalStep = "loading" | "form" | "success" | "error";
 
 /**
  * Validates a Brazilian CPF number using the official algorithm.

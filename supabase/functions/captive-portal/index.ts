@@ -271,11 +271,8 @@ async function safeParseJson(req: Request): Promise<Record<string, unknown> | nu
 
 /**
  * Idempotent upsert of a captive_sessions row by id.
- * Use this from /start and /submit when a client-supplied session_id is present
+ * Use this when a client-supplied session_id is present
  * to eliminate the duplicate-key race when both run concurrently.
- *
- * Pass `protect: true` (used from /start) to avoid overwriting fields that
- * /submit may already have set (status authorized, submitted_at, etc.).
  */
 
 

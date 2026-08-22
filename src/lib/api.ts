@@ -113,7 +113,6 @@ export const api = {
   signup(data: {
     name: string;
     email: string;
-    cpf: string;
     phone: string;
     password: string;
     client_mac?: string;
