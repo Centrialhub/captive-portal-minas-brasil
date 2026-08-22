@@ -1558,6 +1558,34 @@ async function authorizeClient(
     return { ok: false, reason: "INVALID_MAC_ADDRESS" };
   }
 
+  // Prompt 07: Server-side idempotency lock (15s)
+  // Prevents multiple concurrent UniFi commands for the same MAC
+  const lock = await db.rpc("rate_limit_hit", {
+    p_key: `unifi_auth:mac:${clientMac.toUpperCase()}`,
+    p_window_seconds: 15,
+    p_max_hits: 1,
+    p_block_seconds: 0,
+  });
+
+  if (lock.data?.allowed === false) {
+    console.warn(`[authorize] duplicate concurrent request for mac=${clientMac}`);
+    // If there's a very recent successful auth (last 30s), just return success
+    const { data: recentAuth } = await db
+      .from("captive_sessions")
+      .select("id, status, unifi_cmd_accepted_at, authorized_at")
+      .eq("client_mac", clientMac.toUpperCase())
+      .eq("status", "authorized")
+      .gte("authorized_at", new Date(Date.now() - 30 * 1000).toISOString())
+      .maybeSingle();
+
+    if (recentAuth) {
+      console.log(`[authorize] reusing recent authorization for mac=${clientMac}`);
+      return { ok: true, cmd_accepted_at: recentAuth.unifi_cmd_accepted_at };
+    }
+
+    return { ok: false, reason: "RATE_LIMIT_HIT", userMessage: "Liberação em processamento. Aguarde alguns segundos." };
+  }
+
   const { data: settings } = await db
     .from("global_settings")
     .select("session_duration_minutes")
@@ -3097,6 +3125,12 @@ async function handleAdminStores(req: Request): Promise<Response> {
 
     const { data, error } = await db.from("stores").update(updateData).eq("id", body.id as string).select("id, slug, name").single();
     if (error) return errorResponse(error.message, 500);
+
+    await db.from("audit_logs").insert({
+      store_id: body.id as string, entity: "store", entity_id: body.id as string,
+      action: "update", meta: { updated_by: auth.userId, fields: Object.keys(updateData) },
+    });
+
     return jsonResponse(data);
   }
 
