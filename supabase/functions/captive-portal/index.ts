@@ -3465,7 +3465,6 @@ async function handleTestUnifiReach(req: Request): Promise<Response> {
     controller_url: baseUrl,
     unifi_username_set: !!UNIFI_USERNAME,
     unifi_password_set: !!UNIFI_PASSWORD,
-    unifi_ca_cert_set: !!UNIFI_CA_CERT,
     tests: {},
   };
 
