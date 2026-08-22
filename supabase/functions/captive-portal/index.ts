@@ -4432,9 +4432,19 @@ async function handleUpdateProfile(req: Request): Promise<Response> {
 
   const { data: userProfile } = await db.from("profiles").select("email").eq("id", userId).maybeSingle();
 
-  const { error: updErr } = await db.from("profiles").update(updatePayload).eq("id", userId);
-  if (updErr) {
-    if (updErr.code === "23505") return errorResponse("Este CPF já está cadastrado em outra conta.", 409);
+  // Use the secure RPC instead of direct update to enforce constraints and logic
+  const { data: rpcRes, error: rpcErr } = await db.rpc("secure_update_profile", {
+    _user_id: userId,
+    _full_name: name,
+    _phone_digits: phoneDigits,
+    _cpf_digits: cpfDigits,
+  });
+
+  if (rpcErr || !rpcRes?.ok) {
+    if (rpcRes?.error === "CPF_ALREADY_EXISTS") {
+      return errorResponse("Este CPF já está cadastrado em outra conta.", 409);
+    }
+    console.error("[update-profile] RPC failed:", rpcErr || rpcRes?.error);
     return errorResponse("Erro ao atualizar perfil.");
   }
 
