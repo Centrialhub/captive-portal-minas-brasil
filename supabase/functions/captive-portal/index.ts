@@ -4220,7 +4220,24 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
     return jsonResponse({ needs_login: true, error: "missing_token" }, 401);
   }
 
-  const ctx = extractAuthContext(body);
+  let ctx = extractAuthContext(body);
+  
+  // Authoritative Attempt Validation
+  const attemptId = typeof body.attempt_id === "string" ? body.attempt_id : null;
+  const resumeToken = typeof body.resume_token === "string" ? body.resume_token : null;
+  
+  if (attemptId && resumeToken) {
+    const val = await validateOAuthAttempt(db, attemptId, resumeToken);
+    if (!val.valid) {
+      return jsonResponse({ error: val.error || "Tentativa inválida.", code: "invalid_attempt" }, 403);
+    }
+    // Overwrite context with authoritative parameters from server
+    if (val.params) {
+      ctx = val.params;
+      console.log(`[auth] using authoritative parameters for attempt=${attemptId} mac=${ctx.clientMac}`);
+    }
+  }
+
   if (ctx.clientMac) {
     const rlMac = await checkRateLimitDb(db, `authexisting:mac:${ctx.clientMac}`, 60, 20, 60);
     if (!rlMac.allowed) {
@@ -4322,6 +4339,18 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
     db, userId, ctx, req, authMethod, traceId, clientIp, userAgent: ua, 
     profile: profile as any,
   });
+
+  // Mark attempt as consumed on success
+  const attemptId = typeof body.attempt_id === "string" ? body.attempt_id : null;
+  if (result.authorized && attemptId) {
+    await db.from("captive_auth_attempts")
+      .update({ 
+        status: 'authorized', 
+        consumed_at: new Date().toISOString(),
+        user_id: userId
+      })
+      .eq("id", attemptId);
+  }
 
   // Background sync with CRM on authenticated login success (if lead is complete)
   if (result.authorized && profile?.cpf_digits && profile?.full_name && profile?.phone_digits) {
