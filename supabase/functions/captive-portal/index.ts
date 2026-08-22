@@ -3068,6 +3068,10 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
   }
   const userId = userRes.user.id;
   const provider = String((userRes.user.app_metadata as any)?.provider || "").toLowerCase();
+  const authMethod: "silent" | "google" | "apple" =
+    provider === "google" ? "google" :
+    provider === "apple" ? "apple" :
+    "silent";
 
   // FOR GOOGLE: attempt_id and resume_token are MANDATORY.
   if (provider === "google") {
