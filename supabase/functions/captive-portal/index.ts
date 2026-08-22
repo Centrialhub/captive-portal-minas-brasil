@@ -2311,13 +2311,36 @@ interface AuthAuthorizeContext {
 
 function extractAuthContext(body: Record<string, unknown>): AuthAuthorizeContext {
   return {
-    clientMac: normalizeMac(body.client_mac),
-    apMac: normalizeMac(body.ap_mac),
-    ssid: sanitizeString(body.ssid, 64),
-    redirectUrl: sanitizeString(body.redirect_url, 500),
-    captiveTimestamp: sanitizeString(body.captive_timestamp, 32),
+    clientMac: Validators.mac(body.client_mac),
+    apMac: Validators.mac(body.ap_mac),
+    ssid: Validators.string(body.ssid, 64),
+    redirectUrl: Validators.string(body.redirect_url, 500),
+    captiveTimestamp: Validators.string(body.captive_timestamp, 32),
   };
 }
+
+async function getValidatedAuthContext(
+  db: ReturnType<typeof supabaseAdmin>,
+  body: Record<string, unknown>,
+  contextName: string
+): Promise<{ ctx: AuthAuthorizeContext; attemptId: string | null; error?: Response }> {
+  let ctx = extractAuthContext(body);
+  const attemptId = typeof body.attempt_id === "string" ? body.attempt_id : null;
+  const resumeToken = typeof body.resume_token === "string" ? body.resume_token : null;
+
+  if (attemptId && resumeToken) {
+    const val = await validateOAuthAttempt(db, attemptId, resumeToken);
+    if (val.status === 'invalid') {
+      return { ctx, attemptId, error: jsonResponse({ error: val.error || "Tentativa inválida.", code: "invalid_attempt" }, 403) };
+    }
+    if (val.params) {
+      ctx = val.params;
+      console.log(`[${contextName}] using authoritative parameters for attempt=${attemptId} mac=${ctx.clientMac}`);
+    }
+  }
+  return { ctx, attemptId };
+}
+
 
 /**
  * Runs authorization for a logged-in user after signup/login/silent-login.
@@ -2835,21 +2858,9 @@ async function handleSignup(req: Request): Promise<Response> {
     return jsonResponse({ error: "Conta criada, mas não foi possível entrar. Tente fazer login.", code: "post_signup_signin_failed" }, 500);
   }
 
-  let ctx = extractAuthContext(body);
-  const attemptId = typeof body.attempt_id === "string" ? body.attempt_id : null;
-  const resumeToken = typeof body.resume_token === "string" ? body.resume_token : null;
+  const { ctx, attemptId, error: authErr } = await getValidatedAuthContext(db, body, "signup");
+  if (authErr) return authErr;
 
-  // Unified Capability Enforcement
-  if (attemptId && resumeToken) {
-    const val = await validateOAuthAttempt(db, attemptId, resumeToken);
-    if (val.status === 'invalid') {
-      return jsonResponse({ error: val.error || "Tentativa inválida.", code: "invalid_attempt" }, 403);
-    }
-    if (val.params) {
-      ctx = val.params;
-      console.log(`[signup] using authoritative parameters for attempt=${attemptId} mac=${ctx.clientMac}`);
-    }
-  }
 
   const result = await authorizeAuthenticatedUser({
     db, userId, ctx, req, authMethod: "password", traceId, clientIp, userAgent: ua,
@@ -2922,21 +2933,9 @@ async function handleLogin(req: Request): Promise<Response> {
     return jsonResponse({ error: "Perfil não encontrado. Faça um novo cadastro.", code: "profile_not_found" }, 404);
   }
 
-  let ctx = extractAuthContext(body);
-  const attemptId = typeof body.attempt_id === "string" ? body.attempt_id : null;
-  const resumeToken = typeof body.resume_token === "string" ? body.resume_token : null;
+  const { ctx, attemptId, error: authErr } = await getValidatedAuthContext(db, body, "login");
+  if (authErr) return authErr;
 
-  // Unified Capability Enforcement
-  if (attemptId && resumeToken) {
-    const val = await validateOAuthAttempt(db, attemptId, resumeToken);
-    if (val.status === 'invalid') {
-      return jsonResponse({ error: val.error || "Tentativa inválida.", code: "invalid_attempt" }, 403);
-    }
-    if (val.params) {
-      ctx = val.params;
-      console.log(`[login] using authoritative parameters for attempt=${attemptId} mac=${ctx.clientMac}`);
-    }
-  }
 
   const result = await authorizeAuthenticatedUser({
     db, userId, ctx, req, authMethod: "password", traceId, clientIp, userAgent: ua, profile,
