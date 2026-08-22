@@ -3,76 +3,80 @@ import { Link } from "react-router-dom";
 export default function Home() {
   return (
     <div className="flex flex-col items-center justify-center min-h-screen p-4 text-center">
-      <h1 className="text-2xl font-bold mb-4 uppercase text-red-600">PROMPT 05 — CENTRALIZAR EXCLUSIVAMENTE OS SEGREDOS UNIFI EM ARMAZENAMENTO SEGURO</h1>
+      <h1 className="text-2xl font-bold mb-4 uppercase text-red-600">PROMPT 06 — SUBSTITUIR EXCLUSIVAMENTE O OAUTH TRACKER POR UMA TRANSAÇÃO AUTORITATIVA</h1>
       
       <div className="max-w-2xl text-left bg-white p-6 rounded-lg shadow-md border-t-4 border-red-600">
         <h2 className="font-bold text-lg mb-2">Objetivo único:</h2>
-        <p className="mb-4">Retirar credenciais UniFi de migrations, tabelas comuns, código e respostas, preservando o protocolo e a implementação funcional de comunicação com a controladora.</p>
+        <p className="mb-4">Garantir que cada retorno Google pertença exatamente à tentativa captive que o iniciou. Não alterar a lógica de liberação UniFi, regra de CPF ou destino final.</p>
 
         <h2 className="font-bold text-lg mb-2">Problema:</h2>
-        <p className="mb-4">Existe credencial real em migration e o backend possui fallback para <code>stores.unifi_username</code> e <code>stores.unifi_password</code>.</p>
+        <p className="mb-4">O OAuthTracker salva marcador e parâmetros captive separadamente em localStorage. Parâmetros antigos podem sobreviver ao marcador e ser restaurados em outra visita.</p>
 
         <h2 className="font-bold text-lg mb-2">Implementação:</h2>
         <ol className="list-decimal ml-6 mb-4">
-          <li>Nunca reproduzir a credencial atual em código, resposta, migration nova, relatório ou log.</li>
-          <li>Alterar o backend para obter credenciais somente de:
+          <li>Criar entidade <code>captive_auth_attempts</code> com:
             <ul className="list-disc ml-6">
-              <li>Supabase Secrets; ou</li>
-              <li>Supabase Vault com referência por loja.</li>
+              <li>id UUID;</li>
+              <li>resume_token_hash;</li>
+              <li>client_mac normalizado;</li>
+              <li>ap_mac;</li>
+              <li>ssid;</li>
+              <li>store_hint;</li>
+              <li>captive_timestamp;</li>
+              <li>original_url apenas para auditoria restrita;</li>
+              <li>status;</li>
+              <li>created_at;</li>
+              <li>expires_at;</li>
+              <li>consumed_at;</li>
+              <li>user_id após autenticação.</li>
             </ul>
           </li>
-          <li>A tabela stores pode manter apenas:
+          <li>Criar endpoint público e rate-limited para iniciar a tentativa.</li>
+          <li>O endpoint deve:
             <ul className="list-disc ml-6">
-              <li>URL/identificador não secreto da controladora;</li>
-              <li>site_id;</li>
-              <li>nome lógico da referência de segredo.</li>
+              <li>validar parâmetros;</li>
+              <li>gerar token aleatório criptograficamente forte;</li>
+              <li>armazenar somente o hash;</li>
+              <li>expirar em 10 minutos;</li>
+              <li>retornar attempt_id e token opaco.</li>
             </ul>
           </li>
-          <li>Não armazenar senha em coluna texto de stores.</li>
-          <li>Criar migration forward-only que:
+          <li>O <code>redirectTo</code> Google deve conter somente attempt_id e resume_token. Não incluir MAC, CPF, e-mail ou AP diretamente.</li>
+          <li>No callback:
             <ul className="list-disc ml-6">
-              <li>zere os valores legados de unifi_username e unifi_password depois que a nova configuração estiver ativa;</li>
-              <li>revogue SELECT dessas colunas;</li>
-              <li>opcionalmente remova as colunas após confirmação de compatibilidade.</li>
+              <li>validar attempt_id;</li>
+              <li>validar hash do token em comparação constante;</li>
+              <li>verificar expiração e status;</li>
+              <li>carregar parâmetros do servidor;</li>
+              <li>nunca restaurar parâmetros antigos apenas por localStorage.</li>
             </ul>
           </li>
-          <li>Não depender de alterar uma migration já aplicada para corrigir o banco existente.</li>
-          <li>Remover o literal secreto do estado atual do repositório.</li>
-          <li>Adicionar secret scanning no CI.</li>
-          <li>Quando o segredo estiver ausente:
-            <ul className="list-disc ml-6">
-              <li>falhar de forma controlada;</li>
-              <li>registrar somente <code>UNIFI_SECRET_NOT_CONFIGURED</code>;</li>
-              <li>não tentar valores default;</li>
-              <li>não retornar detalhes ao cliente.</li>
-            </ul>
-          </li>
-          <li>Manter inalterados:
-            <ul className="list-disc ml-6">
-              <li>endpoints UniFi;</li>
-              <li>payload de autorização;</li>
-              <li>timeout validado;</li>
-              <li>verificação pós-autorização;</li>
-              <li>normalização de MAC.</li>
-            </ul>
-          </li>
+          <li>Remover mb_oauth_marker_v1 e mb_captive_params_v3 como fontes autoritativas.</li>
+          <li>LocalStorage pode guardar somente attempt_id/token como cache temporário, removido em sucesso, cancelamento, erro definitivo ou expiração.</li>
+          <li>Uma tentativa expirada nunca pode ser reativada.</li>
+          <li>Uma tentativa consumida não pode ser vinculada a outro usuário.</li>
+          <li>Criar estados explícitos: created, oauth_redirected, callback_received, awaiting_cpf, authorizing, authorized, failed, expired, cancelled.</li>
+          <li>Não registrar token, MAC, e-mail ou CPF em telemetria do navegador.</li>
+          <li>O <code>onAuthStateChange</code> deve ser síncrono: agendar o processamento fora do callback, sem await interno.</li>
+          <li>Garantir um único Promise de processamento por attempt_id.</li>
+          <li>Cancelar processamento atrasado quando a tentativa expirar ou for cancelada.</li>
+          <li>Resetar corretamente refs e busy ao reiniciar.</li>
         </ol>
 
-        <h2 className="font-bold text-lg mb-2">Validação:</h2>
+        <h2 className="font-bold text-lg mb-2">Testes:</h2>
         <ul className="list-disc ml-6 mb-4">
-          <li>Busca por senha, usuário antigo e padrões de segredo resulta em zero ocorrências no estado atual.</li>
-          <li>Banco não devolve credencial para anon ou authenticated.</li>
-          <li>Fluxo funciona com segredo configurado.</li>
-          <li>Ausência do segredo não expõe detalhes.</li>
-          <li>Logs não contêm senha, token ou cookie.</li>
-          <li>CI bloqueia novo segredo.</li>
+          <li>Callback com token correto recupera somente sua tentativa.</li>
+          <li>Token errado, ausente, expirado ou reutilizado é rejeitado.</li>
+          <li>Parâmetros de uma tentativa nunca contaminam outra.</li>
+          <li>Sessão Google antiga sem tentativa válida não autoriza MAC armazenado.</li>
+          <li>Dois callbacks iguais convergem para a mesma tentativa.</li>
+          <li>Timeout seguido de sessão tardia não inicia autorização.</li>
+          <li>Retry cria tentativa nova e funcional.</li>
+          <li>Nenhuma PII aparece na URL além do token opaco.</li>
         </ul>
 
-        <h2 className="font-bold text-lg mb-2 text-red-700">Ação operacional obrigatória fora do código:</h2>
-        <p className="mb-4 font-semibold">A credencial existente deve ser rotacionada na controladora antes do deploy. Bloquear a release até haver confirmação da rotação.</p>
-
         <h2 className="font-bold text-lg mb-2">Critério de aceite:</h2>
-        <p>Nenhuma credencial UniFi permanece em código, migration ativa, tabela comum, frontend ou log.</p>
+        <p>A autorização só pode usar parâmetros carregados de uma tentativa server-side válida e não expirada.</p>
       </div>
 
       <div className="mt-8">
