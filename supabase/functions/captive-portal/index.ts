@@ -2818,10 +2818,13 @@ async function handleSignup(req: Request): Promise<Response> {
   }
 
   const ctx = extractAuthContext(body);
+  const attemptId = typeof body.attempt_id === "string" ? body.attempt_id : null;
   const result = await authorizeAuthenticatedUser({
     db, userId, ctx, req, authMethod: "password", traceId, clientIp, userAgent: ua,
     profile: { full_name: name, cpf_digits: cpfDigits || null, phone_digits: phoneDigits || null, email },
+    attemptId
   });
+
 
   logEvent(db, {
     session_id: result.session_id, trace_id: traceId, event_type: "signup_success",
