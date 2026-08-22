@@ -539,6 +539,8 @@ export default function App() {
         </div>
       </div>
     );
+  }
+
   if (step === "success") {
     return (
       <SuccessView 
