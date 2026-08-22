@@ -3072,11 +3072,6 @@ async function handleAdminStores(req: Request): Promise<Response> {
       post_auth_redirect_url: sanitizeString(body.post_auth_redirect_url, 500) || null,
       unifi_site_id: sanitizeString(body.unifi_site_id, 100) || null,
       unifi_controller_url: sanitizeString(body.unifi_controller_url, 500) || null,
-      unifi_api_key_or_token: typeof body.unifi_api_key_or_token === "string"
-        ? body.unifi_api_key_or_token.trim().slice(0, 500) || null : null,
-      unifi_username: sanitizeString(body.unifi_username, 100) || null,
-      unifi_password: typeof body.unifi_password === "string"
-        ? body.unifi_password.trim().slice(0, 200) || null : null,
     }).select("id, slug, name").single();
     if (error) return errorResponse(error.message, 500);
     return jsonResponse(data, 201);
@@ -3094,16 +3089,9 @@ async function handleAdminStores(req: Request): Promise<Response> {
     if (body.post_auth_redirect_url !== undefined) updateData.post_auth_redirect_url = sanitizeString(body.post_auth_redirect_url, 500);
     if (body.unifi_site_id !== undefined) updateData.unifi_site_id = sanitizeString(body.unifi_site_id, 100);
     if (body.unifi_controller_url !== undefined) updateData.unifi_controller_url = sanitizeString(body.unifi_controller_url, 500);
-    // Allow setting secrets via PUT only
-    if (body.unifi_api_key_or_token !== undefined) {
-      updateData.unifi_api_key_or_token = typeof body.unifi_api_key_or_token === "string"
-        ? body.unifi_api_key_or_token.trim().slice(0, 500) || null : null;
-    }
-    if (body.unifi_username !== undefined) updateData.unifi_username = sanitizeString(body.unifi_username, 100);
-    if (body.unifi_password !== undefined) {
-      updateData.unifi_password = typeof body.unifi_password === "string"
-        ? body.unifi_password.trim().slice(0, 200) || null : null;
-    }
+    // Allow updating controller params
+    if (body.unifi_site_id !== undefined) updateData.unifi_site_id = sanitizeString(body.unifi_site_id, 100);
+    if (body.unifi_controller_url !== undefined) updateData.unifi_controller_url = sanitizeString(body.unifi_controller_url, 500);
 
     if (Object.keys(updateData).length === 0) return errorResponse("Nenhum campo para atualizar");
 
@@ -3355,7 +3343,7 @@ async function handleAdminAccessPoints(req: Request, url: URL): Promise<Response
     if (body.action === "import_from_controller") {
       if (!isValidUUID(body.store_id)) return errorResponse("store_id inválido");
       const { data: store } = await db.from("stores")
-        .select("id, slug, unifi_controller_url, unifi_username, unifi_password, unifi_site_id")
+        .select("id, slug, unifi_controller_url, unifi_site_id")
         .eq("id", body.store_id as string)
         .maybeSingle();
       if (!store?.unifi_controller_url) return errorResponse("Loja sem controladora configurada");
