@@ -43,7 +43,7 @@ export default function Documentation() {
             </li>
             <li className="flex items-start gap-2">
               <span className="text-green-500 mt-1">✓</span>
-              <span><strong>Recuperação UniFi:</strong> Verificação read-only após expiração de lease (Prompt 30).</span>
+              <span><strong>Replay Determinístico:</strong> Suporte a repetição segura após sucesso (Prompt 31).</span>
             </li>
           </ul>
         </section>
