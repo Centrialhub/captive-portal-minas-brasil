@@ -253,6 +253,13 @@ export type Database = {
         }
         Relationships: [
           {
+            foreignKeyName: "captive_sessions_attempt_id_fkey"
+            columns: ["attempt_id"]
+            isOneToOne: false
+            referencedRelation: "captive_auth_attempts"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "captive_sessions_store_id_fkey"
             columns: ["store_id"]
             isOneToOne: false
