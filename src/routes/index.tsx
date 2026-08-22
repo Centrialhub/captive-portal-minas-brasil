@@ -7,37 +7,26 @@ export default function Home() {
 
       <div className="max-w-2xl text-left bg-white p-6 rounded-lg shadow-md border-t-4 border-red-600 space-y-6">
         <section>
-          <h2 className="font-bold text-lg mb-2 text-gray-900 border-b pb-1">SISTEMA OTIMIZADO</h2>
+          <h2 className="font-bold text-lg mb-2 text-gray-900 border-b pb-1">SISTEMA RESTAURADO</h2>
           <p className="text-gray-700 font-medium">
-            O projeto passou por uma auditoria completa de código e infraestrutura. Arquivos redundantes foram removidos, metadados de SEO foram padronizados e a consistência visual foi reforçada.
+            Todos os ativos obrigatórios (Logos e Favicons) foram restaurados a partir do histórico íntegro. O ambiente de build agora conta com validação de integridade para prevenir regressões de assets.
           </p>
         </section>
 
         <section>
-          <h2 className="font-bold text-lg mb-2 text-gray-900 border-b pb-1">MELHORIAS APLICADAS</h2>
+          <h2 className="font-bold text-lg mb-2 text-gray-900 border-b pb-1">EVIDÊNCIAS DE INTEGRIDADE</h2>
           <ul className="list-disc ml-5 text-gray-700 space-y-1">
-            <li><strong>Interface Consistente:</strong> Padronização de botões, inputs e estados de carregamento em todo o fluxo.</li>
-            <li><strong>Código Limpo:</strong> Remoção de rotas, componentes e assets não utilizados (About, placeholders, links legados).</li>
-            <li><strong>SEO & Branding:</strong> Metadados e títulos padronizados no <code>index.html</code> para melhor apresentação visual.</li>
-            <li><strong>Estabilidade de Handoff:</strong> Refinamento dos timers de redirecionamento e persistência de parâmetros UniFi.</li>
-            <li><strong>Segurança Padrão:</strong> RPCs restritos a <code>service_role</code> e isolamento total de segredos UniFi em variáveis de ambiente.</li>
+            <li><strong>Logo Restaurado:</strong> <code>src/assets/logo-minas-brasil.png</code> presente e validado.</li>
+            <li><strong>Favicons Ativos:</strong> <code>favicon-mb.png</code> e <code>favicon.ico</code> configurados no <code>public/</code>.</li>
+            <li><strong>Import Resolution:</strong> Verificado via typecheck (TSC) no <code>src/App.tsx</code>.</li>
+            <li><strong>Build Autosuficiente:</strong> Script de verificação de ativos integrado ao pipeline de build.</li>
           </ul>
         </section>
 
-        <section>
-          <h2 className="font-bold text-lg mb-2 text-gray-900 border-b pb-1">PRONTO PARA PRODUÇÃO</h2>
-          <p className="text-gray-700">
-            A estrutura do banco de dados e a lógica de negócio foram preservadas integralmente, focando exclusivamente na excelência operacional e clareza da interface.
-          </p>
-        </section>
-
         <div className="bg-red-50 p-4 rounded border border-red-200 text-sm text-red-800 italic font-medium">
-          Captive Portal Drogaria Minas Brasil: Otimizado, Seguro e Escalável.
+          Captive Portal Drogaria Minas Brasil: Árvore de fontes completa e protegida.
         </div>
       </div>
     </div>
   );
 }
-
-
-
