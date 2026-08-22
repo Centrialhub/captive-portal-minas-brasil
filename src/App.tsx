@@ -123,6 +123,7 @@ export default function App() {
           payload: { source, mac: params.client_mac }
         });
 
+        const tokens = OAuthTracker.getTokens();
         const result = await api.authorizeExisting({
           access_token: session.access_token,
           client_mac: params.client_mac,
@@ -130,7 +131,9 @@ export default function App() {
           ssid: params.ssid,
           redirect_url: params.redirect_url,
           captive_timestamp: params.captive_timestamp,
-          auth_method: source
+          auth_method: source,
+          attempt_id: tokens.attempt_id,
+          resume_token: tokens.token,
         });
 
         if (result?.needs_cpf) {
@@ -446,9 +449,15 @@ export default function App() {
     
     try {
       api.clientEvent({ event: "google_oauth_started", step: "oauth" });
-      OAuthTracker.stashCaptiveParams();
+      const tokens = await OAuthTracker.initOAuthTransaction();
+      if (!tokens) {
+        setError("Não foi possível preparar o ambiente para login com Google.");
+        setStep("login");
+        setBusy(false);
+        return;
+      }
       
-      const redirectTo = `https://minasbrasilwifi.com.br/oauth/callback`;
+      const redirectTo = `https://minasbrasilwifi.com.br/oauth/callback?attempt_id=${tokens.attempt_id}&resume_token=${tokens.token}`;
       const { error: err } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: { redirectTo, skipBrowserRedirect: false },
@@ -581,7 +590,7 @@ export default function App() {
             onClick={() => { 
               setError(""); 
               if (isOAuthError) {
-                OAuthTracker.clearMarker();
+                OAuthTracker.clearAll();
                 setStep("login");
               } else {
                 setStep("login");
