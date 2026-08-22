@@ -239,6 +239,8 @@ export const api = {
     redirect_url?: string;
     captive_timestamp?: string;
     consent_version: string;
+    attempt_id?: string | null;
+    resume_token?: string | null;
   }) {
     return xhrRequest<any>("/signup", { method: "POST", body: data, timeoutMs: 25000 });
   },
@@ -251,6 +253,8 @@ export const api = {
     ssid?: string;
     redirect_url?: string;
     captive_timestamp?: string;
+    attempt_id?: string | null;
+    resume_token?: string | null;
   }) {
     return xhrRequest<any>("/login", { method: "POST", body: data, timeoutMs: 20000 });
   },
