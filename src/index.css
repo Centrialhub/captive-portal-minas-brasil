@@ -28,7 +28,7 @@ body {
   max-width: 420px;
   width: 100%;
   box-shadow: 0 12px 48px rgba(0,0,0,0.3);
-  border-bottom: 4px solid #f5c542; /* Brand Yellow accent */
+  border-bottom: 6px solid #f5c542; /* Brand Yellow accent - slightly thicker */
 }
 
 
@@ -180,11 +180,10 @@ body {
 }
 
 .portal-btn:disabled {
-  opacity: 0.45;
+  opacity: 0.6;
   cursor: not-allowed;
-}
-.portal-btn:not(:disabled):hover {
-  opacity: 0.9;
+  transform: none !important;
+  box-shadow: none !important;
 }
 
 .portal-btn-secondary {
