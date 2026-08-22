@@ -902,6 +902,10 @@ export type Database = {
         }
         Returns: Json
       }
+      release_auth_retry: {
+        Args: { p_attempt_id: string; p_lease_owner: string }
+        Returns: boolean
+      }
       secure_update_profile: {
         Args: {
           _cpf_digits: string

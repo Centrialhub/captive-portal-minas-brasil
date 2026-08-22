@@ -1,4 +1,3 @@
- 
 
 export default function Documentation() {
   return (
@@ -44,7 +43,7 @@ export default function Documentation() {
             </li>
             <li className="flex items-start gap-2">
               <span className="text-green-500 mt-1">✓</span>
-              <span><strong>Invariantes DB:</strong> Invariante garantido de uma sessão por tentativa (Prompt 06).</span>
+              <span><strong>Recuperação UniFi:</strong> Verificação read-only após expiração de lease (Prompt 30).</span>
             </li>
           </ul>
         </section>
@@ -56,4 +55,3 @@ export default function Documentation() {
     </div>
   );
 }
-
