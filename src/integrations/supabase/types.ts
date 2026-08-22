@@ -44,6 +44,57 @@ export type Database = {
         }
         Relationships: []
       }
+      captive_auth_attempts: {
+        Row: {
+          ap_mac: string | null
+          captive_timestamp: string | null
+          client_mac: string
+          consumed_at: string | null
+          created_at: string
+          expires_at: string
+          id: string
+          metadata: Json | null
+          original_url: string | null
+          resume_token_hash: string
+          ssid: string | null
+          status: string
+          store_hint: string | null
+          user_id: string | null
+        }
+        Insert: {
+          ap_mac?: string | null
+          captive_timestamp?: string | null
+          client_mac: string
+          consumed_at?: string | null
+          created_at?: string
+          expires_at: string
+          id?: string
+          metadata?: Json | null
+          original_url?: string | null
+          resume_token_hash: string
+          ssid?: string | null
+          status?: string
+          store_hint?: string | null
+          user_id?: string | null
+        }
+        Update: {
+          ap_mac?: string | null
+          captive_timestamp?: string | null
+          client_mac?: string
+          consumed_at?: string | null
+          created_at?: string
+          expires_at?: string
+          id?: string
+          metadata?: Json | null
+          original_url?: string | null
+          resume_token_hash?: string
+          ssid?: string | null
+          status?: string
+          store_hint?: string | null
+          user_id?: string | null
+        }
+        Relationships: []
+      }
       captive_sessions: {
         Row: {
           ap_mac: string | null
