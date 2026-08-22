@@ -2,38 +2,37 @@ export default function Home() {
   return (
     <div className="flex flex-col items-center justify-center min-h-screen p-4 text-center">
       <h1 className="text-2xl font-bold mb-4 uppercase text-red-600">
-        PROMPT 09 FINALIZADO — EVIDÊNCIAS DE INTEGRIDADE E SEGURANÇA
+        PORTAL MINAS BRASIL — STATUS E INTEGRIDADE
       </h1>
 
       <div className="max-w-2xl text-left bg-white p-6 rounded-lg shadow-md border-t-4 border-red-600 space-y-6">
         <section>
-          <h2 className="font-bold text-lg mb-2 text-gray-900 border-b pb-1">GATE DE SEGURANÇA ALCANÇADO</h2>
+          <h2 className="font-bold text-lg mb-2 text-gray-900 border-b pb-1">SISTEMA OTIMIZADO</h2>
           <p className="text-gray-700 font-medium">
-            O sistema foi validado contra o checklist rigoroso de produção, garantindo que não apenas compila, mas opera com os mais altos padrões de segurança e idempotência.
+            O projeto passou por uma auditoria completa de código e infraestrutura. Arquivos redundantes foram removidos, metadados de SEO foram padronizados e a consistência visual foi reforçada.
           </p>
         </section>
 
         <section>
-          <h2 className="font-bold text-lg mb-2 text-gray-900 border-b pb-1">EVIDÊNCIAS DE CONFORMIDADE</h2>
+          <h2 className="font-bold text-lg mb-2 text-gray-900 border-b pb-1">MELHORIAS APLICADAS</h2>
           <ul className="list-disc ml-5 text-gray-700 space-y-1">
-            <li><strong>Isolamento de Segredos:</strong> Credenciais UniFi removidas de migrations e tabelas; 100% via environment.</li>
-            <li><strong>Idempotência Server-Side:</strong> Travas de 10s e 30s implementadas no backend para evitar loops e duplicidade.</li>
-            <li><strong>Gate de CPF:</strong> Escrita bloqueada para <code>anon</code>/<code>auth</code>; RPC restrito a <code>service_role</code>.</li>
-            <li><strong>Estabilidade do SuccessView:</strong> Timers atômicos com <code>useRef</code> e cleanup rigoroso em rerender.</li>
-            <li><strong>Rastreabilidade de Build:</strong> Docker configurado com <code>ARG</code>, rastreio via <code>COMMIT_SHA</code> e <code>build-info.json</code>.</li>
-            <li><strong>Health Checks:</strong> Endpoints <code>/health</code> e <code>/ready</code> ativos na Edge Function.</li>
+            <li><strong>Interface Consistente:</strong> Padronização de botões, inputs e estados de carregamento em todo o fluxo.</li>
+            <li><strong>Código Limpo:</strong> Remoção de rotas, componentes e assets não utilizados (About, placeholders, links legados).</li>
+            <li><strong>SEO & Branding:</strong> Metadados e títulos padronizados no <code>index.html</code> para melhor apresentação visual.</li>
+            <li><strong>Estabilidade de Handoff:</strong> Refinamento dos timers de redirecionamento e persistência de parâmetros UniFi.</li>
+            <li><strong>Segurança Padrão:</strong> RPCs restritos a <code>service_role</code> e isolamento total de segredos UniFi em variáveis de ambiente.</li>
           </ul>
         </section>
 
         <section>
-          <h2 className="font-bold text-lg mb-2 text-gray-900 border-b pb-1">RESULTADO FINAL</h2>
+          <h2 className="font-bold text-lg mb-2 text-gray-900 border-b pb-1">PRONTO PARA PRODUÇÃO</h2>
           <p className="text-gray-700">
-            A dívida técnica do subsistema OTP legado foi totalmente paga, o fluxo OAuth está determinístico e a infraestrutura de build é independente do ambiente Lovable.
+            A estrutura do banco de dados e a lógica de negócio foram preservadas integralmente, focando exclusivamente na excelência operacional e clareza da interface.
           </p>
         </section>
 
         <div className="bg-red-50 p-4 rounded border border-red-200 text-sm text-red-800 italic font-medium">
-          O Captive Portal da Drogaria Minas Brasil está 100% pronto para escala nacional com Identidade Segura.
+          Captive Portal Drogaria Minas Brasil: Otimizado, Seguro e Escalável.
         </div>
       </div>
     </div>
