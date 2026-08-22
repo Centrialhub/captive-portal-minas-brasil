@@ -4469,9 +4469,7 @@ Deno.serve(async (req: Request) => {
     : url.pathname.replace(/^\/captive-portal/, "");
 
   try {
-    // Self-contained HTML portal (for captive assistant that can't reach Vercel)
-    // Also handle UniFi/connectivity-check paths as aliases so a captive
-    // browser can open even when the external proxy/SPA is not reachable.
+    // 1. Redirect standard captive aliases to React portal
     if (
       (path === "/" || path === "" || path === "/portal" || path === "/portal/" ||
         path.startsWith("/guest/s/") || path === "/generate_204" || path === "/gen_204" ||
@@ -4480,385 +4478,20 @@ Deno.serve(async (req: Request) => {
       req.method === "GET"
     ) return await handlePortalHtml(req, url);
 
-    // Public portal endpoints
+    // 2. Public portal endpoints
     if (path === "/bootstrap" && req.method === "GET") return await handleBootstrap(req);
     if (path === "/start" && req.method === "POST") return await handleStart(req);
     if (path === "/submit" && req.method === "POST") return await handleSubmit(req);
-    if (path === "/session-status" && (req.method === "POST" || req.method === "GET")) return await handleSessionStatus(req);
+    if (path === "/session-status" && req.method === "GET") return await handleSessionStatus(req);
     if (path === "/request-code" && req.method === "POST") return await handleRequestCode(req);
     if (path === "/verify-code" && req.method === "POST") return await handleVerifyCode(req);
     if (path === "/client-event" && req.method === "POST") return await handleClientEvent(req);
-
-    // New account-based auth flow (email + password)
-    if (path === "/signup" && req.method === "POST") return await handleSignup(req);
-    if (path === "/login" && req.method === "POST") return await handleLogin(req);
-    if (path === "/authorize-existing" && req.method === "POST") return await handleAuthorizeExisting(req);
+    if (path === "/oauth/callback") return await handleOAuthCallback(req);
     if (path === "/update-profile" && req.method === "POST") return await handleUpdateProfile(req);
+    if (path === "/signup" && req.method === "POST") return await handleSignup(req);
     if (path === "/request-password-reset" && req.method === "POST") return await handleRequestPasswordReset(req);
 
-    // Diagnostic: list clients the AP currently sees (to find real MAC behind randomization)
-    // GET /diag/list-aps?store=matriz — list all APs adopted by the controller with their WLANs
-    if (path === "/diag/list-aps" && req.method === "GET") {
-      const storeSlug = url.searchParams.get("store") || "matriz";
-      const { data: store } = await supabaseAdmin()
-        .from("stores")
-        .select("slug, unifi_controller_url, unifi_username, unifi_password, unifi_site_id")
-        .eq("slug", storeSlug)
-        .maybeSingle();
-      if (!store) return jsonResponse({ error: `store not found: ${storeSlug}` });
-
-      const ctrlUrl = (store.unifi_controller_url || "").replace(/\/+$/, "");
-      const user = store.unifi_username || UNIFI_USERNAME;
-      const pass = store.unifi_password || UNIFI_PASSWORD;
-      const siteId = store.unifi_site_id || "default";
-      const httpClient = createUnifiHttpClient();
-
-      try {
-        const parsed = new URL(ctrlUrl);
-        const baseUrl = (parsed.origin + parsed.pathname).replace(/\/+$/, "");
-        const login = await unifiLogin(baseUrl, httpClient, user, pass);
-        if (!login.ok) return jsonResponse({ error: `login failed: ${login.error}` });
-
-        const headers: Record<string, string> = {};
-        if (login.cookie) {
-          headers["Cookie"] = login.csrfToken
-            ? `unifises=${login.cookie}; csrf_token=${login.csrfToken}`
-            : `unifises=${login.cookie}`;
-        }
-        const opts: Record<string, unknown> = { method: "GET", headers, redirect: "manual" };
-        if (httpClient) opts.client = httpClient;
-
-        // Get devices (APs)
-        const rDev = await fetch(`${baseUrl}/api/s/${siteId}/stat/device`, opts as RequestInit);
-        const devList = await rDev.json().catch(() => null);
-        const aps = Array.isArray(devList?.data)
-          ? devList.data.filter((d: Record<string, unknown>) => d.type === "uap").map((d: Record<string, unknown>) => ({
-              mac: d.mac,
-              name: d.name,
-              model: d.model,
-              state: d.state, // 1=connected, 0=disconnected
-              adopted: d.adopted,
-              ip: d.ip,
-              num_sta: d.num_sta,
-              "user-num_sta": d["user-num_sta"],
-              "guest-num_sta": d["guest-num_sta"],
-              version: d.version,
-              uptime: d.uptime,
-            }))
-          : [];
-
-        // Get WLAN configs
-        const rWlan = await fetch(`${baseUrl}/api/s/${siteId}/rest/wlanconf`, opts as RequestInit);
-        const wlanList = await rWlan.json().catch(() => null);
-        const wlans = Array.isArray(wlanList?.data)
-          ? wlanList.data.map((w: Record<string, unknown>) => ({
-              name: w.name,
-              enabled: w.enabled,
-              is_guest: w.is_guest,
-              security: w.security,
-              wlangroup_id: w.wlangroup_id,
-              ap_group_ids: w.ap_group_ids,
-            }))
-          : [];
-
-        return jsonResponse({
-          store: storeSlug,
-          site_id: siteId,
-          aps_total: aps.length,
-          aps,
-          wlans_total: wlans.length,
-          wlans,
-        });
-      } catch (err) {
-        return jsonResponse({ error: (err as Error).message });
-      } finally {
-        httpClient?.close();
-      }
-    }
-
-    // GET /diag/find-real-mac?store=matriz&ap=8C30666C99AC&ssid=Visitantes_Teste&minutes=15
-    if (path === "/diag/find-real-mac" && req.method === "GET") {
-      const storeSlug = url.searchParams.get("store") || "matriz";
-      const apFilter = (url.searchParams.get("ap") || "").toLowerCase().replace(/[^a-f0-9]/g, "");
-      const ssidFilter = url.searchParams.get("ssid") || "";
-      const minutes = parseInt(url.searchParams.get("minutes") || "15", 10);
-      const sinceTs = Math.floor(Date.now() / 1000) - minutes * 60;
-
-      const { data: store } = await supabaseAdmin()
-        .from("stores")
-        .select("slug, unifi_controller_url, unifi_username, unifi_password, unifi_site_id")
-        .eq("slug", storeSlug)
-        .maybeSingle();
-      if (!store) return jsonResponse({ error: `store not found: ${storeSlug}` });
-
-      const ctrlUrl = (store.unifi_controller_url || "").replace(/\/+$/, "");
-      const user = store.unifi_username || UNIFI_USERNAME;
-      const pass = store.unifi_password || UNIFI_PASSWORD;
-      const siteId = store.unifi_site_id || "default";
-      const httpClient = createUnifiHttpClient();
-
-      try {
-        const parsed = new URL(ctrlUrl);
-        const baseUrl = (parsed.origin + parsed.pathname).replace(/\/+$/, "");
-        const login = await unifiLogin(baseUrl, httpClient, user, pass);
-        if (!login.ok) return jsonResponse({ error: `login failed: ${login.error}` });
-
-        const headers: Record<string, string> = {};
-        if (login.cookie) {
-          headers["Cookie"] = login.csrfToken
-            ? `unifises=${login.cookie}; csrf_token=${login.csrfToken}`
-            : `unifises=${login.cookie}`;
-        }
-
-        const staUrl = `${baseUrl}/api/s/${siteId}/stat/sta`;
-        const opts: Record<string, unknown> = { method: "GET", headers, redirect: "manual" };
-        if (httpClient) opts.client = httpClient;
-        const r = await fetch(staUrl, opts as RequestInit);
-        const list = await r.json().catch(() => null);
-        const all = Array.isArray(list?.data) ? list.data : [];
-
-        // Filter by AP and SSID, then by recent assoc_time
-        const matches = all
-          .filter((c: Record<string, unknown>) => {
-            const apOk = !apFilter || ((c.ap_mac as string) || "").toLowerCase().replace(/[^a-f0-9]/g, "") === apFilter;
-            const ssidOk = !ssidFilter || (c.essid as string) === ssidFilter;
-            const recent = !c.assoc_time || (c.assoc_time as number) >= sinceTs;
-            return apOk && ssidOk && recent;
-          })
-          .map((c: Record<string, unknown>) => ({
-            mac: c.mac,
-            ip: c.ip,
-            hostname: c.hostname,
-            authorized: c.authorized,
-            is_guest: c.is_guest,
-            essid: c.essid,
-            ap_mac: c.ap_mac,
-            assoc_time: c.assoc_time,
-            assoc_time_iso: c.assoc_time ? new Date((c.assoc_time as number) * 1000).toISOString() : null,
-            oui: c.oui,
-            user_agent: c["user-agent"] || null,
-            os_name: c.os_name,
-            dev_family: c.dev_family,
-          }))
-          .sort((a: { assoc_time?: number }, b: { assoc_time?: number }) => (b.assoc_time || 0) - (a.assoc_time || 0));
-
-        return jsonResponse({
-          store: storeSlug,
-          ap_filter: apFilter,
-          ssid_filter: ssidFilter,
-          window_minutes: minutes,
-          total_clients_on_controller: all.length,
-          matching_clients: matches.length,
-          clients: matches,
-        });
-      } catch (err) {
-        return jsonResponse({ error: (err as Error).message });
-      } finally {
-        httpClient?.close();
-      }
-    }
-
-    // GET /diag/find-ssid?store=matriz&ssid=MINASBRASIL_CLIENTES&mac=xx:xx
-    // Lists all sites on the controller, searches for the SSID in each,
-    // and (optionally) tries to authorize the MAC on the site that owns the SSID.
-    if (path === "/diag/find-ssid" && req.method === "GET") {
-      const storeSlug = url.searchParams.get("store") || "matriz";
-      const targetSsid = url.searchParams.get("ssid") || "MINASBRASIL_CLIENTES";
-      const testMac = url.searchParams.get("mac") || undefined;
-
-      const { data: store } = await supabaseAdmin()
-        .from("stores")
-        .select("slug, unifi_controller_url, unifi_username, unifi_password")
-        .eq("slug", storeSlug)
-        .maybeSingle();
-      if (!store) return jsonResponse({ error: `store not found: ${storeSlug}` });
-
-      const ctrlUrl = (store.unifi_controller_url || "").replace(/\/+$/, "");
-      const user = store.unifi_username || UNIFI_USERNAME;
-      const pass = store.unifi_password || UNIFI_PASSWORD;
-      const httpClient = createUnifiHttpClient();
-
-      try {
-        const parsed = new URL(ctrlUrl);
-        const baseUrl = (parsed.origin + parsed.pathname).replace(/\/+$/, "");
-        const login = await unifiLogin(baseUrl, httpClient, user, pass);
-        if (!login.ok) return jsonResponse({ error: `login failed: ${login.error}` });
-
-        const headers: Record<string, string> = {};
-        if (login.cookie) {
-          headers["Cookie"] = login.csrfToken
-            ? `unifises=${login.cookie}; csrf_token=${login.csrfToken}`
-            : `unifises=${login.cookie}`;
-        }
-        const opts: Record<string, unknown> = { method: "GET", headers, redirect: "manual" };
-        if (httpClient) opts.client = httpClient;
-
-        // 1. List all sites
-        const sitesRes = await fetch(`${baseUrl}/api/self/sites`, opts as RequestInit);
-        const sitesJson = await sitesRes.json().catch(() => null);
-        const sites = Array.isArray(sitesJson?.data) ? sitesJson.data : [];
-
-        // 2. For each site: list WLANs and clients with the target SSID
-        const findings: Array<Record<string, unknown>> = [];
-        for (const s of sites) {
-          const siteName = (s as Record<string, unknown>).name as string;
-          const siteDesc = (s as Record<string, unknown>).desc as string;
-          const entry: Record<string, unknown> = { site_name: siteName, site_desc: siteDesc };
-
-          // Check WLANs
-          try {
-            const wlanRes = await fetch(`${baseUrl}/api/s/${siteName}/rest/wlanconf`, opts as RequestInit);
-            const wlanJson = await wlanRes.json().catch(() => null);
-            const wlans = Array.isArray(wlanJson?.data) ? wlanJson.data : [];
-            const matchingWlans = wlans
-              .filter((w: Record<string, unknown>) => (w.name as string) === targetSsid)
-              .map((w: Record<string, unknown>) => ({
-                name: w.name,
-                enabled: w.enabled,
-                security: w.security,
-                is_guest: w.is_guest,
-                ap_group_ids: w.ap_group_ids,
-              }));
-            entry.wlans_matching = matchingWlans;
-          } catch (e) {
-            entry.wlans_error = (e as Error).message;
-          }
-
-          // Check live clients on this SSID
-          try {
-            const staRes = await fetch(`${baseUrl}/api/s/${siteName}/stat/sta`, opts as RequestInit);
-            const staJson = await staRes.json().catch(() => null);
-            const stas = Array.isArray(staJson?.data) ? staJson.data : [];
-            const matchingStas = stas.filter(
-              (c: Record<string, unknown>) => (c.essid as string) === targetSsid
-            );
-            entry.client_count_total = stas.length;
-            entry.client_count_on_ssid = matchingStas.length;
-            entry.sample_macs_on_ssid = matchingStas
-              .slice(0, 5)
-              .map((c: Record<string, unknown>) => ({
-                mac: c.mac,
-                authorized: c.authorized,
-                ap_mac: c.ap_mac,
-              }));
-          } catch (e) {
-            entry.sta_error = (e as Error).message;
-          }
-
-          // 3. If user passed a mac AND this site has clients on the target SSID, try authorize
-          if (testMac && (entry.client_count_on_ssid as number) > 0) {
-            const authResult = await unifiAuthorizeByMac(ctrlUrl, siteName, testMac, user, pass);
-            entry.authorize_test = { mac: testMac, ok: authResult.ok, error: authResult.error };
-          }
-
-          findings.push(entry);
-        }
-
-        return jsonResponse({
-          store: storeSlug,
-          target_ssid: targetSsid,
-          test_mac: testMac,
-          total_sites: sites.length,
-          findings,
-        });
-      } catch (err) {
-        return jsonResponse({ error: (err as Error).message });
-      } finally {
-        httpClient?.close();
-      }
-    }
-
-    // Temporary diagnostic — accepts GET (uses ?store=) or POST (body overrides)
-    if (path === "/diag/unifi-ping" && (req.method === "GET" || req.method === "POST")) {
-      const b = req.method === "POST" ? await safeParseJson(req) : null;
-      const storeSlug = (b?.store as string) || url.searchParams.get("store") || "matriz";
-
-      // Load store credentials from DB
-      const { data: store, error: storeErr } = await supabaseAdmin()
-        .from("stores")
-        .select("slug, unifi_controller_url, unifi_username, unifi_password, unifi_site_id")
-        .eq("slug", storeSlug)
-        .maybeSingle();
-      if (storeErr || !store) {
-        return jsonResponse({ error: `store not found: ${storeSlug}`, db_error: storeErr?.message });
-      }
-
-      const ctrlUrl = ((b?.controller_url as string) || store.unifi_controller_url || "").replace(/\/+$/, "");
-      const user = (b?.username as string) || store.unifi_username || UNIFI_USERNAME;
-      const pass = (b?.password as string) || store.unifi_password || UNIFI_PASSWORD;
-
-      if (!ctrlUrl) return jsonResponse({ error: "controller_url not configured" });
-      if (!user || !pass) return jsonResponse({ error: "username/password not configured", has_user: !!user, has_pass: !!pass });
-
-      const httpClient = createUnifiHttpClient();
-      const out: Record<string, unknown> = {
-        store: store.slug,
-        controller_url: ctrlUrl,
-        username_used: user,
-        password_len: pass.length,
-      };
-
-      try {
-        // Probe root
-        try {
-          const ac = new AbortController();
-          const t = setTimeout(() => ac.abort(), UNIFI_TIMEOUT_MS);
-          const opts: Record<string, unknown> = { method: "GET", signal: ac.signal, redirect: "manual" };
-          if (httpClient) opts.client = httpClient;
-          const r = await fetch(`${ctrlUrl}/`, opts as RequestInit);
-          clearTimeout(t);
-          const body = (await r.text().catch(() => "")).slice(0, 200);
-          out.root_probe = { status: r.status, server: r.headers.get("server"), set_cookie: (r.headers.get("set-cookie") || "").slice(0, 200), body_preview: body };
-        } catch (e) {
-          out.root_probe = { error: (e as Error).message };
-        }
-
-        // Try all known login endpoints
-        const endpoints = ["/api/auth/login", "/api/login", "/proxy/network/api/login"];
-        const results: Record<string, unknown> = {};
-        for (const ep of endpoints) {
-          const login = await unifiTryLogin(`${ctrlUrl}${ep}`, httpClient, user, pass);
-          results[ep] = {
-            ok: login.ok,
-            error: login.error,
-            has_token: !!login.token,
-            has_cookie: !!login.cookie,
-          };
-          if (login.ok) {
-            out.login_ok = true;
-            out.successful_endpoint = ep;
-            out.endpoints_tried = results;
-
-            // Optional: also test authorize-guest if ?mac= provided
-            const testMac = url.searchParams.get("mac") || (b?.mac as string | undefined);
-            if (testMac) {
-              const siteId = url.searchParams.get("site_id") || (b?.site_id as string | undefined) || store.unifi_site_id || "default";
-              const authResult = await unifiAuthorizeByMac(ctrlUrl, siteId, testMac, user, pass);
-              out.authorize_test = {
-                mac: testMac,
-                site_id: siteId,
-                ok: authResult.ok,
-                error: authResult.error,
-              };
-            }
-            return jsonResponse(out);
-          }
-        }
-        out.login_ok = false;
-        out.endpoints_tried = results;
-        return jsonResponse(out);
-      } catch (err) {
-        out.fatal_error = (err as Error).message;
-        return jsonResponse(out);
-      } finally {
-        httpClient?.close();
-      }
-    }
-
-    // Cron endpoint
-    if (path === "/cron/housekeeping" && req.method === "POST") return await handleCronHousekeeping(req);
-
-    // Admin endpoints
+    // 3. Admin endpoints (requires service_role/admin auth)
     if (path === "/admin/settings") return await handleAdminSettings(req);
     if (path === "/admin/stores") return await handleAdminStores(req);
     if (path === "/admin/store-ips") return await handleAdminStoreIps(req, url);
@@ -4872,9 +4505,13 @@ Deno.serve(async (req: Request) => {
     if (path === "/admin/test-unifi-reach" && req.method === "POST") return await handleTestUnifiReach(req);
     if (path === "/admin/housekeeping" && req.method === "POST") return await handleHousekeeping(req);
 
+    // 4. System endpoints
+    if (path === "/cron/housekeeping" && req.method === "POST") return await handleCronHousekeeping(req);
+
     return errorResponse("Not found", 404);
   } catch (err) {
     console.error("Unhandled error:", err);
     return errorResponse("Internal server error", 500);
   }
 });
+
