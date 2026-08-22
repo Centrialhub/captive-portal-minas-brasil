@@ -727,11 +727,8 @@ export type Database = {
           name: string
           post_auth_redirect_url: string | null
           slug: string
-          unifi_api_key_or_token: string | null
           unifi_controller_url: string | null
-          unifi_password: string | null
           unifi_site_id: string | null
-          unifi_username: string | null
           updated_at: string
         }
         Insert: {
@@ -742,11 +739,8 @@ export type Database = {
           name: string
           post_auth_redirect_url?: string | null
           slug: string
-          unifi_api_key_or_token?: string | null
           unifi_controller_url?: string | null
-          unifi_password?: string | null
           unifi_site_id?: string | null
-          unifi_username?: string | null
           updated_at?: string
         }
         Update: {
@@ -757,11 +751,8 @@ export type Database = {
           name?: string
           post_auth_redirect_url?: string | null
           slug?: string
-          unifi_api_key_or_token?: string | null
           unifi_controller_url?: string | null
-          unifi_password?: string | null
           unifi_site_id?: string | null
-          unifi_username?: string | null
           updated_at?: string
         }
         Relationships: []
