@@ -1,4 +1,4 @@
-# Build arguments for Supabase (required for frontend compilation)
+# Build arguments (required for frontend compilation)
 ARG VITE_SUPABASE_URL
 ARG VITE_SUPABASE_PUBLISHABLE_KEY
 ARG COMMIT_SHA=unknown
@@ -7,30 +7,48 @@ ARG COMMIT_SHA=unknown
 FROM node:24-alpine@sha256:79a5446059b5edc74a0c8b6d859e9b25a2df6b5c0c9394628d08c8e1e75685a4 AS build
 WORKDIR /app
 
-# Re-declare ARGs in the build stage to make them available as environment variables
+# Re-declare ARGs to make them available to Vite/Node
 ARG VITE_SUPABASE_URL
 ARG VITE_SUPABASE_PUBLISHABLE_KEY
+ARG COMMIT_SHA
+
+# Fail if required variables are missing or invalid
+RUN if [ -z "$VITE_SUPABASE_URL" ] || [ -z "$VITE_SUPABASE_PUBLISHABLE_KEY" ]; then \
+      echo "ERROR: VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY must be set" && exit 1; \
+    fi
+RUN if ! echo "$VITE_SUPABASE_URL" | grep -q "^https://"; then \
+      echo "ERROR: VITE_SUPABASE_URL must use HTTPS" && exit 1; \
+    fi
+RUN if [ "$COMMIT_SHA" = "unknown" ] || [ -z "$COMMIT_SHA" ]; then \
+      echo "ERROR: COMMIT_SHA is required for production build" && exit 1; \
+    fi
+
 ENV VITE_SUPABASE_URL=$VITE_SUPABASE_URL
 ENV VITE_SUPABASE_PUBLISHABLE_KEY=$VITE_SUPABASE_PUBLISHABLE_KEY
+ENV COMMIT_SHA=$COMMIT_SHA
 
 COPY package*.json ./
-# Use npm ci for deterministic builds based on lockfile
 RUN npm ci
+
 COPY . .
 
-# Run validation checks before building
-RUN npm run lint && npm run typecheck
+# Explicit validation before build
+RUN npm run check
 
+# The build command now includes generating build-info.json
 RUN npm run build
 
 # Stage 2: Production server (Nginx)
 FROM nginx:1.27-alpine@sha256:4ff37a47b85e0513e4b3c0628e378c3a10526017a54a014283c847ec0537fd97
 
+# Re-declare COMMIT_SHA for labels
+ARG COMMIT_SHA
 LABEL org.opencontainers.image.revision=$COMMIT_SHA
 LABEL org.opencontainers.image.source="https://github.com/drogariaminasbrasil/captive-portal"
 
 COPY --from=build /app/dist /usr/share/nginx/html
 
+# Nginx config with Health/Readiness endpoints
 RUN printf 'server {\n\
     listen 80;\n\
     server_name minasbrasilwifi.com.br 187.77.48.59;\n\
@@ -39,11 +57,25 @@ RUN printf 'server {\n\
     absolute_redirect off;\n\
     port_in_redirect off;\n\
 \n\
-    # Health check for EasyPanel / Orchestrators\n\
+    # Health: Is Nginx running?\n\
     location = /health {\n\
         access_log off;\n\
         default_type text/plain;\n\
         return 200 "ok";\n\
+    }\n\
+\n\
+    # Readiness: Are all critical assets present?\n\
+    location = /ready {\n\
+        access_log off;\n\
+        default_type text/plain;\n\
+        if (!-f $document_root/index.html) { return 503 "missing-index"; }\n\
+        if (!-f $document_root/build-info.json) { return 503 "missing-build-info"; }\n\
+        return 200 "ready";\n\
+    }\n\
+\n\
+    # Build Info with cache-control: no-store\n\
+    location = /build-info.json {\n\
+        add_header Cache-Control "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0";\n\
     }\n\
 \n\
     # Proxy for Supabase Edge Functions\n\
@@ -67,18 +99,10 @@ RUN printf 'server {\n\
         if ($request_method = OPTIONS) { return 204; }\n\
     }\n\
 \n\
-    # UniFi redirect alias\n\
-    location /guest/s/default/ {\n\
-        return 302 https://minasbrasilwifi.com.br/?store=matriz&$args;\n\
-    }\n\
-\n\
-    # CNA Probes (redirect to portal to force interaction)\n\
+    # CNA Probes\n\
     location = /generate_204 { return 302 https://minasbrasilwifi.com.br/; }\n\
     location = /gen_204 { return 302 https://minasbrasilwifi.com.br/; }\n\
     location = /hotspot-detect.html { return 302 https://minasbrasilwifi.com.br/; }\n\
-    location = /library/test/success.html { return 302 https://minasbrasilwifi.com.br/; }\n\
-    location = /connecttest.txt { return 302 https://minasbrasilwifi.com.br/; }\n\
-    location = /ncsi.txt { return 302 https://minasbrasilwifi.com.br/; }\n\
 \n\
     # SPA fallback\n\
     location / {\n\
@@ -86,6 +110,11 @@ RUN printf 'server {\n\
     }\n\
 }\n' > /etc/nginx/conf.d/default.conf
 
+# Validate Nginx config
+RUN nginx -t
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost/ready || exit 1
+
 EXPOSE 80
 CMD ["nginx", "-g", "daemon off;"]
-
