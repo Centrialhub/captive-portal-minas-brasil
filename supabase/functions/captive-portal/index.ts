@@ -290,7 +290,7 @@ interface LogEventArgs {
   trace_id?: string | null;
   store_id?: string | null;
   event_type: string;
-  step: "params" | "form" | "otp" | "unifi" | "redirect" | "system" | "client";
+  step: "params" | "form" | "unifi" | "redirect" | "system" | "client";
   status?: "info" | "success" | "warning" | "error" | "warn";
   error_code?: string | null;
   error_message?: string | null;
