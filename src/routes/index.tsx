@@ -44,7 +44,7 @@ export default function Documentation() {
             </li>
             <li className="flex items-start gap-2">
               <span className="text-green-500 mt-1">✓</span>
-              <span><strong>Código Limpo:</strong> Subsistemas legados (OTP/WhatsApp) totalmente removidos.</span>
+              <span><strong>Invariantes DB:</strong> Invariante garantido de uma sessão por tentativa (Prompt 06).</span>
             </li>
           </ul>
         </section>
