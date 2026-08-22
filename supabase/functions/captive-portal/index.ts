@@ -336,7 +336,7 @@ function logEvent(db: ReturnType<typeof supabaseAdmin>, args: LogEventArgs): voi
     }
     db.from("captive_sessions").update(patch).eq("id", args.session_id).then(
       () => {},
-      (e) => console.warn("[logEvent] session patch failed:", (e as Error)?.message),
+      (e) => console.warn("[logEvent] session patch failed:", (e as any)?.message),
     );
   }
 }
@@ -391,7 +391,7 @@ async function detectStoreFromRequest(
       db.from("store_access_points")
         .update({ last_seen_at: new Date().toISOString() })
         .eq("ap_mac", normApMac)
-        .then(() => {}, (e) => console.warn("[ap-mac] last_seen update failed:", (e as Error)?.message));
+        .then(() => {}, (e) => console.warn("[ap-mac] last_seen update failed:", (e as any)?.message));
       return storeResult(store, "ap_mac");
     }
   }
@@ -1124,7 +1124,7 @@ async function checkUnifiAuthorizationState(
     console.error("[unifi-check] failed:", err);
     return { state: "inconclusive" };
   } finally {
-    try { httpClient?.close(); } catch { }
+    try { httpClient?.close(); } catch (e) { /* ignore close error */ }
   }
 }
 
@@ -3068,6 +3068,10 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
   }
   const userId = userRes.user.id;
   const provider = String((userRes.user.app_metadata as any)?.provider || "").toLowerCase();
+  const authMethod: "silent" | "google" | "apple" =
+    provider === "google" ? "google" :
+    provider === "apple" ? "apple" :
+    "silent";
 
   // FOR GOOGLE: attempt_id and resume_token are MANDATORY.
   if (provider === "google") {
@@ -3079,7 +3083,8 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
 
   if (attemptId && resumeToken) {
     const val = await validateOAuthAttempt(db, attemptId, resumeToken);
-    if (!val.valid) {
+    
+    if (val.status === 'invalid') {
       return jsonResponse({ error: val.error || "Tentativa inválida.", code: "invalid_attempt" }, 403);
     }
     
@@ -3087,6 +3092,29 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
     if (val.attempt.user_id && val.attempt.user_id !== userId) {
       console.error(`[auth] Attempt ${attemptId} already linked to another user`);
       return jsonResponse({ error: "Esta tentativa pertence a outro usuário.", code: "forbidden_attempt" }, 403);
+    }
+
+    // handleAuthorizeExisting must support Replay (Prompt 31)
+    if (val.status === 'completed') {
+      console.log(`[auth] Replay detected for completed attempt ${attemptId}. Reusing persisted result.`);
+      
+      const { data: sess } = await db.from("captive_sessions")
+        .select("id, status")
+        .eq("attempt_id", attemptId)
+        .maybeSingle();
+      
+      const storeRes = await detectStoreFromRequest(db, req, val.params?.apMac);
+
+      return jsonResponse({
+        session_id: sess?.id || null,
+        authorized: true,
+        redirect_url: val.attempt.redirect_url || storeRes.redirect_url || DEFAULT_REDIRECT_URL,
+        store_slug: storeRes.store_slug,
+        store_id: storeRes.store_id,
+        auth_method: authMethod,
+        trace_id: traceId,
+        replay: true
+      });
     }
 
     // Overwrite context with authoritative parameters from server
@@ -3148,11 +3176,7 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
     });
   }
 
-  // Determine auth method purely from server data (getUser provider)
-  const authMethod: "silent" | "google" | "apple" =
-    provider === "google" ? "google" :
-    provider === "apple" ? "apple" :
-    "silent";
+  // authMethod is already determined earlier to support replay logic
 
   // Check if CPF is required before UniFi authorization
   if (authMethod === "google") {
@@ -3394,13 +3418,13 @@ async function validateOAuthAttempt(
   attemptId: string,
   token: string
 ): Promise<{
-  valid: boolean;
+  status: 'active' | 'processing' | 'completed' | 'invalid';
   params?: AuthAuthorizeContext;
   error?: string;
   attempt?: any;
 }> {
   if (!isValidUUID(attemptId) || !token) {
-    return { valid: false, error: "Parâmetros de tentativa inválidos." };
+    return { status: 'invalid', error: "Parâmetros de tentativa inválidos." };
   }
 
   // Tokens are stored hashed in DB
@@ -3417,28 +3441,33 @@ async function validateOAuthAttempt(
     .maybeSingle();
 
   if (fetchErr || !attempt) {
-    return { valid: false, error: "Tentativa de login não encontrada." };
+    return { status: 'invalid', error: "Tentativa de login não encontrada." };
   }
 
   // Constant-time comparison using a simple equality for the hash
-  // (In Deno/V8 this is generally safe enough for these hashes, but 
-  // checking it specifically against the stored hashBuffer would be better if needed)
   if (attempt.resume_token_hash !== tokenHash) {
-    return { valid: false, error: "Transação de login inválida." };
+    return { status: 'invalid', error: "Transação de login inválida." };
   }
 
   if (attempt.status === 'expired' || new Date(attempt.expires_at) < new Date()) {
     if (attempt.status !== 'expired') {
       await db.from("captive_auth_attempts").update({ status: 'expired' }).eq("id", attemptId);
     }
-    return { valid: false, error: "Esta tentativa expirou. Inicie o processo novamente." };
+    return { status: 'invalid', error: "Esta tentativa expirou. Inicie o processo novamente." };
   }
 
-  // Terminal states
-  if (attempt.status === 'authorized' || attempt.status === 'failed' || attempt.status === 'cancelled') {
-    return { valid: false, error: `Esta tentativa já foi finalizada (status: ${attempt.status}).` };
+  // Terminal states (failed, cancelled) are invalid
+  if (attempt.status === 'failed' || attempt.status === 'cancelled') {
+    return { status: 'invalid', error: `Esta tentativa foi finalizada com erro ou cancelada (status: ${attempt.status}).` };
   }
 
+  // Interpretation of status (Prompt 31)
+  let status: 'active' | 'processing' | 'completed' | 'invalid' = 'active';
+  if (attempt.status === 'authorized') {
+    status = 'completed';
+  } else if (attempt.status === 'authorizing' || attempt.status === 'verifying') {
+    status = 'processing';
+  }
 
   const params: AuthAuthorizeContext = {
     clientMac: attempt.client_mac,
@@ -3448,7 +3477,7 @@ async function validateOAuthAttempt(
     captiveTimestamp: attempt.captive_timestamp,
   };
 
-  return { valid: true, params, attempt };
+  return { status, params, attempt };
 }
 
 async function handleOAuthInit(req: Request): Promise<Response> {
