@@ -284,11 +284,6 @@ async function safeParseJson(req: Request): Promise<Record<string, unknown> | nu
  * /submit may already have set (status authorized, submitted_at, etc.).
  */
 
-function isDuplicateKeyError(msg?: string | null): boolean {
-  if (!msg) return false;
-  const m = msg.toLowerCase();
-  return m.includes("duplicate key") || m.includes("23505");
-}
 
 // ========== Trace ID + Event Logging ==========
 function getTraceId(req: Request, body?: Record<string, unknown> | null): string {
