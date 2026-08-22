@@ -327,9 +327,22 @@ export const api = {
     ssid?: string;
     redirect_url?: string;
     captive_timestamp?: string;
-    auth_method?: "silent" | "google" | "apple";
+    auth_method?: string;
+    attempt_id?: string | null;
+    resume_token?: string | null;
   }) {
     return xhrRequest<any>("/authorize-existing", { method: "POST", body: data, timeoutMs: 20000 });
+  },
+
+  initOAuth(data: {
+    params: Record<string, string>;
+    original_url: string;
+  }): Promise<{ attempt_id: string; token: string }> {
+    return xhrRequest<{ attempt_id: string; token: string }>("/oauth/init", {
+      method: "POST",
+      body: data,
+      timeoutMs: 15000,
+    });
   },
 
 
