@@ -3079,7 +3079,8 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
 
   if (attemptId && resumeToken) {
     const val = await validateOAuthAttempt(db, attemptId, resumeToken);
-    if (!val.valid) {
+    
+    if (val.status === 'invalid') {
       return jsonResponse({ error: val.error || "Tentativa inválida.", code: "invalid_attempt" }, 403);
     }
     
@@ -3087,6 +3088,29 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
     if (val.attempt.user_id && val.attempt.user_id !== userId) {
       console.error(`[auth] Attempt ${attemptId} already linked to another user`);
       return jsonResponse({ error: "Esta tentativa pertence a outro usuário.", code: "forbidden_attempt" }, 403);
+    }
+
+    // handleAuthorizeExisting must support Replay (Prompt 31)
+    if (val.status === 'completed') {
+      console.log(`[auth] Replay detected for completed attempt ${attemptId}. Reusing persisted result.`);
+      
+      const { data: sess } = await db.from("captive_sessions")
+        .select("id, status")
+        .eq("attempt_id", attemptId)
+        .maybeSingle();
+      
+      const storeRes = await detectStoreFromRequest(db, req, val.params?.apMac);
+
+      return jsonResponse({
+        session_id: sess?.id || null,
+        authorized: true,
+        redirect_url: val.attempt.redirect_url || storeRes.redirect_url || DEFAULT_REDIRECT_URL,
+        store_slug: storeRes.store_slug,
+        store_id: storeRes.store_id,
+        auth_method,
+        trace_id: traceId,
+        replay: true
+      });
     }
 
     // Overwrite context with authoritative parameters from server
