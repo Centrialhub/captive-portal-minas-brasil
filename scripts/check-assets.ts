@@ -20,19 +20,16 @@ function checkAsset(path: string, minSize = 0) {
 
 console.log("Starting integrity check...");
 
-// Check files
 checkAsset('src/assets/logo-minas-brasil.png', 100);
 checkAsset('public/favicon-mb.png', 100);
 checkAsset('public/favicon.ico', 100);
 
-// Check index.html references
 const indexHtml = readFileSync(join(CWD, 'index.html'), 'utf8');
 if (!indexHtml.includes('/favicon-mb.png')) {
   console.error("❌ index.html does not reference /favicon-mb.png");
   process.exit(1);
 }
 
-// Check Vite build compatibility (dry run or typecheck)
 try {
   console.log("Checking TypeScript/Import resolution...");
   execSync('bunx tsc --noEmit', { stdio: 'inherit' });
