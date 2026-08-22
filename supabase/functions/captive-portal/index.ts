@@ -3770,6 +3770,14 @@ function extractAuthContext(body: Record<string, unknown>): AuthAuthorizeContext
  * Creates (or reuses) a captive_sessions row for this visit, upserts
  * leads by user_id, and calls unifiAuthorize on the detected store.
  */
+/**
+ * Creates (or reuses) a captive_sessions row for this visit, upserts
+ * leads by user_id, and calls unifiAuthorize on the detected store.
+ * 
+ * IMPLEMENTS SERVER-SIDE IDEMPOTENCY:
+ * 1. Uses an atomic lock based on user_id + client_mac within a 15s window.
+ * 2. If a session for this user/mac was authorized in the last 30s, returns it immediately.
+ */
 async function authorizeAuthenticatedUser(args: {
   db: ReturnType<typeof supabaseAdmin>;
   userId: string;
@@ -3796,8 +3804,59 @@ async function authorizeAuthenticatedUser(args: {
   const storeId = detected.store_id;
   const nowIso = new Date().toISOString();
 
+  // IDEMPOTENCY STEP 1: Check for a very recent successful session (replay/refresh protection)
+  try {
+    const thirtySecsAgo = new Date(Date.now() - 30 * 1000).toISOString();
+    const { data: recentSession } = await db
+      .from("captive_sessions")
+      .select("id, status, redirect_url")
+      .eq("user_id", userId)
+      .eq("client_mac", ctx.clientMac)
+      .eq("status", "authorized")
+      .gte("submitted_at", thirtySecsAgo)
+      .order("submitted_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (recentSession) {
+      console.log(`[auth] Idempotency hit: reusing authorized session ${recentSession.id}`);
+      return {
+        session_id: recentSession.id,
+        authorized: true,
+        redirect_url: detected.redirect_url || DEFAULT_REDIRECT_URL,
+        store_slug: storeSlug,
+        store_id: storeId,
+      };
+    }
+  } catch (e) {
+    console.warn("[auth] Idempotency check failed (ignoring):", (e as Error).message);
+  }
+
+  // IDEMPOTENCY STEP 2: Atomic lock to prevent concurrent overlapping requests
+  const lockKey = `auth_lock:${userId}:${ctx.clientMac}`;
+  try {
+    const { data: lock } = await db.rpc("rate_limit_hit", {
+      p_key: lockKey,
+      p_window_seconds: 15,
+      p_max_hits: 1,
+      p_block_seconds: 0,
+    });
+    if (lock && (lock as any).allowed === false) {
+      console.warn(`[auth] Concurrent request blocked by atomic lock: ${lockKey}`);
+      return {
+        session_id: null,
+        authorized: false,
+        redirect_url: detected.redirect_url || DEFAULT_REDIRECT_URL,
+        fail_reason: "CONCURRENT_REQUEST",
+        store_slug: storeSlug,
+        store_id: storeId,
+      };
+    }
+  } catch (e) {
+    console.warn("[auth] Atomic lock RPC failed (falling back to standard flow):", (e as Error).message);
+  }
+
   // Create captive_sessions row for this visit.
-  // Column names here MUST match public.captive_sessions (see information_schema).
   const sessionInsert: Record<string, unknown> = {
     store_id: storeId,
     user_id: userId,
