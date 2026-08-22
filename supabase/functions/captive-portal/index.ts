@@ -3346,6 +3346,7 @@ async function handleOAuthInit(req: Request): Promise<Response> {
   const rl = await checkRateLimitDb(db, `oauth-init:mac:${clientMac}`, 60, 5, 300);
   if (!rl.allowed) return errorResponse("Muitas tentativas. Aguarde alguns minutos.", 429);
 
+
   // Cryptographically strong random token (opaque)
   const tokenBytes = new Uint8Array(32);
   crypto.getRandomValues(tokenBytes);
