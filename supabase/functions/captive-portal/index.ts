@@ -1519,35 +1519,6 @@ async function handleBootstrap(req: Request): Promise<Response> {
 }
 
 
-  const totalLatency = Date.now() - t0;
-  logEvent(db, {
-    session_id: sessionId as string, trace_id: traceId, store_id: resolvedStoreId,
-    event_type: "verify_code_response", step: "redirect",
-    status: authorized ? "success" : (pendingUnifiConfirmation ? "warning" : "error"),
-    latency_ms: totalLatency,
-    payload: {
-      authorized,
-      pending_unifi_confirmation: pendingUnifiConfirmation,
-      use_hotspot_redirect: useHotspotRedirect,
-      daily_limit_reached: dailyLimitReached,
-      redirect_url: resolvedRedirectUrl,
-    },
-    session_patch: { total_latency_ms: totalLatency, redirect_served_at: new Date().toISOString() },
-    client_ip: clientIp, user_agent: ua,
-  });
-
-  return jsonResponse({
-    ok: true,
-    authorized,
-    pending_unifi_confirmation: pendingUnifiConfirmation,
-    redirect_url: resolvedRedirectUrl,
-    use_hotspot_redirect: useHotspotRedirect,
-    daily_limit_reached: dailyLimitReached,
-    trace_id: traceId,
-    message,
-  });
-}
-
 // ========== Internal Housekeeping ==========
 async function internalHousekeeping(db: ReturnType<typeof supabaseAdmin>): Promise<Record<string, number>> {
   const now = new Date();
