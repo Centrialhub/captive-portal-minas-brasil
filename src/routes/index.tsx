@@ -2,35 +2,41 @@ export default function Home() {
   return (
     <div className="flex flex-col items-center justify-center min-h-screen p-4 text-center">
       <h1 className="text-2xl font-bold mb-4 uppercase text-red-600">
-        PROMPT 05 — IMPLEMENTAR EXCLUSIVAMENTE IDEMPOTÊNCIA SERVER-SIDE DA AUTORIZAÇÃO CAPTIVE
+        ESTADO ATUAL DO SISTEMA — CAPTIVE PORTAL V2
       </h1>
 
-      <div className="max-w-2xl text-left bg-white p-6 rounded-lg shadow-md border-t-4 border-red-600">
-        <h2 className="font-bold text-lg mb-2">OBJETIVO ÚNICO</h2>
-        <p className="mb-4 text-gray-700">
-          Garantir que uma mesma tentativa captive produza no máximo uma sessão operacional e um único comando de autorização UniFi, independentemente de concorrência, replay ou resposta HTTP perdida.
-        </p>
-        <ul className="list-disc ml-6 mb-4 text-gray-700">
-          <li>no máximo uma sessão operacional por tentativa;</li>
-          <li>no máximo um comando normal de autorização UniFi;</li>
-          <li>um único resultado persistido e reutilizável.</li>
-        </ul>
-        <p className="mb-4 text-gray-700 font-semibold italic">A lógica de comunicação e liberação UniFi foi preservada.</p>
+      <div className="max-w-2xl text-left bg-white p-6 rounded-lg shadow-md border-t-4 border-red-600 space-y-6">
+        <section>
+          <h2 className="font-bold text-lg mb-2 text-gray-900 border-b pb-1">1. SEGURANÇA E SEGREDOS</h2>
+          <p className="text-gray-700">
+            As credenciais UniFi foram 100% removidas do banco de dados e do tráfego de rede. O sistema agora utiliza variáveis de ambiente centralizadas no <code>Deno.env</code>.
+          </p>
+        </section>
 
-        <h2 className="font-bold text-lg mb-2">DIAGNÓSTICO CONFIRMADO</h2>
-        <p className="mb-4 text-gray-700">
-          A função <code>authorizeAuthenticatedUser</code> permitia que requisições concorrentes disparassem múltiplos comandos UniFi e criassem sessões duplicadas antes que a primeira tentativa fosse marcada como concluída.
-        </p>
+        <section>
+          <h2 className="font-bold text-lg mb-2 text-gray-900 border-b pb-1">2. GATE DE CPF SERVER-SIDE</h2>
+          <p className="text-gray-700">
+            A atualização de perfis (CPF/Telefone) é protegida por uma função RPC <code>SECURITY DEFINER</code>. Permissões diretas de escrita na tabela <code>profiles</code> foram revogadas para evitar manipulação client-side.
+          </p>
+        </section>
 
-        <h2 className="font-bold text-lg mb-2">IMPLEMENTAÇÃO REALIZADA</h2>
-        <ol className="list-decimal ml-6 mb-4 text-gray-700">
-          <li>Implementada verificação de idempotência que reutiliza sessões autorizadas nos últimos 30 segundos para o mesmo usuário e MAC.</li>
-          <li className="mt-2">Adicionada trava atômica (atomic lock) via RPC <code>rate_limit_hit</code> para bloquear requisições concorrentes idênticas em uma janela de 15 segundos.</li>
-          <li className="mt-2">Garantido que a chamada à UniFi ocorra apenas se a trava for adquirida e nenhuma sessão recente for encontrada.</li>
-        </ol>
+        <section>
+          <h2 className="font-bold text-lg mb-2 text-gray-900 border-b pb-1">3. IDEMPOTÊNCIA E ESTABILIDADE</h2>
+          <p className="text-gray-700">
+            Implementadas travas atômicas para evitar liberação duplicada de Wi-Fi e envios repetidos de WhatsApp. Sessões autorizadas recentemente são reutilizadas para garantir performance.
+          </p>
+        </section>
 
-        <h2 className="font-bold text-lg mb-2">CRITÉRIO DE ACEITE</h2>
-        <p className="text-gray-700">Refreshes de página, cliques duplos ou instabilidades de rede durante a autorização não devem gerar sessões duplicadas no banco de dados nem múltiplos comandos de liberação na controladora.</p>
+        <section>
+          <h2 className="font-bold text-lg mb-2 text-gray-900 border-b pb-1">4. REDIRECIONAMENTO DETERMINÍSTICO</h2>
+          <p className="text-gray-700">
+            O fluxo pós-autenticação foi unificado. O sistema prioriza a URL configurada pela administração, seguida pela URL de origem do dispositivo, com um <code>SuccessView</code> estável.
+          </p>
+        </section>
+
+        <div className="bg-yellow-50 p-4 rounded border border-yellow-200 text-sm text-yellow-800 italic">
+          O sistema está pronto para produção, com todas as superfícies de diagnóstico públicas removidas e segredos devidamente protegidos.
+        </div>
       </div>
     </div>
   );

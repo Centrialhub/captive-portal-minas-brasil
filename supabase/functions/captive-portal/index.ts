@@ -499,7 +499,7 @@ async function discoverStoreByClientMac(
 
   const { data: stores } = await db
     .from("stores")
-    .select("id, slug, name, city, post_auth_redirect_url, unifi_controller_url, unifi_site_id, unifi_username, unifi_password")
+    .select("id, slug, name, city, post_auth_redirect_url, unifi_controller_url, unifi_site_id")
     .eq("is_active", true)
     .not("unifi_controller_url", "is", null);
 
@@ -511,8 +511,8 @@ async function discoverStoreByClientMac(
   const probes = stores.map(async (store): Promise<Hit | null> => {
     const ctrlUrl = (store.unifi_controller_url || "").replace(/\/+$/, "");
     if (!ctrlUrl) return null;
-    const user = store.unifi_username || UNIFI_USERNAME;
-    const pass = store.unifi_password || UNIFI_PASSWORD;
+    const user = UNIFI_USERNAME;
+    const pass = UNIFI_PASSWORD;
     if (!user || !pass) {
       console.warn(`[discover] UNIFI_SECRET_NOT_CONFIGURED for store ${store.slug}`);
       return null;
@@ -1532,7 +1532,7 @@ async function authorizeClient(
 
   const { data: store } = await db
     .from("stores")
-    .select("unifi_controller_url, unifi_site_id, unifi_username, unifi_password")
+    .select("unifi_controller_url, unifi_site_id")
     .eq("id", storeId)
     .maybeSingle();
 
@@ -1545,8 +1545,8 @@ async function authorizeClient(
     return { ok: false, reason: "UNIFI_NOT_CONFIGURED" };
   }
 
-  const storeUser = store.unifi_username || UNIFI_USERNAME;
-  const storePass = store.unifi_password || UNIFI_PASSWORD;
+  const storeUser = UNIFI_USERNAME;
+  const storePass = UNIFI_PASSWORD;
 
   if (!storeUser || !storePass) {
     await db.from("captive_sessions").update({ status: "failed", fail_reason: "UNIFI_CREDENTIALS_MISSING" }).eq("id", sessionId);
@@ -1556,6 +1556,34 @@ async function authorizeClient(
   if (!clientMac || !isValidMac(clientMac)) {
     await db.from("captive_sessions").update({ status: "failed", fail_reason: "INVALID_MAC_ADDRESS" }).eq("id", sessionId);
     return { ok: false, reason: "INVALID_MAC_ADDRESS" };
+  }
+
+  // Prompt 07: Server-side idempotency lock (15s)
+  // Prevents multiple concurrent UniFi commands for the same MAC
+  const lock = await db.rpc("rate_limit_hit", {
+    p_key: `unifi_auth:mac:${clientMac.toUpperCase()}`,
+    p_window_seconds: 15,
+    p_max_hits: 1,
+    p_block_seconds: 0,
+  });
+
+  if (lock.data?.allowed === false) {
+    console.warn(`[authorize] duplicate concurrent request for mac=${clientMac}`);
+    // If there's a very recent successful auth (last 30s), just return success
+    const { data: recentAuth } = await db
+      .from("captive_sessions")
+      .select("id, status, unifi_cmd_accepted_at, authorized_at")
+      .eq("client_mac", clientMac.toUpperCase())
+      .eq("status", "authorized")
+      .gte("authorized_at", new Date(Date.now() - 30 * 1000).toISOString())
+      .maybeSingle();
+
+    if (recentAuth) {
+      console.log(`[authorize] reusing recent authorization for mac=${clientMac}`);
+      return { ok: true, cmd_accepted_at: recentAuth.unifi_cmd_accepted_at };
+    }
+
+    return { ok: false, reason: "RATE_LIMIT_HIT", userMessage: "Liberação em processamento. Aguarde alguns segundos." };
   }
 
   const { data: settings } = await db
@@ -3072,11 +3100,6 @@ async function handleAdminStores(req: Request): Promise<Response> {
       post_auth_redirect_url: sanitizeString(body.post_auth_redirect_url, 500) || null,
       unifi_site_id: sanitizeString(body.unifi_site_id, 100) || null,
       unifi_controller_url: sanitizeString(body.unifi_controller_url, 500) || null,
-      unifi_api_key_or_token: typeof body.unifi_api_key_or_token === "string"
-        ? body.unifi_api_key_or_token.trim().slice(0, 500) || null : null,
-      unifi_username: sanitizeString(body.unifi_username, 100) || null,
-      unifi_password: typeof body.unifi_password === "string"
-        ? body.unifi_password.trim().slice(0, 200) || null : null,
     }).select("id, slug, name").single();
     if (error) return errorResponse(error.message, 500);
     return jsonResponse(data, 201);
@@ -3094,21 +3117,20 @@ async function handleAdminStores(req: Request): Promise<Response> {
     if (body.post_auth_redirect_url !== undefined) updateData.post_auth_redirect_url = sanitizeString(body.post_auth_redirect_url, 500);
     if (body.unifi_site_id !== undefined) updateData.unifi_site_id = sanitizeString(body.unifi_site_id, 100);
     if (body.unifi_controller_url !== undefined) updateData.unifi_controller_url = sanitizeString(body.unifi_controller_url, 500);
-    // Allow setting secrets via PUT only
-    if (body.unifi_api_key_or_token !== undefined) {
-      updateData.unifi_api_key_or_token = typeof body.unifi_api_key_or_token === "string"
-        ? body.unifi_api_key_or_token.trim().slice(0, 500) || null : null;
-    }
-    if (body.unifi_username !== undefined) updateData.unifi_username = sanitizeString(body.unifi_username, 100);
-    if (body.unifi_password !== undefined) {
-      updateData.unifi_password = typeof body.unifi_password === "string"
-        ? body.unifi_password.trim().slice(0, 200) || null : null;
-    }
+    // Allow updating controller params
+    if (body.unifi_site_id !== undefined) updateData.unifi_site_id = sanitizeString(body.unifi_site_id, 100);
+    if (body.unifi_controller_url !== undefined) updateData.unifi_controller_url = sanitizeString(body.unifi_controller_url, 500);
 
     if (Object.keys(updateData).length === 0) return errorResponse("Nenhum campo para atualizar");
 
     const { data, error } = await db.from("stores").update(updateData).eq("id", body.id as string).select("id, slug, name").single();
     if (error) return errorResponse(error.message, 500);
+
+    await db.from("audit_logs").insert({
+      store_id: body.id as string, entity: "store", entity_id: body.id as string,
+      action: "update", meta: { updated_by: auth.userId, fields: Object.keys(updateData) },
+    });
+
     return jsonResponse(data);
   }
 
@@ -3355,14 +3377,14 @@ async function handleAdminAccessPoints(req: Request, url: URL): Promise<Response
     if (body.action === "import_from_controller") {
       if (!isValidUUID(body.store_id)) return errorResponse("store_id inválido");
       const { data: store } = await db.from("stores")
-        .select("id, slug, unifi_controller_url, unifi_username, unifi_password, unifi_site_id")
+        .select("id, slug, unifi_controller_url, unifi_site_id")
         .eq("id", body.store_id as string)
         .maybeSingle();
       if (!store?.unifi_controller_url) return errorResponse("Loja sem controladora configurada");
 
       const ctrlUrl = store.unifi_controller_url.replace(/\/+$/, "");
-      const user = store.unifi_username || UNIFI_USERNAME;
-      const pass = store.unifi_password || UNIFI_PASSWORD;
+      const user = UNIFI_USERNAME;
+      const pass = UNIFI_PASSWORD;
       
       if (!user || !pass) {
         console.error(`[admin-aps] UNIFI_SECRET_NOT_CONFIGURED for store ${store.slug}`);
