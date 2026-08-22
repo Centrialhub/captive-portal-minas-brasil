@@ -84,7 +84,7 @@ export const SuccessView: React.FC<SuccessViewProps> = ({
 
   return (
     <div className="portal-wrapper">
-      <div className="portal-card" style={{ textAlign: "center" }}>
+      <div className="portal-card text-center">
         <div className="success-icon">
           <svg width="40" height="40" fill="none" stroke="#2e7d32" viewBox="0 0 24 24" strokeWidth={2.5}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
@@ -110,7 +110,7 @@ export const SuccessView: React.FC<SuccessViewProps> = ({
             <button
               onClick={handleManualRedirect}
               className="portal-btn"
-              style={{ marginTop: 8 }}
+              className="portal-btn mt-2"
             >
               Continuar agora
             </button>
