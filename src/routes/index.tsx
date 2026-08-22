@@ -1,8 +1,32 @@
-export default function Documentation() {
+import React, { useState, useEffect } from "react";
+import App from "../App";
+
+export default function AppContainer() {
+  const [showDocumentation, setShowDocumentation] = useState(false);
+
+  useEffect(() => {
+    // Escuta por atalho de teclado (ex: Ctrl+Shift+D) para mostrar documentação
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.shiftKey && e.key === "D") {
+        setShowDocumentation((prev) => !prev);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+  if (!showDocumentation) {
+    return <App />;
+  }
+
+  return <Documentation />;
+}
+
+function Documentation() {
   return (
     <div className="p-8 font-sans max-w-4xl mx-auto">
       <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-lg text-green-800 text-sm">
-        Audit concluído: Integridade de ativos binários restaurada (Prompt 38). Logotipo e favicons verificados e script de integridade automatizado no fluxo de build. Conformidade visual e técnica confirmada.
+        Integridade de ativos binários restaurada (Prompt 38). Logotipo e favicons verificados e script de integridade automatizado no fluxo de build. Conformidade visual e técnica confirmada.
       </div>
       <h1 className="text-3xl font-bold mb-6 text-gray-900 border-b pb-2">Captive Portal - Drogaria Minas Brasil</h1>
       <p className="mb-6 text-gray-600">Documentação visual de arquitetura, segurança e integridade do sistema.</p>
@@ -57,3 +81,4 @@ export default function Documentation() {
     </div>
   );
 }
+
