@@ -163,7 +163,7 @@ export default function App() {
           setRedirectUrl(finalUrl);
           setStep("success");
           authCompletedRef.current = true;
-          // OAuthTracker.clearAll() will be called after success confirmation path
+
           return result;
         }
 
@@ -486,6 +486,28 @@ export default function App() {
 
   // ── CPF PROMPT (Google Auth Gate) ──
   if (step === "cpf_prompt") {
+    const handleGoogleRestart = async () => {
+      if (busy) return;
+      setBusy(true);
+      const tokens = OAuthTracker.getTokens();
+      if (tokens.attempt_id) {
+        try {
+          const res = await api.restartOAuth({ attempt_id: tokens.attempt_id });
+          if (res.attempt_id && res.token) {
+            localStorage.setItem("mb_oauth_attempt_id", res.attempt_id);
+            localStorage.setItem("mb_oauth_attempt_token", res.token);
+            await supabase.auth.signOut();
+            window.location.reload();
+            return;
+          }
+        } catch (e) {
+          console.error("Restart failed", e);
+        }
+      }
+      setStep("login");
+      setBusy(false);
+    };
+
     return (
       <div className="portal-wrapper">
         <div className="portal-card">
@@ -496,6 +518,42 @@ export default function App() {
 
           <h1 className="portal-title">Complete seu acesso</h1>
           <p className="portal-subtitle">
+            Olá, <strong>{googleUser?.full_name || "Cliente"}</strong>! 
+            Para liberar seu Wi-Fi, informe seu CPF:
+          </p>
+
+          <form onSubmit={handleCpfSubmit}>
+            {error && <div className="portal-error">{error}</div>}
+            
+            <label className="portal-label">CPF</label>
+            <input
+              type="tel"
+              className="portal-input"
+              placeholder="000.000.000-00"
+              value={formatCPF(promptCpf)}
+              onChange={(e) => setPromptCpf(e.target.value)}
+              disabled={busy}
+              required
+            />
+            
+            <button type="submit" className="portal-btn" disabled={busy || promptCpf.replace(/\D/g, "").length !== 11}>
+              {busy ? "Processando..." : "Confirmar e Liberar Wi-Fi"}
+            </button>
+
+            <button 
+              type="button" 
+              className="portal-btn-secondary" 
+              onClick={handleGoogleRestart}
+              disabled={busy}
+            >
+              Usar outra conta
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
             O CPF é necessário para concluir a liberação do seu Wi-Fi.
           </p>
 
