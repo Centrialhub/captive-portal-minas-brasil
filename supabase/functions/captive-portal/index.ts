@@ -3973,6 +3973,7 @@ async function authorizeAuthenticatedUser(args: {
   redirect_url: string;
   fail_reason?: string;
   store_slug: string;
+  store_id: string | null;
 }> {
 
   const { db, userId, profile, ctx, req, authMethod, traceId, clientIp, userAgent } = args;
@@ -4029,6 +4030,7 @@ async function authorizeAuthenticatedUser(args: {
       redirect_url: detected.redirect_url || DEFAULT_REDIRECT_URL,
       fail_reason: "SESSION_INSERT_FAILED",
       store_slug: storeSlug,
+      store_id: storeId,
     };
   }
 
@@ -4542,6 +4544,7 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
     redirect_url: result.redirect_url,
     fail_reason: result.fail_reason,
     store_slug: result.store_slug,
+    store_id: result.store_id,
     auth_method: authMethod,
     trace_id: traceId,
   });
