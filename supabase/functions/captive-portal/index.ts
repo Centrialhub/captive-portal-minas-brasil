@@ -3752,6 +3752,7 @@ interface AuthAuthorizeContext {
   ssid: string | null;
   redirectUrl: string | null;
   captiveTimestamp: string | null;
+  storeHint?: string | null;
 }
 
 function extractAuthContext(body: Record<string, unknown>): AuthAuthorizeContext {
