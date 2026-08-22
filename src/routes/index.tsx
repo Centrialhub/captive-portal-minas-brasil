@@ -1,6 +1,5 @@
  
 
-
 export default function Documentation() {
   return (
     <div className="p-8 font-sans">
@@ -17,7 +16,7 @@ export default function Documentation() {
             <li>Idempotência server-side na autorização UniFi.</li>
             <li>Transações OAuth (Google) autoritativas no servidor (Prompt 05).</li>
             <li>Remoção completa do subsistema OTP/WhatsApp legado.</li>
-
+            <li>Idempotência transacional authoritative no servidor (Prompt 06).</li>
             <li>Build Docker reprodutível com lint e typecheck.</li>
           </ul>
         </section>
