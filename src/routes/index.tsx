@@ -2,22 +2,25 @@ export default function Home() {
   return (
     <div className="flex flex-col items-center justify-center min-h-screen p-4 text-center">
       <h1 className="text-2xl font-bold mb-4 uppercase text-red-600">
-        ESTADO ATUAL DO SISTEMA — CAPTIVE PORTAL V2
+        PROMPT 07 — TORNAR O GATE DE CPF EXCLUSIVAMENTE SERVER-AUTHORITATIVO
       </h1>
 
       <div className="max-w-2xl text-left bg-white p-6 rounded-lg shadow-md border-t-4 border-red-600 space-y-6">
         <section>
-          <h2 className="font-bold text-lg mb-2 text-gray-900 border-b pb-1">1. SEGURANÇA E SEGREDOS</h2>
-          <p className="text-gray-700">
-            As credenciais UniFi foram 100% removidas do banco de dados e do tráfego de rede. O sistema agora utiliza variáveis de ambiente centralizadas no <code>Deno.env</code>.
+          <h2 className="font-bold text-lg mb-2 text-gray-900 border-b pb-1">OBJETIVO ALCANÇADO</h2>
+          <p className="text-gray-700 font-medium">
+            Impedido o bypass direto do CPF via Data API do Supabase. Toda criação ou alteração dos campos de perfil agora exige validação server-side.
           </p>
         </section>
 
         <section>
-          <h2 className="font-bold text-lg mb-2 text-gray-900 border-b pb-1">2. GATE DE CPF SERVER-SIDE</h2>
-          <p className="text-gray-700">
-            A atualização de perfis (CPF/Telefone) é protegida por uma função RPC <code>SECURITY DEFINER</code>. Permissões diretas de escrita na tabela <code>profiles</code> foram revogadas para evitar manipulação client-side.
-          </p>
+          <h2 className="font-bold text-lg mb-2 text-gray-900 border-b pb-1">AÇÕES EXECUTADAS</h2>
+          <ul className="list-disc ml-5 text-gray-700 space-y-1">
+            <li>Revogadas permissões de <code>INSERT</code> e <code>UPDATE</code> na tabela <code>public.profiles</code> para papéis <code>anon</code> e <code>authenticated</code>.</li>
+            <li>Centralizada a lógica de escrita na função RPC <code>secure_update_profile</code> com <code>SECURITY DEFINER</code>.</li>
+            <li>Restrita a execução da função RPC exclusivamente ao <code>service_role</code> (Edge Functions).</li>
+            <li>Garantida a integridade dos dados e unicidade do CPF sem depender do cliente.</li>
+          </ul>
         </section>
 
         <section>
