@@ -3,85 +3,76 @@ import { Link } from "react-router-dom";
 export default function Home() {
   return (
     <div className="flex flex-col items-center justify-center min-h-screen p-4 text-center">
-      <h1 className="text-2xl font-bold mb-4 uppercase text-red-600">PROMPT 15 — IMPLEMENTAR EXCLUSIVAMENTE O CICLO DE VIDA E A MINIMIZAÇÃO DE DADOS</h1>
+      <h1 className="text-2xl font-bold mb-4 uppercase text-red-600">PROMPT 17 — ENDURECER EXCLUSIVAMENTE A ENTREGA HTTP DO PORTAL</h1>
 
       <div className="max-w-2xl text-left bg-white p-6 rounded-lg shadow-md border-t-4 border-red-600">
         <h2 className="font-bold text-lg mb-2">Objetivo único:</h2>
-        <p className="mb-4">Reduzir exposição de dados pessoais em logs e impedir retenção indefinida. Não alterar regras de autenticação ou autorização.</p>
+        <p className="mb-4">Adicionar headers, cache e health checks adequados sem alterar fluxos funcionais.</p>
 
-        <h2 className="font-bold text-lg mb-2">Logs:</h2>
+        <h2 className="font-bold text-lg mb-2">Pré-requisito:</h2>
+        <p className="mb-4">O JavaScript inline ativo do index.html já deve ter sido removido.</p>
+
+        <h2 className="font-bold text-lg mb-2">Nginx:</h2>
         <ol className="list-decimal ml-6 mb-4">
-          <li>Remover CPF, e-mail, telefone, MAC bruto, IP bruto, URL original e resposta CRM de console/logEvent.</li>
-          <li>Usar:
+          <li>Adicionar:
             <ul className="list-disc ml-6">
-              <li>trace_id;</li>
-              <li>attempt_id;</li>
-              <li>error_code;</li>
-              <li>store_slug;</li>
-              <li>latência;</li>
-              <li>MAC pseudonimizado por HMAC server-side quando correlação for necessária.</li>
+              <li>X-Content-Type-Options: nosniff;</li>
+              <li>Referrer-Policy: no-referrer;</li>
+              <li>Permissions-Policy restritiva;</li>
+              <li>Content-Security-Policy;</li>
+              <li>frame-ancestors 'none';</li>
+              <li>object-src 'none';</li>
+              <li>base-uri 'self';</li>
+              <li>form-action 'self'.</li>
             </ul>
           </li>
-          <li>Nunca enviar MAC na telemetria do navegador.</li>
-          <li>Não registrar token, cookie, senha ou body externo.</li>
-          <li>Redigir mensagens de erro antes de persistir.</li>
+          <li>CSP deve permitir somente os hosts realmente usados:
+            <ul className="list-disc ml-6">
+              <li>portal;</li>
+              <li>endpoint Supabase exato necessário ao Auth;</li>
+              <li>recursos Google estritamente necessários;</li>
+              <li>nenhuma wildcard genérica.</li>
+            </ul>
+          </li>
+          <li>Não usar unsafe-eval.</li>
+          <li>Remover CORS wildcard.</li>
+          <li>`/oauth/callback`, `/reset-password`, HTML principal e respostas autenticadas:
+            <ul className="list-disc ml-6">
+              <li>Cache-Control: no-store.</li>
+            </ul>
+          </li>
+          <li>Assets versionados:
+            <ul className="list-disc ml-6">
+              <li>cache longo;</li>
+              <li>immutable.</li>
+            </ul>
+          </li>
+          <li>Criar:
+            <ul className="list-disc ml-6">
+              <li>`/health` para processo Nginx;</li>
+              <li>`/ready` para verificar que o bundle existe e configuração básica foi carregada.</li>
+            </ul>
+          </li>
+          <li>Adicionar HEALTHCHECK na imagem.</li>
+          <li>Limitar body no Nginx e novamente na Edge Function.</li>
+          <li>Ocultar versão detalhada do Nginx.</li>
+          <li>Manter terminação TLS no proxy EasyPanel.</li>
+          <li>Não adicionar HSTS antes de o certificado e todos os primeiros redirects da controladora estarem certificados em dispositivos reais. Depois dessa certificação, habilitar HSTS no ponto que termina TLS, não cegamente dentro do container HTTP.</li>
         </ol>
 
-        <h2 className="font-bold text-lg mb-2">Retenção:</h2>
-        <ol className="list-decimal ml-6 mb-4">
-          <li>Criar matriz de retenção por tabela:
-            <ul className="list-disc ml-6">
-              <li>captive_auth_attempts;</li>
-              <li>captive_sessions;</li>
-              <li>portal_events;</li>
-              <li>leads;</li>
-              <li>profiles;</li>
-              <li>consent_events;</li>
-              <li>audit_logs;</li>
-              <li>CRM outbox;</li>
-              <li>GeoIP;</li>
-              <li>rate limits.</li>
-            </ul>
-          </li>
-          <li>Os prazos devem ser configuração aprovada, não números espalhados no código.</li>
-          <li>Criar job de limpeza com:
-            <ul className="list-disc ml-6">
-              <li>dry-run;</li>
-              <li>contagem;</li>
-              <li>exclusão por lotes;</li>
-              <li>proteção contra legal hold;</li>
-              <li>métrica de sucesso/falha.</li>
-            </ul>
-          </li>
-          <li>Após o período operacional, anonimizar MAC/IP quando o registro precisar ser mantido.</li>
-          <li>Remover payloads arbitrários antigos.</li>
-          <li>Implementar fluxo administrativo para solicitação de:
-            <ul className="list-disc ml-6">
-              <li>acesso;</li>
-              <li>correção;</li>
-              <li>revogação;</li>
-              <li>exclusão quando aplicável;</li>
-              <li>exportação controlada.</li>
-            </ul>
-          </li>
-          <li>Não apagar consent_events necessários à comprovação sem política aprovada.</li>
-          <li>Não manter CPF em mais de uma tabela sem justificativa.</li>
-          <li>Documentar controlador, operador e finalidade de cada cópia.</li>
-        </ol>
-
-        <h2 className="font-bold text-lg mb-2">Testes:</h2>
+        <h2 className="font-bold text-lg mb-2">Validação:</h2>
         <ul className="list-disc ml-6 mb-4">
-          <li>novos logs não contêm PII.</li>
-          <li>scanner de logs detecta padrões de CPF/e-mail/MAC.</li>
-          <li>dry-run não altera dados.</li>
-          <li>limpeza respeita prazo e legal hold.</li>
-          <li>anonimização é irreversível sem segredo.</li>
-          <li>falha parcial pode ser retomada.</li>
-          <li>dados ativos necessários ao UniFi não são apagados antes da autorização terminar.</li>
+          <li>`nginx -t`.</li>
+          <li>CSP não bloqueia portal, OAuth ou assets necessários.</li>
+          <li>páginas sensíveis não entram em cache.</li>
+          <li>assets possuem cache adequado.</li>
+          <li>CORS de origem externa não é permitido.</li>
+          <li>health/readiness funcionam.</li>
+          <li>nenhuma rota funcional mudou.</li>
         </ul>
 
         <h2 className="font-bold text-lg mb-2">Critério de aceite:</h2>
-        <p>PII existe apenas nos locais, formatos e períodos estritamente necessários.</p>
+        <p>A entrega HTTP possui política explícita de conteúdo, origem, cache e framing.</p>
       </div>
 
       <div className="mt-8">
