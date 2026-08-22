@@ -1532,7 +1532,7 @@ async function authorizeClient(
 
   const { data: store } = await db
     .from("stores")
-    .select("unifi_controller_url, unifi_site_id, unifi_username, unifi_password")
+    .select("unifi_controller_url, unifi_site_id")
     .eq("id", storeId)
     .maybeSingle();
 
@@ -1545,8 +1545,8 @@ async function authorizeClient(
     return { ok: false, reason: "UNIFI_NOT_CONFIGURED" };
   }
 
-  const storeUser = store.unifi_username || UNIFI_USERNAME;
-  const storePass = store.unifi_password || UNIFI_PASSWORD;
+  const storeUser = UNIFI_USERNAME;
+  const storePass = UNIFI_PASSWORD;
 
   if (!storeUser || !storePass) {
     await db.from("captive_sessions").update({ status: "failed", fail_reason: "UNIFI_CREDENTIALS_MISSING" }).eq("id", sessionId);
@@ -3361,8 +3361,8 @@ async function handleAdminAccessPoints(req: Request, url: URL): Promise<Response
       if (!store?.unifi_controller_url) return errorResponse("Loja sem controladora configurada");
 
       const ctrlUrl = store.unifi_controller_url.replace(/\/+$/, "");
-      const user = store.unifi_username || UNIFI_USERNAME;
-      const pass = store.unifi_password || UNIFI_PASSWORD;
+      const user = UNIFI_USERNAME;
+      const pass = UNIFI_PASSWORD;
       
       if (!user || !pass) {
         console.error(`[admin-aps] UNIFI_SECRET_NOT_CONFIGURED for store ${store.slug}`);
