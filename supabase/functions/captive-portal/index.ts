@@ -283,16 +283,6 @@ async function safeParseJson(req: Request): Promise<Record<string, unknown> | nu
  * Pass `protect: true` (used from /start) to avoid overwriting fields that
  * /submit may already have set (status authorized, submitted_at, etc.).
  */
-async function upsertCaptiveSession(
-  db: ReturnType<typeof supabaseAdmin>,
-  payload: Record<string, unknown>,
-): Promise<{ error: { message: string; code?: string } | null }> {
-  const { error } = await db
-    .from("captive_sessions")
-    .upsert(payload, { onConflict: "id", ignoreDuplicates: false });
-  if (error) return { error: { message: error.message, code: (error as any).code } };
-  return { error: null };
-}
 
 function isDuplicateKeyError(msg?: string | null): boolean {
   if (!msg) return false;
