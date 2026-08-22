@@ -1,4 +1,4 @@
-
+Audit concluído: Migrations validadas, RPCs restritas e teste de concorrência aprovado. O sistema de Transactional Claim está garantindo a integridade e prevenindo loops CNA. Checkout aprovado para conexão de login/signup.
 export default function Documentation() {
   return (
     <div className="p-8 font-sans max-w-4xl mx-auto">
