@@ -18,7 +18,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 16px;
+  padding: 20px;
 }
 
 .portal-card {
@@ -75,10 +75,10 @@ body {
 
 .portal-input {
   width: 100%;
-  padding: 11px 14px;
-  border: 2px solid #ddd;
-  border-radius: 10px;
-  font-size: 15px;
+  padding: 12px 16px;
+  border: 2px solid #e2e8f0;
+  border-radius: 12px;
+  font-size: 16px;
   outline: none;
   transition: border-color 0.15s;
   background: #fff;
