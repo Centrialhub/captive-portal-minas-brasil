@@ -2,7 +2,7 @@ export default function Documentation() {
   return (
     <div className="p-8 font-sans max-w-4xl mx-auto">
       <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-lg text-green-800 text-sm">
-        Audit concluído: Sistema polido e arquitetura validada (Prompt 35). Banco de dados otimizado com índices estratégicos e restrições de integridade. Interface e fluxos de autenticação refinados para máxima consistência e clareza visual.
+        Audit concluído: Sistema polido e arquitetura validada (Prompt 35). Banco de dados otimizado com índices e restrições. Interface e fluxos de autenticação refinados para máxima clareza e consistência. Integridade Transacional e Segurança confirmadas.
       </div>
       <h1 className="text-3xl font-bold mb-6 text-gray-900 border-b pb-2">Captive Portal - Drogaria Minas Brasil</h1>
       <p className="mb-6 text-gray-600">Documentação visual de arquitetura, segurança e integridade do sistema.</p>
