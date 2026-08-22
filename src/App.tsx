@@ -893,8 +893,7 @@ export default function App() {
         <button
           type="button"
           onClick={() => { setError(""); setForgotEmail(loginEmail); setStep("forgot"); }}
-          className="portal-link-btn"
-          className="w-full py-2 text-sm text-red-600 font-bold hover:underline transition-colors"
+          className="portal-link-btn w-full py-2 text-sm text-red-600 font-bold hover:underline transition-colors"
         >
           Esqueci minha senha
         </button>

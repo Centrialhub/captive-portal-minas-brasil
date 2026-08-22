@@ -109,7 +109,6 @@ export const SuccessView: React.FC<SuccessViewProps> = ({
 
             <button
               onClick={handleManualRedirect}
-              className="portal-btn"
               className="portal-btn mt-2"
             >
               Continuar agora
