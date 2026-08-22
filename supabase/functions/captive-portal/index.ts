@@ -2349,8 +2349,8 @@ function extractAuthContext(body: Record<string, unknown>): AuthAuthorizeContext
  * leads by user_id, and calls unifiAuthorize on the detected store.
  * 
  * IMPLEMENTS SERVER-SIDE IDEMPOTENCY:
- * 1. Uses an atomic lock based on user_id + client_mac within a 15s window.
- * 2. If a session for this user/mac was authorized in the last 30s, returns it immediately.
+ * 1. Uses a server-authoritative transactional claim (attempt_id).
+ * 2. If a session is already completed, returns the cached result.
  */
 async function authorizeAuthenticatedUser(args: {
   db: ReturnType<typeof supabaseAdmin>;
@@ -2380,13 +2380,12 @@ async function authorizeAuthenticatedUser(args: {
   const nowIso = new Date().toISOString();
   const leaseOwner = `worker-${traceId || crypto.randomUUID()}`;
 
-  // TRANSACTIONAL CLAIM (PROMPT 06)
-  // Replacing pseudo-idempotency (30s window, rate_limit_hit lock, fail-open)
-  // with a server-authoritative transactional claim.
+  // TRANSACTIONAL CLAIM
+  // Implements server-authoritative transactional claim to prevent concurrent authorizations.
   if (!attemptId) {
     // Legacy support or direct signup/login path without attempt_id should ideally have one,
     // but we allow it for now if not explicitly blocked.
-    // However, Prompt 06 requires attempt_id for everything that releases Wi-Fi.
+    // Valid attempt_id is required for everything that releases Wi-Fi.
     console.error(`[auth] AttemptId missing in authorizeAuthenticatedUser. Method: ${authMethod}`);
     return {
       session_id: null,
@@ -2418,7 +2417,7 @@ async function authorizeAuthenticatedUser(args: {
 
   const claim = claimRes[0];
 
-  // RECOVERY LOGIC (PROMPT 30)
+  // RECOVERY LOGIC
   if (claim.result_status === 'recovery_required') {
     console.warn(`[auth] Recovery required for attempt ${attemptId}. Checking UniFi state...`);
     
