@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from "react";
-import { Link, useNavigate, useLocation } from "react-router-dom";
+import { useState, useEffect, useRef, useMemo } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
 import { api } from "./lib/api";
 import { supabase } from "./integrations/supabase/client";
 import {
@@ -10,23 +10,10 @@ import {
 } from "./lib/portal-utils";
 import { OAuthTracker } from "./lib/oauth-tracker";
 import logoMinasBrasil from "./assets/logo-minas-brasil.png";
+import Footer from "./components/Footer";
+import { SuccessView } from "./components/SuccessView";
 import "./index.css";
 
-function Footer() {
-  return (
-    <p className="portal-footer">
-      Drogaria Minas Brasil © {new Date().getFullYear()} ·{" "}
-      <Link to="/sobre" style={{ color: "#bbb" }}>
-        Sobre
-      </Link>{" "}
-      ·{" "}
-      <Link to="/politica-privacidade" style={{ color: "#bbb" }}>
-        Política de Privacidade
-      </Link>
-
-    </p>
-  );
-}
 
 
 type Step = 
