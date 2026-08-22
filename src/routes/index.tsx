@@ -3,80 +3,85 @@ import { Link } from "react-router-dom";
 export default function Home() {
   return (
     <div className="flex flex-col items-center justify-center min-h-screen p-4 text-center">
-      <h1 className="text-2xl font-bold mb-4 uppercase text-red-600">PROMPT 14 — ALINHAR EXCLUSIVAMENTE CONSENTIMENTOS E TRANSPARÊNCIA AO TRATAMENTO REAL</h1>
+      <h1 className="text-2xl font-bold mb-4 uppercase text-red-600">PROMPT 15 — IMPLEMENTAR EXCLUSIVAMENTE O CICLO DE VIDA E A MINIMIZAÇÃO DE DADOS</h1>
 
       <div className="max-w-2xl text-left bg-white p-6 rounded-lg shadow-md border-t-4 border-red-600">
         <h2 className="font-bold text-lg mb-2">Objetivo único:</h2>
-        <p className="mb-4">Fazer com que registros de consentimento e textos apresentados correspondam às ações reais do usuário. Não inventar base legal nem texto jurídico.</p>
+        <p className="mb-4">Reduzir exposição de dados pessoais em logs e impedir retenção indefinida. Não alterar regras de autenticação ou autorização.</p>
 
-        <h2 className="font-bold text-lg mb-2">Implementação:</h2>
+        <h2 className="font-bold text-lg mb-2">Logs:</h2>
         <ol className="list-decimal ml-6 mb-4">
-          <li>Separar:
+          <li>Remover CPF, e-mail, telefone, MAC bruto, IP bruto, URL original e resposta CRM de console/logEvent.</li>
+          <li>Usar:
             <ul className="list-disc ml-6">
-              <li>ciência/aceite dos termos necessários ao serviço;</li>
-              <li>consentimento opcional para marketing;</li>
-              <li>consentimento opcional para SMS;</li>
-              <li>adesão opcional ao clube/fidelidade.</li>
+              <li>trace_id;</li>
+              <li>attempt_id;</li>
+              <li>error_code;</li>
+              <li>store_slug;</li>
+              <li>latência;</li>
+              <li>MAC pseudonimizado por HMAC server-side quando correlação for necessária.</li>
             </ul>
           </li>
-          <li>Nenhuma opção promocional pode vir pré-marcada.</li>
-          <li>Recusa de marketing não pode impedir o acesso básico, salvo decisão jurídica formal documentada.</li>
-          <li>Remover inserção automática de `consent_version: "1.0"` sem ação real.</li>
-          <li>Criar `consent_events` append-only contendo:
+          <li>Nunca enviar MAC na telemetria do navegador.</li>
+          <li>Não registrar token, cookie, senha ou body externo.</li>
+          <li>Redigir mensagens de erro antes de persistir.</li>
+        </ol>
+
+        <h2 className="font-bold text-lg mb-2">Retenção:</h2>
+        <ol className="list-decimal ml-6 mb-4">
+          <li>Criar matriz de retenção por tabela:
             <ul className="list-disc ml-6">
-              <li>user/lead;</li>
-              <li>purpose_code;</li>
-              <li>granted/revoked;</li>
-              <li>policy_version;</li>
-              <li>timestamp;</li>
-              <li>source;</li>
-              <li>store;</li>
-              <li>proof metadata mínima.</li>
+              <li>captive_auth_attempts;</li>
+              <li>captive_sessions;</li>
+              <li>portal_events;</li>
+              <li>leads;</li>
+              <li>profiles;</li>
+              <li>consent_events;</li>
+              <li>audit_logs;</li>
+              <li>CRM outbox;</li>
+              <li>GeoIP;</li>
+              <li>rate limits.</li>
             </ul>
           </li>
-          <li>Não armazenar o texto completo repetidamente; versionar os documentos.</li>
-          <li>Antes do Google OAuth, mostrar aviso curto com links para termos e privacidade.</li>
-          <li>Atualizar a política para listar com precisão:
+          <li>Os prazos devem ser configuração aprovada, não números espalhados no código.</li>
+          <li>Criar job de limpeza com:
             <ul className="list-disc ml-6">
-              <li>nome;</li>
-              <li>e-mail;</li>
-              <li>CPF;</li>
-              <li>telefone;</li>
-              <li>MAC;</li>
-              <li>AP;</li>
-              <li>SSID;</li>
-              <li>IP;</li>
-              <li>user-agent;</li>
-              <li>timestamps;</li>
-              <li>dados Google;</li>
-              <li>Supabase;</li>
-              <li>UniFi;</li>
-              <li>CRM;</li>
-              <li>finalidades;</li>
-              <li>retenção;</li>
-              <li>compartilhamentos;</li>
-              <li>direitos e canal do titular.</li>
+              <li>dry-run;</li>
+              <li>contagem;</li>
+              <li>exclusão por lotes;</li>
+              <li>proteção contra legal hold;</li>
+              <li>métrica de sucesso/falha.</li>
             </ul>
           </li>
-          <li>Não afirmar que não há compartilhamento quando há envio ao CRM, Supabase ou Google.</li>
-          <li>Não usar termos genéricos como “melhoria da experiência” para finalidades não definidas.</li>
-          <li>Permitir revogação de marketing sem apagar obrigações legais independentes.</li>
-          <li>O texto final deve vir de conteúdo aprovado pelo controlador/encarregado; o Lovable não deve inventar justificativa jurídica.</li>
+          <li>Após o período operacional, anonimizar MAC/IP quando o registro precisar ser mantido.</li>
+          <li>Remover payloads arbitrários antigos.</li>
+          <li>Implementar fluxo administrativo para solicitação de:
+            <ul className="list-disc ml-6">
+              <li>acesso;</li>
+              <li>correção;</li>
+              <li>revogação;</li>
+              <li>exclusão quando aplicável;</li>
+              <li>exportação controlada.</li>
+            </ul>
+          </li>
+          <li>Não apagar consent_events necessários à comprovação sem política aprovada.</li>
+          <li>Não manter CPF em mais de uma tabela sem justificativa.</li>
+          <li>Documentar controlador, operador e finalidade de cada cópia.</li>
         </ol>
 
         <h2 className="font-bold text-lg mb-2">Testes:</h2>
         <ul className="list-disc ml-6 mb-4">
-          <li>acesso sem marketing continua possível.</li>
-          <li>consentimento SMS falso envia `aceitesms:N`.</li>
-          <li>somente ação afirmativa gera granted.</li>
-          <li>revogação gera novo evento, sem editar histórico.</li>
-          <li>política possui versão e data.</li>
-          <li>Google e CRM aparecem na transparência.</li>
-          <li>nenhum consentimento é fabricado pelo backend.</li>
+          <li>novos logs não contêm PII.</li>
+          <li>scanner de logs detecta padrões de CPF/e-mail/MAC.</li>
+          <li>dry-run não altera dados.</li>
+          <li>limpeza respeita prazo e legal hold.</li>
+          <li>anonimização é irreversível sem segredo.</li>
+          <li>falha parcial pode ser retomada.</li>
+          <li>dados ativos necessários ao UniFi não são apagados antes da autorização terminar.</li>
         </ul>
 
         <h2 className="font-bold text-lg mb-2">Critério de aceite:</h2>
-        <p>Cada registro de consentimento corresponde a uma escolha verificável e a política descreve o sistema que realmente existe.</p>
+        <p>PII existe apenas nos locais, formatos e períodos estritamente necessários.</p>
       </div>
 
       <div className="mt-8">
