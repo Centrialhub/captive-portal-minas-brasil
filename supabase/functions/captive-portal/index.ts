@@ -155,22 +155,6 @@ function toE164BR(phone: string): string {
   return digits;
 }
 
-function toE164BR(phone: string): string {
-  let digits = (phone || "").replace(/\D/g, "");
-  // Remove zero à esquerda (formato antigo de discagem nacional)
-  digits = digits.replace(/^0+/, "");
-  // Se já começa com 55 e tem 12-13 dígitos, já está OK
-  if (digits.startsWith("55") && (digits.length === 12 || digits.length === 13)) {
-    return digits;
-  }
-  // Se tem 10 ou 11 dígitos (DDD + número), prefixar 55
-  if (digits.length === 10 || digits.length === 11) {
-    return "55" + digits;
-  }
-  // Fallback: retorna como veio (já validado por isValidPhone)
-  return digits;
-}
-
 /**
  * Sync lead with external CRM API (ClubeMais).
  * POST /api2/v3/cliente
