@@ -2972,11 +2972,9 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
     return jsonResponse({ needs_login: true, error: "missing_token" }, 401);
   }
 
-  let ctx = extractAuthContext(body);
-  
-  // Authoritative Attempt Validation
-  const attemptId = typeof body.attempt_id === "string" ? body.attempt_id : null;
-  const resumeToken = typeof body.resume_token === "string" ? body.resume_token : null;
+  const { ctx, attemptId, error: authErr } = await getValidatedAuthContext(db, body, "silent_login");
+  if (authErr) return authErr;
+
   
   // Validate token via getUser (project rule: use getUser, not getClaims)
   const anonClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
