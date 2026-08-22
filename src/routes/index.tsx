@@ -3,69 +3,80 @@ import { Link } from "react-router-dom";
 export default function Home() {
   return (
     <div className="flex flex-col items-center justify-center min-h-screen p-4 text-center">
-      <h1 className="text-2xl font-bold mb-4 uppercase text-red-600">PROMPT 13 — DESACOPLAR EXCLUSIVAMENTE O CLUBE MAIS DO CAMINHO CRÍTICO DO WI-FI</h1>
+      <h1 className="text-2xl font-bold mb-4 uppercase text-red-600">PROMPT 14 — ALINHAR EXCLUSIVAMENTE CONSENTIMENTOS E TRANSPARÊNCIA AO TRATAMENTO REAL</h1>
 
       <div className="max-w-2xl text-left bg-white p-6 rounded-lg shadow-md border-t-4 border-red-600">
         <h2 className="font-bold text-lg mb-2">Objetivo único:</h2>
-        <p className="mb-4">Garantir que indisponibilidade, lentidão ou erro do CRM nunca atrase ou impeça a liberação.</p>
+        <p className="mb-4">Fazer com que registros de consentimento e textos apresentados correspondam às ações reais do usuário. Não inventar base legal nem texto jurídico.</p>
 
         <h2 className="font-bold text-lg mb-2">Implementação:</h2>
         <ol className="list-decimal ml-6 mb-4">
-          <li>Remover qualquer await de syncWithClubeMais do caminho de resposta ao usuário.</li>
-          <li>Criar tabela `crm_outbox` com:
+          <li>Separar:
             <ul className="list-disc ml-6">
-              <li>id;</li>
-              <li>user_id/lead_id;</li>
-              <li>event_type;</li>
-              <li>payload mínimo;</li>
-              <li>consent_id;</li>
-              <li>idempotency_key;</li>
-              <li>status;</li>
-              <li>attempts;</li>
-              <li>next_attempt_at;</li>
-              <li>last_error_code;</li>
-              <li>created_at;</li>
-              <li>processed_at.</li>
+              <li>ciência/aceite dos termos necessários ao serviço;</li>
+              <li>consentimento opcional para marketing;</li>
+              <li>consentimento opcional para SMS;</li>
+              <li>adesão opcional ao clube/fidelidade.</li>
             </ul>
           </li>
-          <li>Criar worker separado.</li>
-          <li>Enfileirar somente quando houver consentimento de marketing válido e atual.</li>
-          <li>Não assumir `aceitesms: "S"`.</li>
-          <li>O campo deve refletir a escolha real.</li>
-          <li>Não enviar CPF, telefone ou e-mail quando não necessários à finalidade aprovada.</li>
-          <li>Definir timeout curto para o CRM.</li>
-          <li>Usar retry exponencial limitado.</li>
-          <li>Implementar dead-letter após limite.</li>
-          <li>Usar idempotency_key para evitar cadastros repetidos.</li>
-          <li>Mapear explicitamente store_id interno para idlojacliente externo; não usar slug por suposição.</li>
-          <li>Não registrar body da resposta nem token.</li>
-          <li>Logs devem conter:
+          <li>Nenhuma opção promocional pode vir pré-marcada.</li>
+          <li>Recusa de marketing não pode impedir o acesso básico, salvo decisão jurídica formal documentada.</li>
+          <li>Remover inserção automática de `consent_version: "1.0"` sem ação real.</li>
+          <li>Criar `consent_events` append-only contendo:
             <ul className="list-disc ml-6">
-              <li>outbox_id;</li>
-              <li>código HTTP;</li>
-              <li>latência;</li>
-              <li>código de erro normalizado.</li>
+              <li>user/lead;</li>
+              <li>purpose_code;</li>
+              <li>granted/revoked;</li>
+              <li>policy_version;</li>
+              <li>timestamp;</li>
+              <li>source;</li>
+              <li>store;</li>
+              <li>proof metadata mínima.</li>
             </ul>
           </li>
-          <li>Autorização Wi-Fi deve terminar antes do processamento CRM.</li>
-          <li>Falha do CRM não muda `authorized:true`.</li>
-          <li>Disponibilizar reprocessamento administrativo controlado.</li>
+          <li>Não armazenar o texto completo repetidamente; versionar os documentos.</li>
+          <li>Antes do Google OAuth, mostrar aviso curto com links para termos e privacidade.</li>
+          <li>Atualizar a política para listar com precisão:
+            <ul className="list-disc ml-6">
+              <li>nome;</li>
+              <li>e-mail;</li>
+              <li>CPF;</li>
+              <li>telefone;</li>
+              <li>MAC;</li>
+              <li>AP;</li>
+              <li>SSID;</li>
+              <li>IP;</li>
+              <li>user-agent;</li>
+              <li>timestamps;</li>
+              <li>dados Google;</li>
+              <li>Supabase;</li>
+              <li>UniFi;</li>
+              <li>CRM;</li>
+              <li>finalidades;</li>
+              <li>retenção;</li>
+              <li>compartilhamentos;</li>
+              <li>direitos e canal do titular.</li>
+            </ul>
+          </li>
+          <li>Não afirmar que não há compartilhamento quando há envio ao CRM, Supabase ou Google.</li>
+          <li>Não usar termos genéricos como “melhoria da experiência” para finalidades não definidas.</li>
+          <li>Permitir revogação de marketing sem apagar obrigações legais independentes.</li>
+          <li>O texto final deve vir de conteúdo aprovado pelo controlador/encarregado; o Lovable não deve inventar justificativa jurídica.</li>
         </ol>
 
         <h2 className="font-bold text-lg mb-2">Testes:</h2>
         <ul className="list-disc ml-6 mb-4">
-          <li>CRM offline não afeta o Wi-Fi.</li>
-          <li>Timeout não bloqueia resposta.</li>
-          <li>Sem consentimento não cria outbox.</li>
-          <li>Consentimento revogado impede novos envios.</li>
-          <li>Retry não duplica cliente.</li>
-          <li>Resposta contendo PII não aparece em logs.</li>
-          <li>Loja é mapeada corretamente.</li>
-          <li>Dead-letter funciona.</li>
+          <li>acesso sem marketing continua possível.</li>
+          <li>consentimento SMS falso envia `aceitesms:N`.</li>
+          <li>somente ação afirmativa gera granted.</li>
+          <li>revogação gera novo evento, sem editar histórico.</li>
+          <li>política possui versão e data.</li>
+          <li>Google e CRM aparecem na transparência.</li>
+          <li>nenhum consentimento é fabricado pelo backend.</li>
         </ul>
 
         <h2 className="font-bold text-lg mb-2">Critério de aceite:</h2>
-        <p>A experiência de conectividade não depende operacionalmente de sistemas comerciais de terceiros.</p>
+        <p>Cada registro de consentimento corresponde a uma escolha verificável e a política descreve o sistema que realmente existe.</p>
       </div>
 
       <div className="mt-8">
