@@ -3176,11 +3176,7 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
     });
   }
 
-  // Determine auth method purely from server data (getUser provider)
-  const authMethod: "silent" | "google" | "apple" =
-    provider === "google" ? "google" :
-    provider === "apple" ? "apple" :
-    "silent";
+  // authMethod is already determined earlier to support replay logic
 
   // Check if CPF is required before UniFi authorization
   if (authMethod === "google") {
