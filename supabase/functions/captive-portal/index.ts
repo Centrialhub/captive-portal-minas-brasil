@@ -1076,6 +1076,58 @@ async function unifiSendAuthorizeCmd(
  *  - (11) Session-expired detection with re-login
  *  - (12) ap_mac in payload (auto-discovered if missing)
  */
+async function checkUnifiAuthorizationState(
+  controllerUrl: string,
+  siteId: string,
+  mac: string,
+  username?: string,
+  password?: string,
+): Promise<{ state: "authorized" | "not_authorized" | "inconclusive"; effective_mac?: string }> {
+  const parsed = new URL(controllerUrl);
+  const baseUrl = (parsed.origin + parsed.pathname).replace(/\/+$/, "");
+  const httpClient = createUnifiHttpClient();
+  
+  try {
+    const login = await unifiLogin(baseUrl, httpClient, username, password);
+    if (!login.ok) return { state: "inconclusive" };
+    
+    const headers = {
+      "Content-Type": "application/json",
+      "Cookie": login.isUnifiOs && login.token ? `TOKEN=${login.token}` : (login.cookie ? `unifises=${login.cookie}` : "")
+    };
+    
+    const staUrl = login.isUnifiOs 
+      ? `${parsed.origin}/proxy/network/api/s/${siteId}/stat/sta`
+      : `${baseUrl}/api/s/${siteId}/stat/sta`;
+      
+    const formattedMac = mac.replace(/(.{2})(?=.)/g, "$1:").toLowerCase();
+    const staRes = await unifiFetchStations(staUrl, headers, httpClient);
+    
+    if (!staRes.ok || !staRes.data) return { state: "inconclusive" };
+    
+    // Procura o MAC exato ou via pickEffectiveMac (heurística de randomização)
+    const pick = pickEffectiveMac(staRes.data, formattedMac);
+    const effectiveMac = pick.mac || formattedMac;
+    
+    if (pick.candidateCount > 1) return { state: "inconclusive" };
+    
+    const found = staRes.data.find(s => (s.mac || "").toLowerCase() === effectiveMac);
+    if (found) {
+      return { 
+        state: found.authorized ? "authorized" : "not_authorized",
+        effective_mac: effectiveMac.replace(/:/g, "").toUpperCase()
+      };
+    }
+    
+    return { state: "not_authorized" };
+  } catch (err) {
+    console.error("[unifi-check] failed:", err);
+    return { state: "inconclusive" };
+  } finally {
+    try { httpClient?.close(); } catch { }
+  }
+}
+
 async function unifiAuthorizeByMac(
   controllerUrl: string, siteId: string, clientMac: string,
   username?: string, password?: string,
@@ -2447,6 +2499,75 @@ async function authorizeAuthenticatedUser(args: {
   }
 
   const claim = claimRes[0];
+
+  // RECOVERY LOGIC (PROMPT 30)
+  if (claim.result_status === 'recovery_required') {
+    console.warn(`[auth] Recovery required for attempt ${attemptId}. Checking UniFi state...`);
+    
+    const { data: store } = await db.from("stores").select("unifi_controller_url, unifi_site_id").eq("id", storeId).maybeSingle();
+    
+    if (store?.unifi_controller_url) {
+      // Usar MAC da sessão se existir (pode ser o effective_mac persistido), fallback para context.
+      let macToCheck = ctx.clientMac;
+      if (claim.session_id) {
+        const { data: sess } = await db.from("captive_sessions").select("client_mac").eq("id", claim.session_id).maybeSingle();
+        if (sess?.client_mac) macToCheck = sess.client_mac;
+      }
+
+      const check = await checkUnifiAuthorizationState(
+        store.unifi_controller_url,
+        store.unifi_site_id,
+        macToCheck || "",
+        Deno.env.get("UNIFI_USERNAME"),
+        Deno.env.get("UNIFI_PASSWORD")
+      );
+
+      if (check.state === 'authorized') {
+        console.log(`[auth] Recovery successful: MAC ${macToCheck} is already authorized in UniFi.`);
+        const finalRedirect = detected.redirect_url || DEFAULT_REDIRECT_URL;
+        await db.rpc("finalize_auth_attempt", {
+          p_attempt_id: attemptId,
+          p_lease_owner: leaseOwner,
+          p_session_id: claim.session_id,
+          p_authorized: true,
+          p_redirect_url: finalRedirect,
+          p_fail_reason: null,
+          p_result_code: "RECOVERED_ALREADY_AUTHORIZED"
+        });
+        return {
+          session_id: claim.session_id,
+          authorized: true,
+          redirect_url: finalRedirect,
+          store_slug: storeSlug,
+          store_id: storeId,
+        };
+      } else if (check.state === 'not_authorized') {
+        console.log(`[auth] Recovery: MAC ${macToCheck} NOT authorized. Releasing for retry.`);
+        await db.rpc("release_auth_retry", {
+          p_attempt_id: attemptId,
+          p_lease_owner: leaseOwner
+        });
+        return {
+          session_id: claim.session_id,
+          authorized: false,
+          redirect_url: detected.redirect_url || DEFAULT_REDIRECT_URL,
+          fail_reason: "RETRY_REQUIRED",
+          store_slug: storeSlug,
+          store_id: storeId,
+        };
+      }
+    }
+
+    // Inconclusive or no store
+    return {
+      session_id: claim.session_id,
+      authorized: false,
+      redirect_url: detected.redirect_url || DEFAULT_REDIRECT_URL,
+      fail_reason: "PROCESSING_IN_PROGRESS",
+      store_slug: storeSlug,
+      store_id: storeId,
+    };
+  }
 
   if (claim.result_status === 'failed') {
     return {
