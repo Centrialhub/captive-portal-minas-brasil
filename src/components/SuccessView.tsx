@@ -58,17 +58,18 @@ export const SuccessView: React.FC<SuccessViewProps> = ({
         <p className="portal-subtitle">{successMsg}</p>
         
         {redirectUrl ? (
-          <div className="mt-5 mb-5 space-y-2">
-            <p className="text-gray-600 text-sm">
-              Redirecionando em {countdown} segundos...
-            </p>
-            <div className="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
-              <div 
-                className="bg-green-600 h-full transition-all duration-1000 ease-linear"
-                style={{ width: `${(countdown / 2) * 100}%` }}
-              />
+          <div className="space-y-4">
+            <div className="mt-5 mb-5 space-y-2">
+              <p className="text-gray-600 text-sm">
+                Redirecionando em {countdown} segundos...
+              </p>
+              <div className="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
+                <div 
+                  className="bg-green-600 h-full transition-all duration-1000 ease-linear"
+                  style={{ width: `${(countdown / 2) * 100}%` }}
+                />
+              </div>
             </div>
-          </div>
 
             <button
               onClick={handleManualRedirect}
@@ -77,7 +78,7 @@ export const SuccessView: React.FC<SuccessViewProps> = ({
             >
               Continuar agora
             </button>
-          </>
+          </div>
         ) : (
           <p style={{ color: "#999", fontSize: 12, marginTop: 24 }}>
             Seu acesso já foi liberado. Você pode fechar esta janela.
