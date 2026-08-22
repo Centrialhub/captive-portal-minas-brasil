@@ -90,7 +90,7 @@ export const SuccessView: React.FC<SuccessViewProps> = ({
             <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
           </svg>
         </div>
-        <h1 className="portal-title">Wi-Fi liberado com sucesso!</h1>
+        <h1 className="portal-title text-green-700">Wi-Fi liberado!</h1>
         <p className="portal-subtitle">{successMsg}</p>
         
         {redirectUrl ? (

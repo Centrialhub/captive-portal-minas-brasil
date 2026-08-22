@@ -11,9 +11,6 @@
 export const PUBLIC_CAPTIVE_BASE_URL = "https://minasbrasilwifi.com.br";
 
 
-/** Kept exported for backward-compat. NOT used as a client fallback anymore. */
-export const SUPABASE_DIRECT_BASE =
-  "https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal";
 
 /**
  * Returns the API base for portal calls.

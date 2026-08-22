@@ -1,9 +1,6 @@
 import { getApiBase, getOrCreateTraceId } from "./portal-utils";
 
 const API_BASE = getApiBase();
-// Captive flow MUST stay on HTTP same-origin. The previous direct
-// HTTPS Supabase fallback was removed — it triggered Android CNA
-// certificate errors before the user was authorized.
 
 /** Forward ?store= param from the landing URL to API calls */
 function getStoreParam(): string {
@@ -42,18 +39,6 @@ export class ApiError extends Error {
   }
 }
 
-export function createClientSessionId(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-
-  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-    const r = Math.random() * 16 | 0;
-    const v = c === "x" ? r : (r & 0x3 | 0x8);
-    return v.toString(16);
-  });
-}
-
 interface XhrOptions {
   method?: string;
   body?: unknown;
@@ -63,169 +48,67 @@ interface XhrOptions {
 /**
  * XHR-based request — much more reliable than fetch in captive portal browsers
  * (iOS / Android Captive Network Assistants frequently abort fetch).
- * Tries the proxy first (when applicable), then falls back to direct Supabase.
  */
 function xhrRequest<T = any>(path: string, opts: XhrOptions = {}): Promise<T> {
   const { method = "GET", body, timeoutMs = 20000 } = opts;
-  const bases = [API_BASE];
+  const url = buildUrl(API_BASE, path);
 
   return new Promise((resolve, reject) => {
-    let attempt = 0;
+    const xhr = new XMLHttpRequest();
+    try {
+      xhr.open(method, url, true);
+    } catch (e) {
+      reject(new ApiError("network", "Erro ao abrir conexão."));
+      return;
+    }
 
-    const tryBase = () => {
-      if (attempt >= bases.length) {
-        reject(new ApiError("network", "Sem resposta do servidor. Verifique sua conexão."));
+    xhr.timeout = timeoutMs;
+    
+    // Cross-origin requests are not expected here as we use a same-origin proxy,
+    // but we keep the header setting robust.
+    if (body !== undefined) {
+      xhr.setRequestHeader("Content-Type", "application/json");
+    }
+    
+    try { 
+      xhr.setRequestHeader("x-trace-id", getOrCreateTraceId()); 
+    } catch { /* ignore */ }
+
+    xhr.onload = () => {
+      const status = xhr.status;
+      const text = xhr.responseText || "";
+      let parsed: any = null;
+      try { parsed = text ? JSON.parse(text) : {}; } catch { /* not JSON */ }
+
+      if (parsed && typeof parsed === "object") {
+        resolve(parsed as T);
         return;
       }
-      const base = bases[attempt++];
-      const url = buildUrl(base, path);
-      // Detect cross-origin to avoid forcing a CORS preflight via x-trace-id.
-      let isCrossOrigin = false;
-      try {
-        const u = new URL(url, window.location.href);
-        isCrossOrigin = u.origin !== window.location.origin;
-      } catch { /* ignore */ }
-      const xhr = new XMLHttpRequest();
-      try {
-        xhr.open(method, url, true);
-      } catch (e) {
-        tryBase();
-        return;
-      }
-      xhr.timeout = timeoutMs;
-      if (body !== undefined) {
-        // Cross-origin requests use text/plain to skip the CORS preflight,
-        // which often fails inside captive-network assistants / Walled Garden.
-        // The edge function's safeParseJson() accepts text/plain too.
-        if (isCrossOrigin) {
-          xhr.setRequestHeader("Content-Type", "text/plain;charset=UTF-8");
-        } else {
-          xhr.setRequestHeader("Content-Type", "application/json");
-        }
-      }
-      if (!isCrossOrigin) {
-        try { xhr.setRequestHeader("x-trace-id", getOrCreateTraceId()); } catch { /* ignore */ }
-      }
-      const fallbackTelemetry = (reason: "network" | "http" | "timeout", failedBase: string) => {
-        try {
-          const nextBase = attempt < bases.length ? bases[attempt] : null;
-          if (!nextBase) return;
-          // Fire-and-forget; never blocks the request.
-          const tx = new XMLHttpRequest();
-          const telUrl = buildUrl(API_BASE, "/client-event");
-          tx.open("POST", telUrl, true);
-          tx.setRequestHeader("Content-Type", "application/json");
-          tx.send(JSON.stringify({
-            event: "api_fallback_used",
-            step: "system",
-            status: "warning",
-            payload: { path, failed_base: failedBase, next_base: nextBase, reason },
-          }));
-        } catch { /* ignore */ }
-      };
-      xhr.onload = () => {
-        const status = xhr.status;
-        const text = xhr.responseText || "";
-        // Retry on transient gateway errors via fallback base
-        if ((status === 0 || status === 502 || status === 503 || status === 504) && attempt < bases.length) {
-          console.warn(`[api] ${path} HTTP ${status} on ${base}, falling back`);
-          fallbackTelemetry("http", base);
-          tryBase();
-          return;
-        }
-        let parsed: any = null;
-        try { parsed = text ? JSON.parse(text) : {}; } catch { /* not JSON */ }
-        if (parsed && typeof parsed === "object") {
-          // Even when API returns {error: "..."}, surface as resolved value
-          // so callers can show a friendly message instead of a generic failure.
-          resolve(parsed as T);
-          return;
-        }
-        if (status >= 500) {
-          reject(new ApiError("http", `Servidor indisponível (${status}).`, status));
-        } else if (status === 0) {
-          reject(new ApiError("network", "Sem resposta do servidor."));
-        } else {
-          reject(new ApiError("parse", `Resposta inesperada do servidor (${status}).`, status));
-        }
-      };
-      xhr.onerror = () => {
-        console.warn(`[api] ${path} network error on ${base}`);
-        if (attempt < bases.length) { fallbackTelemetry("network", base); tryBase(); }
-        else reject(new ApiError("network", "Erro de conexão. Verifique sua rede."));
-      };
-      xhr.ontimeout = () => {
-        console.warn(`[api] ${path} timeout on ${base}`);
-        if (attempt < bases.length) { fallbackTelemetry("timeout", base); tryBase(); }
-        else reject(new ApiError("timeout", "Tempo esgotado. Tente novamente."));
-      };
-      try {
-        xhr.send(body !== undefined ? JSON.stringify(body) : null);
-      } catch (e) {
-        if (attempt < bases.length) { fallbackTelemetry("network", base); tryBase(); }
-        else reject(new ApiError("network", "Não foi possível enviar a requisição."));
+
+      if (status >= 500) {
+        reject(new ApiError("http", `Servidor indisponível (${status}).`, status));
+      } else if (status === 0) {
+        reject(new ApiError("network", "Sem resposta do servidor."));
+      } else {
+        reject(new ApiError("parse", `Resposta inesperada do servidor (${status}).`, status));
       }
     };
 
-    tryBase();
+    xhr.onerror = () => reject(new ApiError("network", "Erro de conexão. Verifique sua rede."));
+    xhr.ontimeout = () => reject(new ApiError("timeout", "Tempo esgotado. Tente novamente."));
+
+    try {
+      xhr.send(body !== undefined ? JSON.stringify(body) : null);
+    } catch (e) {
+      reject(new ApiError("network", "Não foi possível enviar a requisição."));
+    }
   });
-}
-
-function queueSimplePost(path: string, body: unknown): boolean {
-  const bases = [API_BASE];
-  let queued = false;
-  const payload = JSON.stringify(body);
-
-  for (const base of bases) {
-    const url = buildUrl(base, path);
-    try {
-      if (typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function") {
-        const blob = new Blob([payload], { type: "text/plain;charset=UTF-8" });
-        if (navigator.sendBeacon(url, blob)) {
-          queued = true;
-          continue;
-        }
-      }
-    } catch { /* fall through to form transport */ }
-
-    try {
-      const frameName = `mb_submit_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-      const frame = document.createElement("iframe");
-      frame.name = frameName;
-      frame.style.display = "none";
-      const form = document.createElement("form");
-      form.method = "POST";
-      form.action = url;
-      form.target = frameName;
-      form.enctype = "application/x-www-form-urlencoded";
-      form.acceptCharset = "UTF-8";
-      form.style.display = "none";
-      Object.entries((body || {}) as Record<string, unknown>).forEach(([key, value]) => {
-        const input = document.createElement("input");
-        input.type = "hidden";
-        input.name = key;
-        input.value = value && typeof value === "object" ? JSON.stringify(value) : String(value ?? "");
-        form.appendChild(input);
-      });
-      document.body.appendChild(frame);
-      document.body.appendChild(form);
-      form.submit();
-      queued = true;
-      setTimeout(() => { try { form.remove(); frame.remove(); } catch { /* ignore */ } }, 15000);
-    } catch { /* ignore */ }
-  }
-  return queued;
 }
 
 export const api = {
   bootstrap() {
     return xhrRequest<any>("/bootstrap", { method: "GET", timeoutMs: 10000 });
   },
-
-  // OTP and Lead methods removed (Prompt 08)
-
-
-  // ===== Account-based auth (nome/e-mail/CPF/telefone/senha) =====
 
   signup(data: {
     name: string;
@@ -291,8 +174,6 @@ export const api = {
       timeoutMs: 15000,
     });
   },
-
-
 
   requestPasswordReset(data: { email: string }) {
     return xhrRequest<any>("/request-password-reset", { method: "POST", body: data, timeoutMs: 15000 });

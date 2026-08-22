@@ -162,6 +162,4 @@ export const OAuthTracker = {
     return this.initOAuthTransaction();
   },
 
-  // Legacy stubs for App.tsx compatibility during migration
-  stashCaptiveParams() { console.warn("stashCaptiveParams is deprecated, use initOAuthTransaction"); }
 };
