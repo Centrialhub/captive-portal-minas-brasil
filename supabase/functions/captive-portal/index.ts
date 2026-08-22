@@ -4499,6 +4499,7 @@ Deno.serve(async (req: Request) => {
     if (path === "/request-code" && req.method === "POST") return await handleRequestCode(req);
     if (path === "/verify-code" && req.method === "POST") return await handleVerifyCode(req);
     if (path === "/client-event" && req.method === "POST") return await handleClientEvent(req);
+    if (path === "/login" && req.method === "POST") return await handleLogin(req);
     if (path === "/oauth/init" && req.method === "POST") return await handleOAuthInit(req);
     if (path === "/oauth/callback") return await handleOAuthCallback(req);
     if (path === "/update-profile" && req.method === "POST") return await handleUpdateProfile(req);
