@@ -3,66 +3,59 @@ import { Link } from "react-router-dom";
 export default function Home() {
   return (
     <div className="flex flex-col items-center justify-center min-h-screen p-4 text-center">
-      <h1 className="text-2xl font-bold mb-4">PROMPT 03 — ELIMINAR EXCLUSIVAMENTE AS IMPLEMENTAÇÕES CONCORRENTES DO PORTAL</h1>
+      <h1 className="text-2xl font-bold mb-4">PROMPT 04 — REMOVER EXCLUSIVAMENTE A SUPERFÍCIE PÚBLICA DE DIAGNÓSTICO UNIFI</h1>
       
       <div className="max-w-2xl text-left bg-white p-6 rounded-lg shadow-md">
         <h2 className="font-bold text-lg mb-2">Objetivo único:</h2>
-        <p className="mb-4">Fazer do frontend React a única máquina de estado do captive portal. Não alterar autenticação, CPF, regras de cadastro, autorização UniFi ou layouts React.</p>
+        <p className="mb-4">Impedir que visitantes ou atacantes usem o portal para consultar, testar ou alcançar a controladora. Preservar integralmente a lógica interna usada pela autorização legítima.</p>
 
-        <h2 className="font-bold text-lg mb-2">Problema:</h2>
-        <p className="mb-4">O index.html ainda executa um portal legado completo antes do React, realizando /bootstrap, /start, /submit, /request-code, /verify-code e /session-status. A Edge Function também serve um HTML standalone com outro fluxo. Isso cria requisições duplicadas e corridas.</p>
+        <h2 className="font-bold text-lg mb-2">Remover da Edge Function:</h2>
+        <ul className="list-disc ml-6 mb-4">
+          <li><code>/diag/list-aps</code>;</li>
+          <li><code>/diag/find-real-mac</code>;</li>
+          <li><code>/diag/find-ssid</code>;</li>
+          <li><code>/diag/unifi-ping</code>;</li>
+          <li>qualquer alias equivalente;</li>
+          <li>suporte a controller_url, username, password, mac ou site_id fornecidos para diagnóstico.</li>
+        </ul>
 
-        <h2 className="font-bold text-lg mb-2">Implementação:</h2>
+        <h2 className="font-bold text-lg mb-2">Remover do Dockerfile/Nginx:</h2>
+        <ul className="list-disc ml-6 mb-4">
+          <li>o bloco público <code>location /unifi/</code>;</li>
+          <li><code>proxy_ssl_verify off</code>;</li>
+          <li>qualquer encaminhamento direto do navegador para a controladora.</li>
+        </ul>
+
+        <h2 className="font-bold text-lg mb-2">Regras:</h2>
         <ol className="list-decimal ml-6 mb-4">
-          <li>Reduzir index.html a um shell Vite passivo:
+          <li><code>authorizeClient</code>, <code>unifiAuthorizeByMac</code>, login interno da controladora e detecção de loja devem continuar disponíveis apenas para o fluxo server-side legítimo.</li>
+          <li>Nenhuma rota pública pode:
             <ul className="list-disc ml-6">
-              <li>metadados;</li>
-              <li>favicon;</li>
-              <li><code>&lt;div id="root"&gt;&lt;/div&gt;</code>;</li>
-              <li>script de entrada React.</li>
+              <li>testar credenciais;</li>
+              <li>escolher URL de controladora;</li>
+              <li>consultar clientes/APs;</li>
+              <li>autorizar MAC de teste;</li>
+              <li>devolver cookie, token, usuário ou preview de resposta.</li>
             </ul>
           </li>
-          <li>Remover do index.html:
-            <ul className="list-disc ml-6">
-              <li>formulários;</li>
-              <li>coleta de dados;</li>
-              <li>chamadas fetch/XHR;</li>
-              <li>timers;</li>
-              <li><code>boot()</code>;</li>
-              <li>OTP;</li>
-              <li>fallback que cria sessão;</li>
-              <li>qualquer autorização.</li>
-            </ul>
-          </li>
-          <li>Manter no máximo uma mensagem estática dentro de <code>&lt;noscript&gt;</code>, sem formulário ou chamada de API.</li>
-          <li>Na Edge Function, remover o portal standalone de <code>handlePortalHtml</code>.</li>
-          <li>Para aliases como <code>/guest/s/...</code>, <code>/generate_204</code>, <code>/hotspot-detect.html</code>, <code>/connecttest.txt</code> e equivalentes:
-            <ul className="list-disc ml-6">
-              <li>retornar redirect 302 para a origem React canônica;</li>
-              <li>preservar parâmetros captive permitidos;</li>
-              <li>não executar bootstrap, start ou submit.</li>
-            </ul>
-          </li>
-          <li>Não criar um novo portal alternativo.</li>
-          <li>Se o bundle React falhar, exibir somente página estática de indisponibilidade com botão “Tentar novamente”; nunca iniciar um fluxo simplificado.</li>
-          <li>Garantir que <code>/politica-privacidade</code>, <code>/sobre</code>, <code>/oauth/callback</code> e <code>/reset-password</code> sejam renderizados exclusivamente pelo React.</li>
-          <li>Não remover endpoints backend ainda utilizados pelo React neste prompt.</li>
-          <li>Não alterar Docker/Nginx além do necessário para servir a SPA.</li>
+          <li>Rotas removidas devem retornar 404 genérico, não 401 ou mensagem indicando que existiram.</li>
+          <li>Não substituir por novos endpoints “temporários”.</li>
+          <li>Diagnóstico local, quando necessário, deve existir como script de CLI que leia configuração local e não seja incluído na imagem de produção.</li>
+          <li>Não modificar o algoritmo de autorização normal.</li>
         </ol>
 
         <h2 className="font-bold text-lg mb-2">Testes:</h2>
         <ul className="list-disc ml-6 mb-4">
-          <li>Abrir index.html não produz requisição antes de o React montar.</li>
-          <li>Exatamente uma chamada de bootstrap por inicialização.</li>
-          <li>Nenhum HTML de formulário antigo aparece no source inicial.</li>
-          <li>Nenhuma string <code>/request-code</code> ou <code>/verify-code</code> permanece em index.html.</li>
-          <li>Aliases CNA redirecionam para o React e preservam query string.</li>
-          <li>Falha simulada do bundle não cria sessão ou lead.</li>
-          <li>Build e testes aprovados.</li>
+          <li>Todas as quatro rotas retornam 404 em GET e POST.</li>
+          <li><code>/unifi/</code> retorna 404.</li>
+          <li>Busca global não encontra handlers públicos de diagnóstico.</li>
+          <li>Tentativas com URL interna, localhost ou metadata IP não geram fetch.</li>
+          <li>Fluxo normal de autorização continua chamando a função interna existente.</li>
+          <li>Nenhuma resposta HTTP contém controller_url, username, password_len, cookie ou body_preview.</li>
         </ul>
 
         <h2 className="font-bold text-lg mb-2">Critério de aceite:</h2>
-        <p>Existe uma única interface, uma única máquina de estado e uma única origem para chamadas do captive.</p>
+        <p>A controladora só é alcançável pelo backend durante uma autorização legítima vinculada a uma sessão.</p>
       </div>
 
       <div className="mt-8">
