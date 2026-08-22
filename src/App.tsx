@@ -244,7 +244,13 @@ export default function App() {
         await completeAuthenticatedSession(session, source);
         if (callbackTimeout) clearTimeout(callbackTimeout);
       } else if (event === "SIGNED_OUT") {
-        if (step !== "loading") setStep("login");
+        // Only return to login if not in the middle of an OAuth restart flow
+        // or a callback redirection
+        if (stepRef.current !== "loading" && 
+            stepRef.current !== "oauth_redirecting" && 
+            stepRef.current !== "oauth_callback") {
+          setStep("login");
+        }
         authCompletedRef.current = false;
       }
     });
