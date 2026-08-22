@@ -130,6 +130,17 @@ export const OAuthTracker = {
     }
   },
 
+  /**
+   * Ensure an active OAuth attempt exists.
+   */
+  async ensureAttempt(): Promise<{ attempt_id: string; token: string } | null> {
+    const existing = this.getTokens();
+    if (existing.attempt_id && existing.token) {
+      return { attempt_id: existing.attempt_id, token: existing.token };
+    }
+    return this.initOAuthTransaction();
+  },
+
   // Legacy stubs for App.tsx compatibility during migration
   stashCaptiveParams() { console.warn("stashCaptiveParams is deprecated, use initOAuthTransaction"); }
 };

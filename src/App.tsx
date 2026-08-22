@@ -278,6 +278,8 @@ export default function App() {
     setBusy(true);
     try {
       const params = getQueryParams();
+      const tokens = await OAuthTracker.ensureAttempt();
+      
       const result = await api.login({
         email: loginEmail.trim().toLowerCase(),
         password: loginPassword,
@@ -286,6 +288,8 @@ export default function App() {
         ssid: params.ssid,
         redirect_url: params.redirect_url,
         captive_timestamp: params.captive_timestamp,
+        attempt_id: tokens?.attempt_id,
+        resume_token: tokens?.token,
       });
       if (result?.error) {
         setError(result.error);
@@ -379,6 +383,8 @@ export default function App() {
     setBusy(true);
     try {
       const params = getQueryParams();
+      const tokens = await OAuthTracker.ensureAttempt();
+      
       const result = await api.signup({
         name: name.trim(),
         email: email.trim().toLowerCase(),
@@ -391,6 +397,8 @@ export default function App() {
         redirect_url: params.redirect_url,
         captive_timestamp: params.captive_timestamp,
         consent_version: boot.consent?.version || "1.0",
+        attempt_id: tokens?.attempt_id,
+        resume_token: tokens?.token,
       });
 
       if (result?.error) {

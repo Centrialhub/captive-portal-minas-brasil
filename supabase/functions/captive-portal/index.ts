@@ -2938,8 +2938,22 @@ async function handleSignup(req: Request): Promise<Response> {
     return jsonResponse({ error: "Conta criada, mas não foi possível entrar. Tente fazer login.", code: "post_signup_signin_failed" }, 500);
   }
 
-  const ctx = extractAuthContext(body);
+  let ctx = extractAuthContext(body);
   const attemptId = typeof body.attempt_id === "string" ? body.attempt_id : null;
+  const resumeToken = typeof body.resume_token === "string" ? body.resume_token : null;
+
+  // Unified Capability Enforcement
+  if (attemptId && resumeToken) {
+    const val = await validateOAuthAttempt(db, attemptId, resumeToken);
+    if (val.status === 'invalid') {
+      return jsonResponse({ error: val.error || "Tentativa inválida.", code: "invalid_attempt" }, 403);
+    }
+    if (val.params) {
+      ctx = val.params;
+      console.log(`[signup] using authoritative parameters for attempt=${attemptId} mac=${ctx.clientMac}`);
+    }
+  }
+
   const result = await authorizeAuthenticatedUser({
     db, userId, ctx, req, authMethod: "password", traceId, clientIp, userAgent: ua,
     profile: { full_name: name, cpf_digits: cpfDigits || null, phone_digits: phoneDigits || null, email },
@@ -3011,8 +3025,22 @@ async function handleLogin(req: Request): Promise<Response> {
     return jsonResponse({ error: "Perfil não encontrado. Faça um novo cadastro.", code: "profile_not_found" }, 404);
   }
 
-  const ctx = extractAuthContext(body);
+  let ctx = extractAuthContext(body);
   const attemptId = typeof body.attempt_id === "string" ? body.attempt_id : null;
+  const resumeToken = typeof body.resume_token === "string" ? body.resume_token : null;
+
+  // Unified Capability Enforcement
+  if (attemptId && resumeToken) {
+    const val = await validateOAuthAttempt(db, attemptId, resumeToken);
+    if (val.status === 'invalid') {
+      return jsonResponse({ error: val.error || "Tentativa inválida.", code: "invalid_attempt" }, 403);
+    }
+    if (val.params) {
+      ctx = val.params;
+      console.log(`[login] using authoritative parameters for attempt=${attemptId} mac=${ctx.clientMac}`);
+    }
+  }
+
   const result = await authorizeAuthenticatedUser({
     db, userId, ctx, req, authMethod: "password", traceId, clientIp, userAgent: ua, profile,
     attemptId
