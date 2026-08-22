@@ -32,7 +32,7 @@ if (!indexHtml.includes('/favicon-mb.png')) {
 
 try {
   console.log("Checking TypeScript/Import resolution...");
-  execSync('bunx tsc --noEmit', { stdio: 'inherit' });
+  execSync('npm run typecheck', { stdio: 'inherit' });
   console.log("✅ Typecheck passed.");
 } catch (e) {
   console.error("❌ Typecheck failed - possible import resolution error.");
