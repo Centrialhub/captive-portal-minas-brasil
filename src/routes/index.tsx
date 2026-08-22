@@ -3,62 +3,66 @@ import { Link } from "react-router-dom";
 export default function Home() {
   return (
     <div className="flex flex-col items-center justify-center min-h-screen p-4 text-center">
-      <h1 className="text-2xl font-bold mb-4">PROMPT 02 — CORRIGIR EXCLUSIVAMENTE O LIFECYCLE DA TELA DE SUCESSO</h1>
+      <h1 className="text-2xl font-bold mb-4">PROMPT 03 — ELIMINAR EXCLUSIVAMENTE AS IMPLEMENTAÇÕES CONCORRENTES DO PORTAL</h1>
       
       <div className="max-w-2xl text-left bg-white p-6 rounded-lg shadow-md">
         <h2 className="font-bold text-lg mb-2">Objetivo único:</h2>
-        <p className="mb-4">Eliminar a violação das Rules of Hooks em src/App.tsx sem modificar autenticação, CPF, chamada UniFi, cálculo de redirect ou textos de negócio.</p>
+        <p className="mb-4">Fazer do frontend React a única máquina de estado do captive portal. Não alterar autenticação, CPF, regras de cadastro, autorização UniFi ou layouts React.</p>
 
         <h2 className="font-bold text-lg mb-2">Problema:</h2>
-        <p className="mb-4">O useEffect da tela de sucesso está declarado depois dos retornos condicionais de cpf_prompt, loading, OAuth e error. Dependendo do step, o componente executa quantidades diferentes de hooks entre renders.</p>
+        <p className="mb-4">O index.html ainda executa um portal legado completo antes do React, realizando /bootstrap, /start, /submit, /request-code, /verify-code e /session-status. A Edge Function também serve um HTML standalone com outro fluxo. Isso cria requisições duplicadas e corridas.</p>
 
         <h2 className="font-bold text-lg mb-2">Implementação:</h2>
         <ol className="list-decimal ml-6 mb-4">
-          <li>Nenhum hook pode permanecer depois de qualquer return condicional.</li>
-          <li>Preferir extrair a tela para um componente <code>SuccessView</code>.</li>
-          <li><code>SuccessView</code> deve receber:
+          <li>Reduzir index.html a um shell Vite passivo:
             <ul className="list-disc ml-6">
-              <li>redirectUrl;</li>
-              <li>successMsg;</li>
-              <li>callback de conclusão opcional.</li>
+              <li>metadados;</li>
+              <li>favicon;</li>
+              <li><code>&lt;div id="root"&gt;&lt;/div&gt;</code>;</li>
+              <li>script de entrada React.</li>
             </ul>
           </li>
-          <li>O componente deve controlar internamente:
+          <li>Remover do index.html:
             <ul className="list-disc ml-6">
-              <li>countdown iniciado em 2;</li>
-              <li>um único setTimeout;</li>
-              <li>um único setInterval;</li>
-              <li>limpeza de ambos no unmount;</li>
-              <li>prevenção de duas navegações.</li>
+              <li>formulários;</li>
+              <li>coleta de dados;</li>
+              <li>chamadas fetch/XHR;</li>
+              <li>timers;</li>
+              <li><code>boot()</code>;</li>
+              <li>OTP;</li>
+              <li>fallback que cria sessão;</li>
+              <li>qualquer autorização.</li>
             </ul>
           </li>
-          <li>Ao clicar “Continuar agora”:
+          <li>Manter no máximo uma mensagem estática dentro de <code>&lt;noscript&gt;</code>, sem formulário ou chamada de API.</li>
+          <li>Na Edge Function, remover o portal standalone de <code>handlePortalHtml</code>.</li>
+          <li>Para aliases como <code>/guest/s/...</code>, <code>/generate_204</code>, <code>/hotspot-detect.html</code>, <code>/connecttest.txt</code> e equivalentes:
             <ul className="list-disc ml-6">
-              <li>cancelar timer e interval;</li>
-              <li>executar <code>window.location.replace(redirectUrl)</code> uma única vez.</li>
+              <li>retornar redirect 302 para a origem React canônica;</li>
+              <li>preservar parâmetros captive permitidos;</li>
+              <li>não executar bootstrap, start ou submit.</li>
             </ul>
           </li>
-          <li>O redirect automático deve fazer o mesmo após 2 segundos.</li>
-          <li>Se redirectUrl estiver vazio, mostrar apenas: “Seu acesso já foi liberado. Você pode fechar esta janela.”</li>
-          <li>Não limpar dados OAuth antes de o estado <code>authorized:true</code> estar confirmado.</li>
-          <li>Não modificar resolvePostAuthRedirect.</li>
-          <li>Não alterar completeAuthenticatedSession.</li>
-          <li>Não inserir eslint-disable para react-hooks.</li>
+          <li>Não criar um novo portal alternativo.</li>
+          <li>Se o bundle React falhar, exibir somente página estática de indisponibilidade com botão “Tentar novamente”; nunca iniciar um fluxo simplificado.</li>
+          <li>Garantir que <code>/politica-privacidade</code>, <code>/sobre</code>, <code>/oauth/callback</code> e <code>/reset-password</code> sejam renderizados exclusivamente pelo React.</li>
+          <li>Não remover endpoints backend ainda utilizados pelo React neste prompt.</li>
+          <li>Não alterar Docker/Nginx além do necessário para servir a SPA.</li>
         </ol>
 
         <h2 className="font-bold text-lg mb-2">Testes:</h2>
         <ul className="list-disc ml-6 mb-4">
-          <li>Render inicial em login e transição para success não gera erro de hooks.</li>
-          <li>Transições loading → error → login → success funcionam.</li>
-          <li>Um único timeout e interval são criados.</li>
-          <li>Clique manual cancela o automático.</li>
-          <li>Unmount cancela timers.</li>
-          <li><code>replace</code> é chamado no máximo uma vez.</li>
-          <li>lint e testes React sem warnings de hooks.</li>
+          <li>Abrir index.html não produz requisição antes de o React montar.</li>
+          <li>Exatamente uma chamada de bootstrap por inicialização.</li>
+          <li>Nenhum HTML de formulário antigo aparece no source inicial.</li>
+          <li>Nenhuma string <code>/request-code</code> ou <code>/verify-code</code> permanece em index.html.</li>
+          <li>Aliases CNA redirecionam para o React e preservam query string.</li>
+          <li>Falha simulada do bundle não cria sessão ou lead.</li>
+          <li>Build e testes aprovados.</li>
         </ul>
 
         <h2 className="font-bold text-lg mb-2">Critério de aceite:</h2>
-        <p>O componente App executa sempre a mesma sequência de hooks, independentemente do step, e a tela de confirmação não pode quebrar depois da liberação.</p>
+        <p>Existe uma única interface, uma única máquina de estado e uma única origem para chamadas do captive.</p>
       </div>
 
       <div className="mt-8">
