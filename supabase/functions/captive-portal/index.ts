@@ -3063,19 +3063,12 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
   const result = await authorizeAuthenticatedUser({
     db, userId, ctx, req, authMethod, traceId, clientIp, userAgent: ua, 
     profile: profile as any,
+    attemptId
   });
 
-  // Mark attempt as terminal state on result
-  if (attemptId) {
-    const terminalStatus = result.authorized ? 'authorized' : 'failed';
-    await db.from("captive_auth_attempts")
-      .update({ 
-        status: terminalStatus, 
-        consumed_at: new Date().toISOString(),
-        user_id: userId
-      })
-      .eq("id", attemptId);
-  }
+  // Authorization results are now handled by finalize_auth_attempt inside authorizeAuthenticatedUser
+  // The terminal state update here is redundant but we preserve trace if needed.
+
 
 
   // Background sync with CRM on authenticated login success (if lead is complete)
