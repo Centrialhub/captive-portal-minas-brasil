@@ -108,6 +108,10 @@ export default function App() {
     return false;
   };
 
+  const handleAuthComplete = useCallback(() => {
+    OAuthTracker.clearAll();
+  }, []);
+
 
   const completeAuthenticatedSession = async (session: any, source: "google" | "silent") => {
     if (authCompletedRef.current) return;
