@@ -47,14 +47,24 @@ export type Database = {
       captive_auth_attempts: {
         Row: {
           ap_mac: string | null
+          authorization_attempts: number | null
+          authorization_finished_at: string | null
+          authorization_started_at: string | null
+          authorized: boolean | null
+          captive_session_id: string | null
           captive_timestamp: string | null
           client_mac: string
           consumed_at: string | null
           created_at: string
           expires_at: string
+          fail_reason: string | null
           id: string
+          last_result_code: string | null
+          lease_expires_at: string | null
+          lease_owner: string | null
           metadata: Json | null
           original_url: string | null
+          redirect_url: string | null
           resume_token_hash: string
           ssid: string | null
           status: string
@@ -63,14 +73,24 @@ export type Database = {
         }
         Insert: {
           ap_mac?: string | null
+          authorization_attempts?: number | null
+          authorization_finished_at?: string | null
+          authorization_started_at?: string | null
+          authorized?: boolean | null
+          captive_session_id?: string | null
           captive_timestamp?: string | null
           client_mac: string
           consumed_at?: string | null
           created_at?: string
           expires_at: string
+          fail_reason?: string | null
           id?: string
+          last_result_code?: string | null
+          lease_expires_at?: string | null
+          lease_owner?: string | null
           metadata?: Json | null
           original_url?: string | null
+          redirect_url?: string | null
           resume_token_hash: string
           ssid?: string | null
           status?: string
@@ -79,25 +99,44 @@ export type Database = {
         }
         Update: {
           ap_mac?: string | null
+          authorization_attempts?: number | null
+          authorization_finished_at?: string | null
+          authorization_started_at?: string | null
+          authorized?: boolean | null
+          captive_session_id?: string | null
           captive_timestamp?: string | null
           client_mac?: string
           consumed_at?: string | null
           created_at?: string
           expires_at?: string
+          fail_reason?: string | null
           id?: string
+          last_result_code?: string | null
+          lease_expires_at?: string | null
+          lease_owner?: string | null
           metadata?: Json | null
           original_url?: string | null
+          redirect_url?: string | null
           resume_token_hash?: string
           ssid?: string | null
           status?: string
           store_hint?: string | null
           user_id?: string | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "captive_auth_attempts_captive_session_id_fkey"
+            columns: ["captive_session_id"]
+            isOneToOne: false
+            referencedRelation: "captive_sessions"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       captive_sessions: {
         Row: {
           ap_mac: string | null
+          attempt_id: string | null
           auth_latency_ms: number | null
           auth_method: string | null
           authorized_at: string | null
@@ -136,6 +175,7 @@ export type Database = {
         }
         Insert: {
           ap_mac?: string | null
+          attempt_id?: string | null
           auth_latency_ms?: number | null
           auth_method?: string | null
           authorized_at?: string | null
@@ -174,6 +214,7 @@ export type Database = {
         }
         Update: {
           ap_mac?: string | null
+          attempt_id?: string | null
           auth_latency_ms?: number | null
           auth_method?: string | null
           authorized_at?: string | null
@@ -803,6 +844,33 @@ export type Database = {
       }
     }
     Functions: {
+      claim_auth_attempt: {
+        Args: {
+          p_attempt_id: string
+          p_lease_duration?: string
+          p_lease_owner: string
+          p_user_id: string
+        }
+        Returns: {
+          authorized: boolean
+          fail_reason: string
+          redirect_url: string
+          result_status: string
+          session_id: string
+        }[]
+      }
+      finalize_auth_attempt: {
+        Args: {
+          p_attempt_id: string
+          p_authorized: boolean
+          p_fail_reason?: string
+          p_lease_owner: string
+          p_redirect_url?: string
+          p_result_code?: string
+          p_session_id: string
+        }
+        Returns: boolean
+      }
       has_role: {
         Args: {
           _role: Database["public"]["Enums"]["app_role"]
