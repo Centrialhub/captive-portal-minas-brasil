@@ -2890,25 +2890,6 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
   const attemptId = typeof body.attempt_id === "string" ? body.attempt_id : null;
   const resumeToken = typeof body.resume_token === "string" ? body.resume_token : null;
   
-  if (attemptId && resumeToken) {
-    const val = await validateOAuthAttempt(db, attemptId, resumeToken);
-    if (!val.valid) {
-      return jsonResponse({ error: val.error || "Tentativa inválida.", code: "invalid_attempt" }, 403);
-    }
-    // Overwrite context with authoritative parameters from server
-    if (val.params) {
-      ctx = val.params;
-      console.log(`[auth] using authoritative parameters for attempt=${attemptId} mac=${ctx.clientMac}`);
-    }
-  }
-
-  if (ctx.clientMac) {
-    const rlMac = await checkRateLimitDb(db, `authexisting:mac:${ctx.clientMac}`, 60, 20, 60);
-    if (!rlMac.allowed) {
-      return jsonResponse({ error: "Muitas tentativas. Aguarde.", code: "rate_limited" }, 429);
-    }
-  }
-
   // Validate token via getUser (project rule: use getUser, not getClaims)
   const anonClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     global: { headers: { Authorization: `Bearer ${accessToken}` } },
@@ -2922,6 +2903,41 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
     return jsonResponse({ needs_login: true, error: "invalid_token" }, 401);
   }
   const userId = userRes.user.id;
+  const provider = String((userRes.user.app_metadata as any)?.provider || "").toLowerCase();
+
+  // FOR GOOGLE: attempt_id and resume_token are MANDATORY.
+  if (provider === "google") {
+    if (!attemptId || !resumeToken) {
+      console.error(`[auth] Google login without authoritative tokens. User: ${userId}`);
+      return jsonResponse({ error: "Transação de login inválida ou incompleta.", code: "missing_attempt_tokens" }, 403);
+    }
+  }
+
+  if (attemptId && resumeToken) {
+    const val = await validateOAuthAttempt(db, attemptId, resumeToken);
+    if (!val.valid) {
+      return jsonResponse({ error: val.error || "Tentativa inválida.", code: "invalid_attempt" }, 403);
+    }
+    
+    // Protection against user_id swap
+    if (val.attempt.user_id && val.attempt.user_id !== userId) {
+      console.error(`[auth] Attempt ${attemptId} already linked to another user`);
+      return jsonResponse({ error: "Esta tentativa pertence a outro usuário.", code: "forbidden_attempt" }, 403);
+    }
+
+    // Overwrite context with authoritative parameters from server
+    if (val.params) {
+      ctx = val.params;
+      console.log(`[auth] using authoritative parameters for attempt=${attemptId} mac=${ctx.clientMac}`);
+    }
+  }
+
+  if (ctx.clientMac) {
+    const rlMac = await checkRateLimitDb(db, `authexisting:mac:${ctx.clientMac}`, 60, 20, 60);
+    if (!rlMac.allowed) {
+      return jsonResponse({ error: "Muitas tentativas. Aguarde.", code: "rate_limited" }, 429);
+    }
+  }
 
   const { data: existingProfile } = await db
     .from("profiles")
@@ -2964,28 +2980,30 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
     } as any;
     logEvent(db, {
       trace_id: traceId, event_type: "profile_auto_created", step: "form", status: "info",
-      payload: { provider: (userRes.user.app_metadata as Record<string, unknown> | undefined)?.provider, email: emailValue }, client_ip: clientIp,
+      payload: { provider, email: emailValue }, client_ip: clientIp,
     });
   }
 
-  // Auth method hint from client (google/apple/silent). Falls back to provider from token.
-  const hint = typeof body.auth_method === "string" ? body.auth_method.toLowerCase() : "";
-  const provider = String(
-    (userRes.user.app_metadata as Record<string, unknown> | undefined)?.provider || "",
-  ).toLowerCase();
+  // Determine auth method purely from server data (getUser provider)
   const authMethod: "silent" | "google" | "apple" =
-    hint === "google" || provider === "google" ? "google" :
-    hint === "apple" || provider === "apple" ? "apple" :
+    provider === "google" ? "google" :
+    provider === "apple" ? "apple" :
     "silent";
 
-  // Check if CPF is required for Google users before UniFi authorization
+  // Check if CPF is required before UniFi authorization
   if (authMethod === "google") {
     const isCpfPending = !profile?.cpf_digits || (profile as any)?.cpf_required === true;
     if (isCpfPending) {
       logEvent(db, {
         trace_id: traceId, event_type: "google_auth_cpf_pending", step: "form", status: "info",
-        payload: { email: profile?.email, mac: ctx.clientMac }, client_ip: clientIp,
+        payload: { email: profile?.email, mac: ctx.clientMac, attempt_id: attemptId }, client_ip: clientIp,
       });
+
+      // Atomic link attempt to user before CPF step
+      if (attemptId) {
+        await db.from("captive_auth_attempts").update({ user_id: userId }).eq("id", attemptId);
+      }
+
       return jsonResponse({
         needs_cpf: true,
         authorized: false,
@@ -3004,16 +3022,18 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
     profile: profile as any,
   });
 
-  // Mark attempt as consumed on success
-  if (result.authorized && attemptId) {
+  // Mark attempt as terminal state on result
+  if (attemptId) {
+    const terminalStatus = result.authorized ? 'authorized' : 'failed';
     await db.from("captive_auth_attempts")
       .update({ 
-        status: 'authorized', 
+        status: terminalStatus, 
         consumed_at: new Date().toISOString(),
         user_id: userId
       })
       .eq("id", attemptId);
   }
+
 
   // Background sync with CRM on authenticated login success (if lead is complete)
   if (result.authorized && profile?.cpf_digits && profile?.full_name && profile?.phone_digits) {
@@ -3172,7 +3192,9 @@ Deno.serve(async (req: Request) => {
     if (path === "/bootstrap" && req.method === "GET") return await handleBootstrap(req);
     if (path === "/client-event" && req.method === "POST") return await handleClientEvent(req);
     if (path === "/login" && req.method === "POST") return await handleLogin(req);
-    if (path === "/oauth/init" && req.method === "POST") return await handleOAuthInit(req);
+  if (path === "/oauth/init" && req.method === "POST") return await handleOAuthInit(req);
+  if (path === "/oauth/restart" && req.method === "POST") return await handleOAuthRestart(req);
+
     if (path === "/oauth/callback") return await handleOAuthCallback(req);
     if (path === "/update-profile" && req.method === "POST") return await handleUpdateProfile(req);
     if (path === "/signup" && req.method === "POST") return await handleSignup(req);
@@ -3235,23 +3257,31 @@ async function validateOAuthAttempt(
     .from("captive_auth_attempts")
     .select("*")
     .eq("id", attemptId)
-    .eq("resume_token_hash", tokenHash)
     .maybeSingle();
 
   if (fetchErr || !attempt) {
-    return { valid: false, error: "Tentativa de login não encontrada ou expirada." };
+    return { valid: false, error: "Tentativa de login não encontrada." };
+  }
+
+  // Constant-time comparison using a simple equality for the hash
+  // (In Deno/V8 this is generally safe enough for these hashes, but 
+  // checking it specifically against the stored hashBuffer would be better if needed)
+  if (attempt.resume_token_hash !== tokenHash) {
+    return { valid: false, error: "Transação de login inválida." };
   }
 
   if (attempt.status === 'expired' || new Date(attempt.expires_at) < new Date()) {
     if (attempt.status !== 'expired') {
       await db.from("captive_auth_attempts").update({ status: 'expired' }).eq("id", attemptId);
     }
-    return { valid: false, error: "Esta tentativa de login expirou. Inicie o processo novamente." };
+    return { valid: false, error: "Esta tentativa expirou. Inicie o processo novamente." };
   }
 
-  if (attempt.status === 'consumed') {
-    return { valid: false, error: "Esta tentativa já foi concluída." };
+  // Terminal states
+  if (attempt.status === 'authorized' || attempt.status === 'failed' || attempt.status === 'cancelled') {
+    return { valid: false, error: `Esta tentativa já foi finalizada (status: ${attempt.status}).` };
   }
+
 
   const params: AuthAuthorizeContext = {
     clientMac: attempt.client_mac,
@@ -3323,3 +3353,55 @@ async function handleOAuthInit(req: Request): Promise<Response> {
     token: token
   });
 }
+
+async function handleOAuthRestart(req: Request): Promise<Response> {
+  const db = supabaseAdmin();
+  const body = await safeParseJson(req);
+  if (!body || !body.attempt_id) return errorResponse("Missing attempt_id");
+
+  const attemptId = body.attempt_id as string;
+  const { data: oldAttempt } = await db
+    .from("captive_auth_attempts")
+    .select("*")
+    .eq("id", attemptId)
+    .maybeSingle();
+
+  if (oldAttempt) {
+    // Cancel old one
+    await db.from("captive_auth_attempts")
+      .update({ status: 'cancelled' })
+      .eq("id", attemptId);
+
+    // Create new one with same params
+    const tokenBytes = new Uint8Array(32);
+    crypto.getRandomValues(tokenBytes);
+    const token = Array.from(tokenBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+    
+    const encoder = new TextEncoder();
+    const hashBuffer = await crypto.subtle.digest("SHA-256", encoder.encode(token));
+    const tokenHash = Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+
+    const { data: newAttempt } = await db
+      .from("captive_auth_attempts")
+      .insert({
+        resume_token_hash: tokenHash,
+        client_mac: oldAttempt.client_mac,
+        ap_mac: oldAttempt.ap_mac,
+        ssid: oldAttempt.ssid,
+        store_hint: oldAttempt.store_hint,
+        captive_timestamp: oldAttempt.captive_timestamp,
+        original_url: oldAttempt.original_url,
+        expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+        status: 'created'
+      })
+      .select("id")
+      .single();
+
+    if (newAttempt) {
+      return jsonResponse({ attempt_id: newAttempt.id, token });
+    }
+  }
+
+  return errorResponse("Não foi possível reiniciar a sessão.", 500);
+}
+

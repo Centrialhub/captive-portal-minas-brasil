@@ -15,7 +15,9 @@ export default function Documentation() {
             <li>Permissões públicas em <code>profiles</code> revogadas.</li>
             <li>Segredos UniFi centralizados em variáveis de ambiente.</li>
             <li>Idempotência server-side na autorização UniFi.</li>
+            <li>Transações OAuth (Google) autoritativas no servidor (Prompt 05).</li>
             <li>Remoção completa do subsistema OTP/WhatsApp legado.</li>
+
             <li>Build Docker reprodutível com lint e typecheck.</li>
           </ul>
         </section>

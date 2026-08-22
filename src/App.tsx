@@ -163,7 +163,7 @@ export default function App() {
           setRedirectUrl(finalUrl);
           setStep("success");
           authCompletedRef.current = true;
-          // OAuthTracker.clearAll() will be called after success confirmation path
+
           return result;
         }
 
@@ -486,6 +486,28 @@ export default function App() {
 
   // ── CPF PROMPT (Google Auth Gate) ──
   if (step === "cpf_prompt") {
+    const handleGoogleRestart = async () => {
+      if (busy) return;
+      setBusy(true);
+      const tokens = OAuthTracker.getTokens();
+      if (tokens.attempt_id) {
+        try {
+          const res = await api.restartOAuth({ attempt_id: tokens.attempt_id });
+          if (res.attempt_id && res.token) {
+            localStorage.setItem("mb_oauth_attempt_id", res.attempt_id);
+            localStorage.setItem("mb_oauth_attempt_token", res.token);
+            await supabase.auth.signOut();
+            window.location.reload();
+            return;
+          }
+        } catch (e) {
+          console.error("Restart failed", e);
+        }
+      }
+      setStep("login");
+      setBusy(false);
+    };
+
     return (
       <div className="portal-wrapper">
         <div className="portal-card">
@@ -496,55 +518,37 @@ export default function App() {
 
           <h1 className="portal-title">Complete seu acesso</h1>
           <p className="portal-subtitle">
-            O CPF é necessário para concluir a liberação do seu Wi-Fi.
+            Olá, <strong>{googleUser?.full_name || "Cliente"}</strong>! 
+            Para liberar seu Wi-Fi, informe seu CPF:
           </p>
 
-          {googleUser && (
-            <div style={{ background: "#f8f9fa", padding: 12, borderRadius: 8, marginBottom: 16, fontSize: 14 }}>
-              <p><strong>Nome:</strong> {googleUser.full_name}</p>
-              <p><strong>E-mail:</strong> {googleUser.email}</p>
-            </div>
-          )}
-
-          {error && <div className="portal-error">{error}</div>}
-
           <form onSubmit={handleCpfSubmit}>
+            {error && <div className="portal-error">{error}</div>}
+            
             <label className="portal-label">CPF</label>
             <input
               type="tel"
-              inputMode="numeric"
-              value={promptCpf}
-              onChange={(e) => setPromptCpf(formatCPF(e.target.value))}
-              required
               className="portal-input"
               placeholder="000.000.000-00"
-              autoComplete="off"
-              maxLength={14}
+              value={formatCPF(promptCpf)}
+              onChange={(e) => setPromptCpf(e.target.value)}
+              disabled={busy}
+              required
             />
+            
+            <button type="submit" className="portal-btn" disabled={busy || promptCpf.replace(/\D/g, "").length !== 11}>
+              {busy ? "Processando..." : "Confirmar e Liberar Wi-Fi"}
+            </button>
 
-            <button type="submit" disabled={busy} className="portal-btn">
-              {busy ? "Salvando..." : "Salvar CPF e liberar Wi-Fi"}
+            <button 
+              type="button" 
+              className="portal-btn-secondary" 
+              onClick={handleGoogleRestart}
+              disabled={busy}
+            >
+              Usar outra conta
             </button>
           </form>
-
-          <button
-            type="button"
-            onClick={async () => {
-              setBusy(true);
-              await supabase.auth.signOut();
-              setError("");
-              setPromptCpf("");
-              setGoogleUser(null);
-              setStep("oauth_redirecting");
-              handleGoogleOAuth();
-            }}
-            className="portal-btn-secondary"
-            style={{ marginTop: 12 }}
-          >
-            Usar outra conta Google
-          </button>
-          
-          <Footer />
         </div>
       </div>
     );
