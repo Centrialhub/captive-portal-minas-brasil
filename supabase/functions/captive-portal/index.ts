@@ -3394,13 +3394,13 @@ async function validateOAuthAttempt(
   attemptId: string,
   token: string
 ): Promise<{
-  valid: boolean;
+  status: 'active' | 'processing' | 'completed' | 'invalid';
   params?: AuthAuthorizeContext;
   error?: string;
   attempt?: any;
 }> {
   if (!isValidUUID(attemptId) || !token) {
-    return { valid: false, error: "Parâmetros de tentativa inválidos." };
+    return { status: 'invalid', error: "Parâmetros de tentativa inválidos." };
   }
 
   // Tokens are stored hashed in DB
@@ -3417,28 +3417,33 @@ async function validateOAuthAttempt(
     .maybeSingle();
 
   if (fetchErr || !attempt) {
-    return { valid: false, error: "Tentativa de login não encontrada." };
+    return { status: 'invalid', error: "Tentativa de login não encontrada." };
   }
 
   // Constant-time comparison using a simple equality for the hash
-  // (In Deno/V8 this is generally safe enough for these hashes, but 
-  // checking it specifically against the stored hashBuffer would be better if needed)
   if (attempt.resume_token_hash !== tokenHash) {
-    return { valid: false, error: "Transação de login inválida." };
+    return { status: 'invalid', error: "Transação de login inválida." };
   }
 
   if (attempt.status === 'expired' || new Date(attempt.expires_at) < new Date()) {
     if (attempt.status !== 'expired') {
       await db.from("captive_auth_attempts").update({ status: 'expired' }).eq("id", attemptId);
     }
-    return { valid: false, error: "Esta tentativa expirou. Inicie o processo novamente." };
+    return { status: 'invalid', error: "Esta tentativa expirou. Inicie o processo novamente." };
   }
 
-  // Terminal states
-  if (attempt.status === 'authorized' || attempt.status === 'failed' || attempt.status === 'cancelled') {
-    return { valid: false, error: `Esta tentativa já foi finalizada (status: ${attempt.status}).` };
+  // Terminal states (failed, cancelled) are invalid
+  if (attempt.status === 'failed' || attempt.status === 'cancelled') {
+    return { status: 'invalid', error: `Esta tentativa foi finalizada com erro ou cancelada (status: ${attempt.status}).` };
   }
 
+  // Interpretation of status (Prompt 31)
+  let status: 'active' | 'processing' | 'completed' | 'invalid' = 'active';
+  if (attempt.status === 'authorized') {
+    status = 'completed';
+  } else if (attempt.status === 'authorizing' || attempt.status === 'verifying') {
+    status = 'processing';
+  }
 
   const params: AuthAuthorizeContext = {
     clientMac: attempt.client_mac,
@@ -3448,7 +3453,7 @@ async function validateOAuthAttempt(
     captiveTimestamp: attempt.captive_timestamp,
   };
 
-  return { valid: true, params, attempt };
+  return { status, params, attempt };
 }
 
 async function handleOAuthInit(req: Request): Promise<Response> {
