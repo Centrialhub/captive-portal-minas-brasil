@@ -829,6 +829,15 @@ export type Database = {
         }
         Returns: Json
       }
+      secure_update_profile: {
+        Args: {
+          _cpf_digits: string
+          _full_name: string
+          _phone_digits: string
+          _user_id: string
+        }
+        Returns: Json
+      }
     }
     Enums: {
       app_role: "admin"
