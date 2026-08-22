@@ -2400,117 +2400,139 @@ async function authorizeAuthenticatedUser(args: {
   store_slug: string;
   store_id: string | null;
 }> {
-
-  const { db, userId, profile, ctx, req, authMethod, traceId, clientIp, userAgent } = args;
+  const { db, userId, profile, ctx, req, authMethod, traceId, clientIp, userAgent, attemptId } = args;
 
   const detected = await detectStoreFromRequest(db, req, ctx.apMac);
   const storeSlug = detected.store_slug;
   const storeId = detected.store_id;
   const nowIso = new Date().toISOString();
+  const leaseOwner = `worker-${traceId || crypto.randomUUID()}`;
 
-  // IDEMPOTENCY STEP 1: Check for a very recent successful session (replay/refresh protection)
-  try {
-    const thirtySecsAgo = new Date(Date.now() - 30 * 1000).toISOString();
-    const { data: recentSession } = await db
-      .from("captive_sessions")
-      .select("id, status, redirect_url")
-      .eq("user_id", userId)
-      .eq("client_mac", ctx.clientMac)
-      .eq("status", "authorized")
-      .gte("submitted_at", thirtySecsAgo)
-      .order("submitted_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (recentSession) {
-      console.log(`[auth] Idempotency hit: reusing authorized session ${recentSession.id}`);
-      return {
-        session_id: recentSession.id,
-        authorized: true,
-        redirect_url: detected.redirect_url || DEFAULT_REDIRECT_URL,
-        store_slug: storeSlug,
-        store_id: storeId,
-      };
-    }
-  } catch (e) {
-    console.warn("[auth] Idempotency check failed (ignoring):", (e as Error).message);
-  }
-
-  // IDEMPOTENCY STEP 2: Atomic lock to prevent concurrent overlapping requests
-  const lockKey = `auth_lock:${userId}:${ctx.clientMac}`;
-  try {
-    const { data: lock } = await db.rpc("rate_limit_hit", {
-      p_key: lockKey,
-      p_window_seconds: 15,
-      p_max_hits: 1,
-      p_block_seconds: 0,
-    });
-    if (lock && (lock as any).allowed === false) {
-      console.warn(`[auth] Concurrent request blocked by atomic lock: ${lockKey}`);
-      return {
-        session_id: null,
-        authorized: false,
-        redirect_url: detected.redirect_url || DEFAULT_REDIRECT_URL,
-        fail_reason: "CONCURRENT_REQUEST",
-        store_slug: storeSlug,
-        store_id: storeId,
-      };
-    }
-  } catch (e) {
-    console.warn("[auth] Atomic lock RPC failed (falling back to standard flow):", (e as Error).message);
-  }
-
-  // Create captive_sessions row for this visit.
-  const sessionInsert: Record<string, unknown> = {
-    store_id: storeId,
-    user_id: userId,
-    auth_method: authMethod,
-    status: "submitted",
-    client_mac: ctx.clientMac,
-    ap_mac: ctx.apMac,
-    ssid: ctx.ssid,
-    redirect_url: ctx.redirectUrl,
-    captive_timestamp: ctx.captiveTimestamp,
-    trace_id: traceId,
-    submitted_at: nowIso,
-    form_submitted_at: nowIso,
-    params_received_at: nowIso,
-    last_step: "form",
-    user_agent: userAgent ? userAgent.slice(0, 500) : null,
-    client_ip: clientIp,
-  };
-
-  const { data: session, error: sErr } = await db
-    .from("captive_sessions")
-    .insert(sessionInsert)
-    .select("id")
-    .single();
-
-  if (sErr || !session?.id) {
-    console.error("[auth] captive_sessions insert failed:", sErr?.message);
-    logEvent(db, {
-      trace_id: traceId,
-      store_id: storeId,
-      event_type: "session_insert_failed",
-      step: "form",
-      status: "error",
-      error_code: "session_insert_failed",
-      error_message: sErr?.message,
-      payload: { auth_method: authMethod, user_id: userId },
-      client_ip: clientIp,
-      user_agent: userAgent,
-    });
+  // TRANSACTIONAL CLAIM (PROMPT 06)
+  // Replacing pseudo-idempotency (30s window, rate_limit_hit lock, fail-open)
+  // with a server-authoritative transactional claim.
+  if (!attemptId) {
+    // Legacy support or direct signup/login path without attempt_id should ideally have one,
+    // but we allow it for now if not explicitly blocked.
+    // However, Prompt 06 requires attempt_id for everything that releases Wi-Fi.
+    console.error(`[auth] AttemptId missing in authorizeAuthenticatedUser. Method: ${authMethod}`);
     return {
       session_id: null,
       authorized: false,
       redirect_url: detected.redirect_url || DEFAULT_REDIRECT_URL,
-      fail_reason: "SESSION_INSERT_FAILED",
+      fail_reason: "MISSING_ATTEMPT_ID",
       store_slug: storeSlug,
       store_id: storeId,
     };
   }
 
-  const sessionId = session.id as string;
+  const { data: claimRes, error: claimErr } = await db.rpc("claim_auth_attempt", {
+    p_attempt_id: attemptId,
+    p_user_id: userId,
+    p_lease_owner: leaseOwner
+  });
+
+  if (claimErr || !claimRes || claimRes.length === 0) {
+    console.error("[auth] Claim RPC failed:", claimErr?.message);
+    return {
+      session_id: null,
+      authorized: false,
+      redirect_url: detected.redirect_url || DEFAULT_REDIRECT_URL,
+      fail_reason: "CLAIM_FAILED",
+      store_slug: storeSlug,
+      store_id: storeId,
+    };
+  }
+
+  const claim = claimRes[0];
+
+  if (claim.result_status === 'failed') {
+    return {
+      session_id: claim.session_id,
+      authorized: claim.authorized,
+      redirect_url: claim.redirect_url || (detected.redirect_url || DEFAULT_REDIRECT_URL),
+      fail_reason: claim.fail_reason,
+      store_slug: storeSlug,
+      store_id: storeId,
+    };
+  }
+
+  if (claim.result_status === 'completed') {
+    console.log(`[auth] Replay detected for attempt ${attemptId}. Reusing session ${claim.session_id}`);
+    return {
+      session_id: claim.session_id,
+      authorized: claim.authorized,
+      redirect_url: claim.redirect_url || (detected.redirect_url || DEFAULT_REDIRECT_URL),
+      store_slug: storeSlug,
+      store_id: storeId,
+    };
+  }
+
+  if (claim.result_status === 'processing') {
+    console.log(`[auth] Concurrent request active for attempt ${attemptId}.`);
+    return {
+      session_id: claim.session_id,
+      authorized: false,
+      redirect_url: detected.redirect_url || DEFAULT_REDIRECT_URL,
+      fail_reason: "PROCESSING_IN_PROGRESS",
+      store_slug: storeSlug,
+      store_id: storeId,
+    };
+  }
+
+  // STATUS: claimed=true. Only now we proceed to authorizeClient.
+  let sessionId = claim.session_id;
+
+  // If we don't have a sessionId, we need to create one.
+  if (!sessionId) {
+    const sessionInsert: Record<string, unknown> = {
+      store_id: storeId,
+      user_id: userId,
+      auth_method: authMethod,
+      status: "submitted",
+      client_mac: ctx.clientMac,
+      ap_mac: ctx.apMac,
+      ssid: ctx.ssid,
+      redirect_url: ctx.redirectUrl,
+      captive_timestamp: ctx.captiveTimestamp,
+      trace_id: traceId,
+      submitted_at: nowIso,
+      form_submitted_at: nowIso,
+      params_received_at: nowIso,
+      last_step: "form",
+      user_agent: userAgent ? userAgent.slice(0, 500) : null,
+      client_ip: clientIp,
+      attempt_id: attemptId
+    };
+
+    const { data: session, error: sErr } = await db
+      .from("captive_sessions")
+      .insert(sessionInsert)
+      .select("id")
+      .single();
+
+    if (sErr || !session?.id) {
+      console.error("[auth] captive_sessions insert failed:", sErr?.message);
+      // Finalize as failed so the claim is released
+      await db.rpc("finalize_auth_attempt", {
+        p_attempt_id: attemptId,
+        p_lease_owner: leaseOwner,
+        p_session_id: null,
+        p_authorized: false,
+        p_fail_reason: "SESSION_INSERT_FAILED",
+        p_result_code: "DB_ERROR"
+      });
+      return {
+        session_id: null,
+        authorized: false,
+        redirect_url: detected.redirect_url || DEFAULT_REDIRECT_URL,
+        fail_reason: "SESSION_INSERT_FAILED",
+        store_slug: storeSlug,
+        store_id: storeId,
+      };
+    }
+    sessionId = session.id;
+  }
 
   // Upsert lead by user_id
   try {
@@ -2546,7 +2568,7 @@ async function authorizeAuthenticatedUser(args: {
     event_type: "unifi_authorize_from_auth_flow",
     step: "unifi",
     status: "info",
-    payload: { auth_method: authMethod, store_slug: storeSlug },
+    payload: { auth_method: authMethod, store_slug: storeSlug, attempt_id: attemptId },
     client_ip: clientIp,
     user_agent: userAgent,
   });
@@ -2556,15 +2578,28 @@ async function authorizeAuthenticatedUser(args: {
     { apMac: ctx.apMac, ssid: ctx.ssid, fastReturn: false },
   );
 
+  // FINALIZATION (PROMPT 06)
+  const finalRedirect = detected.redirect_url || DEFAULT_REDIRECT_URL;
+  await db.rpc("finalize_auth_attempt", {
+    p_attempt_id: attemptId,
+    p_lease_owner: leaseOwner,
+    p_session_id: sessionId,
+    p_authorized: !!authResult.ok,
+    p_redirect_url: finalRedirect,
+    p_fail_reason: authResult.ok ? null : (authResult.reason || "AUTHORIZE_FAILED"),
+    p_result_code: authResult.ok ? "SUCCESS" : "UNIFI_ERROR"
+  });
+
   return {
     session_id: sessionId,
     authorized: !!authResult.ok,
-    redirect_url: detected.redirect_url || DEFAULT_REDIRECT_URL,
+    redirect_url: finalRedirect,
     fail_reason: authResult.ok ? undefined : (authResult.reason || "AUTHORIZE_FAILED"),
     store_slug: storeSlug,
     store_id: storeId,
   };
 }
+
 
 function validatePasswordStrength(pw: unknown): { ok: boolean; reason?: string } {
   if (typeof pw !== "string" || pw.length < 8) return { ok: false, reason: "weak_password" };
