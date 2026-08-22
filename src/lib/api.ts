@@ -80,17 +80,30 @@ function xhrRequest<T = any>(path: string, opts: XhrOptions = {}): Promise<T> {
       let parsed: any = null;
       try { parsed = text ? JSON.parse(text) : {}; } catch { /* not JSON */ }
 
-      if (parsed && typeof parsed === "object") {
+      // Success range
+      if (status >= 200 && status < 300) {
         resolve(parsed as T);
         return;
       }
 
-      if (status >= 500) {
-        reject(new ApiError("http", `Servidor indisponível (${status}).`, status));
+      // Handle specific HTTP error codes
+      if (status === 429) {
+        reject(new ApiError("http", parsed?.error || "Muitas tentativas. Aguarde um momento.", status));
+      } else if (status === 401 || status === 403) {
+        reject(new ApiError("http", parsed?.error || "Acesso não autorizado.", status));
+      } else if (status >= 400 && status < 500) {
+        reject(new ApiError("http", parsed?.error || `Erro na requisição (${status}).`, status));
+      } else if (status >= 500) {
+        reject(new ApiError("http", "Ocorreu um erro no servidor. Tente novamente em instantes.", status));
       } else if (status === 0) {
-        reject(new ApiError("network", "Sem resposta do servidor."));
+        reject(new ApiError("network", "Sem resposta do servidor. Verifique sua conexão."));
       } else {
-        reject(new ApiError("parse", `Resposta inesperada do servidor (${status}).`, status));
+        // Fallback for valid JSON that isn't a 2xx success
+        if (parsed?.error) {
+          reject(new ApiError("http", parsed.error, status));
+        } else {
+          reject(new ApiError("parse", `Resposta inesperada do servidor (${status}).`, status));
+        }
       }
     };
 
