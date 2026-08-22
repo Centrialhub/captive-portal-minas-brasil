@@ -1,4 +1,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.4";
+import { encode } from "https://deno.land/std@0.177.0/encoding/hex.ts";
+import { crypto } from "https://deno.land/std@0.177.0/crypto/mod.ts";
+
 
 // ========== Constants ==========
 const corsHeaders = {
@@ -3539,7 +3542,9 @@ async function handleOAuthInit(req: Request): Promise<Response> {
 
   // Hash it for DB storage
   const encoder = new TextEncoder();
-  const tokenHash = encode(digest(token, 'sha256'), 'hex');
+  const tokenData = encoder.encode(token);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", tokenData);
+  const tokenHash = new TextDecoder().decode(encode(new Uint8Array(hashBuffer)));
 
   const now = new Date();
   const expiresAt = new Date(now.getTime() + 10 * 60 * 1000); // 10 minutes

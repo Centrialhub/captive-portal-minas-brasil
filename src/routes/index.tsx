@@ -2,7 +2,7 @@ export default function Documentation() {
   return (
     <div className="p-8 font-sans max-w-4xl mx-auto">
       <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-lg text-green-800 text-sm">
-        Audit concluído: Redirecionamento de sucesso resiliente (Prompt 37). Countdown automático único com fallback manual funcional para bloqueios de CNA. Integridade da navegação pós-auth confirmada.
+        Audit concluído: Integridade de ativos binários restaurada (Prompt 38). Logotipo e favicons verificados e script de integridade automatizado no fluxo de build. Conformidade visual e técnica confirmada.
       </div>
       <h1 className="text-3xl font-bold mb-6 text-gray-900 border-b pb-2">Captive Portal - Drogaria Minas Brasil</h1>
       <p className="mb-6 text-gray-600">Documentação visual de arquitetura, segurança e integridade do sistema.</p>
