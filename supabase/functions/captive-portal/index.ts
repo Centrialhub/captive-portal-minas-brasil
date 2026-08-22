@@ -28,12 +28,8 @@ const GEOIP_TIMEOUT_MS = parseInt(Deno.env.get("GEOIP_TIMEOUT_MS") || "1500");
 const GEOIP_CACHE_TTL_HOURS = parseInt(Deno.env.get("GEOIP_CACHE_TTL_HOURS") || "168");
 const GEOIP_PROVIDER = Deno.env.get("GEOIP_PROVIDER") || "ipapi";
 
-// OTP config
-const OTP_PEPPER = Deno.env.get("OTP_PEPPER") || "default-pepper-change-me";
-const OTP_EXPIRES_SECONDS = parseInt(Deno.env.get("OTP_EXPIRES_SECONDS") || "300");
-const OTP_MAX_ATTEMPTS = 5;
-const OTP_MAX_RESENDS = 3;
-const OTP_RESEND_COOLDOWN_SEC = 60;
+// OTP subsystem removed (Prompt 08)
+
 
 // Cron secret for scheduled housekeeping
 const CRON_SECRET = Deno.env.get("CRON_SECRET") || "";
