@@ -2392,6 +2392,7 @@ async function authorizeAuthenticatedUser(args: {
   traceId: string;
   clientIp: string | null;
   userAgent: string | null;
+  attemptId: string | null;
 }): Promise<{
   session_id: string | null;
   authorized: boolean;
@@ -2401,6 +2402,7 @@ async function authorizeAuthenticatedUser(args: {
   store_id: string | null;
 }> {
   const { db, userId, profile, ctx, req, authMethod, traceId, clientIp, userAgent, attemptId } = args;
+
 
   const detected = await detectStoreFromRequest(db, req, ctx.apMac);
   const storeSlug = detected.store_slug;
