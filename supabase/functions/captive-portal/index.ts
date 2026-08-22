@@ -511,8 +511,8 @@ async function discoverStoreByClientMac(
   const probes = stores.map(async (store): Promise<Hit | null> => {
     const ctrlUrl = (store.unifi_controller_url || "").replace(/\/+$/, "");
     if (!ctrlUrl) return null;
-    const user = store.unifi_username || UNIFI_USERNAME;
-    const pass = store.unifi_password || UNIFI_PASSWORD;
+    const user = UNIFI_USERNAME;
+    const pass = UNIFI_PASSWORD;
     if (!user || !pass) {
       console.warn(`[discover] UNIFI_SECRET_NOT_CONFIGURED for store ${store.slug}`);
       return null;
