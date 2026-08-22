@@ -1124,7 +1124,7 @@ async function checkUnifiAuthorizationState(
     console.error("[unifi-check] failed:", err);
     return { state: "inconclusive" };
   } finally {
-    try { httpClient?.close(); } catch { }
+    try { httpClient?.close(); } catch (e) { /* ignore close error */ }
   }
 }
 
