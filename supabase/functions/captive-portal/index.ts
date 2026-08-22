@@ -4470,10 +4470,12 @@ Deno.serve(async (req: Request) => {
     if (path === "/request-code" && req.method === "POST") return await handleRequestCode(req);
     if (path === "/verify-code" && req.method === "POST") return await handleVerifyCode(req);
     if (path === "/client-event" && req.method === "POST") return await handleClientEvent(req);
+    if (path === "/oauth/init" && req.method === "POST") return await handleOAuthInit(req);
     if (path === "/oauth/callback") return await handleOAuthCallback(req);
     if (path === "/update-profile" && req.method === "POST") return await handleUpdateProfile(req);
     if (path === "/signup" && req.method === "POST") return await handleSignup(req);
     if (path === "/request-password-reset" && req.method === "POST") return await handleRequestPasswordReset(req);
+    if (path === "/authorize-existing" && req.method === "POST") return await handleAuthorizeExisting(req);
 
     // 3. Admin endpoints (requires service_role/admin auth)
     if (path === "/admin/settings") return await handleAdminSettings(req);
