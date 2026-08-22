@@ -106,9 +106,15 @@ export const OAuthTracker = {
 
   getTokens() {
     const p = new URLSearchParams(window.location.search);
+    const urlId = p.get("attempt_id");
+    const urlToken = p.get("resume_token");
+    const storageId = localStorage.getItem(ATTEMPT_ID_KEY);
+    const storageToken = localStorage.getItem(ATTEMPT_TOKEN_KEY);
+
+    // If URL has tokens, they must match storage or we prefer URL if storage is empty
     return {
-      attempt_id: p.get("attempt_id") || localStorage.getItem(ATTEMPT_ID_KEY),
-      token: p.get("resume_token") || localStorage.getItem(ATTEMPT_TOKEN_KEY)
+      attempt_id: urlId || storageId,
+      token: urlToken || storageToken
     };
   },
 
