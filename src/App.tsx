@@ -105,6 +105,10 @@ export default function App() {
   const redirectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
 
+  const handleAuthComplete = useMemo(() => () => {
+    OAuthTracker.clearAll();
+  }, []);
+
   const completeAuthenticatedSession = async (session: any, source: "google" | "silent") => {
     if (authCompletedRef.current) return;
     if (processingAuthRef.current) return processingAuthRef.current;
