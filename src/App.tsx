@@ -261,7 +261,7 @@ export default function App() {
       if (callbackTimeout) clearTimeout(callbackTimeout);
       subscription.unsubscribe();
     };
-  }, [location.pathname]);
+  }, [location.pathname, step]);
 
 
   const handleLogin = async (e: React.FormEvent) => {
