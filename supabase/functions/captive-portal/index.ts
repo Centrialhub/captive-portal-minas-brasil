@@ -335,7 +335,7 @@ function logEvent(db: ReturnType<typeof supabaseAdmin>, args: LogEventArgs): voi
       if (args.error_message) patch.last_error_message = args.error_message.slice(0, 500);
     }
     db.from("captive_sessions").update(patch).eq("id", args.session_id).then(
-      () => {},
+        (e) => console.warn("[recovery] last_seen update failed:", (e as Error)?.message),
       (e) => console.warn("[logEvent] session patch failed:", (e as Error)?.message),
     );
   }
