@@ -3677,6 +3677,20 @@ async function handlePortalHtml(req: Request, url: URL): Promise<Response> {
   return Response.redirect(target.toString(), 302);
 }
 
+/**
+ * Deterministic handler for OAuth callbacks (Google/Apple).
+ * Ensures session parameters are passed back to the React SPA correctly.
+ */
+async function handleOAuthCallback(req: Request): Promise<Response> {
+  const url = new URL(req.url);
+  const target = new URL("https://minasbrasilwifi.com.br");
+  
+  // Pass through any tokens or codes in the URL (Supabase uses fragments or query params)
+  url.searchParams.forEach((v, k) => target.searchParams.set(k, v));
+  
+  // The React app will detect the hash/params and complete the sign-in
+  return Response.redirect(target.toString(), 302);
+}
 
 // ========== Client-side telemetry ==========
 async function handleClientEvent(req: Request): Promise<Response> {
