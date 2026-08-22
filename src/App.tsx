@@ -498,9 +498,12 @@ export default function App() {
       if (busy) return;
       setBusy(true);
       const tokens = OAuthTracker.getTokens();
-      if (tokens.attempt_id) {
+      if (tokens.attempt_id && tokens.token) {
         try {
-          const res = await api.restartOAuth({ attempt_id: tokens.attempt_id });
+          const res = await api.restartOAuth({ 
+            attempt_id: tokens.attempt_id,
+            resume_token: tokens.token 
+          });
           if (res.attempt_id && res.token) {
             localStorage.setItem("mb_oauth_attempt_id", res.attempt_id);
             localStorage.setItem("mb_oauth_attempt_token", res.token);

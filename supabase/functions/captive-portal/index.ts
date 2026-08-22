@@ -3571,52 +3571,53 @@ async function handleOAuthInit(req: Request): Promise<Response> {
 
 async function handleOAuthRestart(req: Request): Promise<Response> {
   const db = supabaseAdmin();
+  const clientIp = getPublicIp(req);
   const body = await safeParseJson(req);
-  if (!body || !body.attempt_id) return errorResponse("Missing attempt_id");
-
-  const attemptId = body.attempt_id as string;
-  const { data: oldAttempt } = await db
-    .from("captive_auth_attempts")
-    .select("*")
-    .eq("id", attemptId)
-    .maybeSingle();
-
-  if (oldAttempt) {
-    // Cancel old one
-    await db.from("captive_auth_attempts")
-      .update({ status: 'cancelled' })
-      .eq("id", attemptId);
-
-    // Create new one with same params
-    const tokenBytes = new Uint8Array(32);
-    crypto.getRandomValues(tokenBytes);
-    const token = Array.from(tokenBytes).map(b => b.toString(16).padStart(2, '0')).join('');
-    
-    const encoder = new TextEncoder();
-    const hashBuffer = await crypto.subtle.digest("SHA-256", encoder.encode(token));
-    const tokenHash = Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
-
-    const { data: newAttempt } = await db
-      .from("captive_auth_attempts")
-      .insert({
-        resume_token_hash: tokenHash,
-        client_mac: oldAttempt.client_mac,
-        ap_mac: oldAttempt.ap_mac,
-        ssid: oldAttempt.ssid,
-        store_hint: oldAttempt.store_hint,
-        captive_timestamp: oldAttempt.captive_timestamp,
-        original_url: oldAttempt.original_url,
-        expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
-        status: 'created'
-      })
-      .select("id")
-      .single();
-
-    if (newAttempt) {
-      return jsonResponse({ attempt_id: newAttempt.id, token });
-    }
+  
+  if (!body || !body.attempt_id || !body.resume_token) {
+    return errorResponse("Parâmetros attempt_id e resume_token são obrigatórios.", 400);
   }
 
-  return errorResponse("Não foi possível reiniciar a sessão.", 500);
+  const attemptId = body.attempt_id as string;
+  const resumeToken = body.resume_token as string;
+
+  // 1. Rate Limit fail-closed
+  try {
+    const rl = await checkRateLimitDb(db, `oauth-restart:ip:${clientIp || 'unknown'}`, 60, 3, 300);
+    if (!rl.allowed) return errorResponse("Muitas tentativas de reinício. Aguarde.", 429);
+    
+    const rlMac = await checkRateLimitDb(db, `oauth-restart:attempt:${attemptId}`, 60, 3, 300);
+    if (!rlMac.allowed) return errorResponse("Limite de reinício excedido para esta tentativa.", 429);
+  } catch (e) {
+    console.error("[oauth-restart] Rate limiter unavailable:", e);
+    return errorResponse("Serviço temporariamente indisponível.", 503);
+  }
+
+  // 2. Executar RPC transacional
+  const { data, error } = await db.rpc("safe_restart_oauth_attempt", {
+    p_attempt_id: attemptId,
+    p_resume_token: resumeToken,
+    p_client_ip: clientIp
+  });
+
+  if (error || !data || data.length === 0) {
+    const msg = error?.message || "Erro ao reiniciar sessão.";
+    console.error("[oauth-restart] RPC failed:", error);
+    
+    if (msg === 'INVALID_TOKEN' || msg === 'ATTEMPT_NOT_FOUND') {
+      return errorResponse("Transação inválida ou token incorreto.", 403);
+    }
+    if (msg === 'INVALID_STATE_FOR_RESTART') {
+      return errorResponse("Esta sessão não pode ser reiniciada no estado atual.", 400);
+    }
+    
+    return errorResponse("Não foi possível reiniciar a sessão.", 500);
+  }
+
+  const result = data[0];
+  return jsonResponse({
+    attempt_id: result.new_attempt_id,
+    token: result.new_token
+  });
 }
 

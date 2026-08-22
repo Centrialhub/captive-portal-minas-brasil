@@ -2,7 +2,7 @@ export default function Documentation() {
   return (
     <div className="p-8 font-sans max-w-4xl mx-auto">
       <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-lg text-green-800 text-sm">
-        Audit concluído: Migrations validadas, RPCs restritas e teste de concorrência aprovado. O sistema de Transactional Claim está garantindo a integridade e prevenindo loops CNA. Fluxo de Capability Unificado (Email/Google) ativo e seguro.
+        Audit concluído: Restart seguro via Capability Token (Prompt 34) ativo. O sistema garante que reinícios de fluxo exijam prova de posse do token original, prevenindo clonagem de sessões via URL. Integridade Transacional e Segurança Autorizada validadas.
       </div>
       <h1 className="text-3xl font-bold mb-6 text-gray-900 border-b pb-2">Captive Portal - Drogaria Minas Brasil</h1>
       <p className="mb-6 text-gray-600">Documentação visual de arquitetura, segurança e integridade do sistema.</p>
