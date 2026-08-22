@@ -370,15 +370,15 @@ export default function App() {
     if (busy) return;
     setError("");
 
-    if (!name || name.trim().length < 2) return setError("Informe seu nome completo.");
-    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return setError("E-mail inválido.");
+    if (!name || name.trim().split(/\s+/).length < 2) return setError("Informe seu nome completo (nome e sobrenome).");
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return setError("Informe um e-mail válido.");
     const phoneDigits = phone.replace(/\D/g, "");
-    if (phoneDigits && (phoneDigits.length < 10 || phoneDigits.length > 11)) return setError("Telefone inválido.");
-    if (password.length < 8) return setError("A senha deve ter ao menos 8 caracteres.");
+    if (!phoneDigits || phoneDigits.length < 10 || phoneDigits.length > 11) return setError("Informe um telefone válido com DDD.");
+    if (password.length < 8) return setError("A senha deve ter pelo menos 8 caracteres.");
     if (!/[A-Za-z]/.test(password) || !/[0-9]/.test(password))
       return setError("A senha deve conter letras e números.");
     if (password !== password2) return setError("As senhas não coincidem.");
-    if (!consented) return setError("Você precisa aceitar os termos.");
+    if (!consented) return setError("Você deve aceitar os termos de uso para continuar.");
 
     setBusy(true);
     try {
