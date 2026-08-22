@@ -513,7 +513,10 @@ async function discoverStoreByClientMac(
     if (!ctrlUrl) return null;
     const user = store.unifi_username || UNIFI_USERNAME;
     const pass = store.unifi_password || UNIFI_PASSWORD;
-    if (!user || !pass) return null;
+    if (!user || !pass) {
+      console.warn(`[discover] UNIFI_SECRET_NOT_CONFIGURED for store ${store.slug}`);
+      return null;
+    }
     const siteId = store.unifi_site_id || "default";
     const httpClient = createUnifiHttpClient();
     try {
@@ -960,8 +963,12 @@ async function unifiTryLogin(
   loginUrl: string, httpClient: Deno.HttpClient | null,
   username?: string, password?: string
 ): Promise<{ ok: boolean; cookie?: string; csrfToken?: string; token?: string; error?: string; isUnifiOs?: boolean }> {
-  const effectiveUser = username || UNIFI_USERNAME;
-  const effectivePass = password || UNIFI_PASSWORD;
+   const effectiveUser = username || UNIFI_USERNAME;
+   const effectivePass = password || UNIFI_PASSWORD;
+   
+   if (!effectiveUser || !effectivePass) {
+     throw new Error("UNIFI_SECRET_NOT_CONFIGURED");
+   }
   const ac = new AbortController();
   const timeout = setTimeout(() => ac.abort(), UNIFI_TIMEOUT_MS);
 
@@ -3476,7 +3483,7 @@ async function handleTestUnifiReach(req: Request): Promise<Response> {
     const res = await fetch(`${baseUrl}/api/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: UNIFI_USERNAME, password: UNIFI_PASSWORD }),
+      body: JSON.stringify({ username: UNIFI_USERNAME || "", password: UNIFI_PASSWORD || "" }),
       signal: ac.signal,
       client: httpClient,
     } as RequestInit);
