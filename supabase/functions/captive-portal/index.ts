@@ -4342,7 +4342,6 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
   });
 
   // Mark attempt as consumed on success
-  const attemptId = typeof body.attempt_id === "string" ? body.attempt_id : null;
   if (result.authorized && attemptId) {
     await db.from("captive_auth_attempts")
       .update({ 
