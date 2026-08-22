@@ -388,7 +388,6 @@ export default function App() {
       const result = await api.signup({
         name: name.trim(),
         email: email.trim().toLowerCase(),
-        cpf: "",
         phone: phoneDigits,
         password,
         client_mac: params.client_mac,
