@@ -610,7 +610,7 @@ export default function App() {
       <SuccessView 
         redirectUrl={redirectUrl} 
         successMsg={successMsg} 
-        onComplete={() => OAuthTracker.clearAll()} 
+        onComplete={handleAuthComplete} 
       />
     );
   }
