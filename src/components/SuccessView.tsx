@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import Footer from "../components/Footer";
 
 interface SuccessViewProps {
@@ -13,37 +13,73 @@ export const SuccessView: React.FC<SuccessViewProps> = ({
   onComplete
 }) => {
   const [countdown, setCountdown] = useState(2);
-  const navigatedRef = React.useRef(false);
+  
+  // Refs for logic control
+  const onCompleteRef = useRef(onComplete);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const autoExecutedRef = useRef(false);
+  const manualLockRef = useRef(false);
+
+  // Keep onComplete ref updated without restarting effects
+  useEffect(() => {
+    onCompleteRef.current = onComplete;
+  }, [onComplete]);
+
+  // Centralized cleanup
+  const cleanup = () => {
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    timeoutRef.current = null;
+    intervalRef.current = null;
+  };
 
   useEffect(() => {
-    if (!redirectUrl || navigatedRef.current) return;
+    // URL nula cria zero timers e mostra mensagem para fechar a janela
+    if (!redirectUrl) {
+      cleanup();
+      return;
+    }
 
-    const handleRedirect = () => {
-      if (navigatedRef.current) return;
-      navigatedRef.current = true;
-      if (onComplete) onComplete();
-      window.location.replace(redirectUrl);
-    };
-
-    const timer = setTimeout(() => {
-      handleRedirect();
+    // Effect principal depende apenas de redirectUrl estável
+    // O automático: cria um timeout e um interval
+    cleanup();
+    
+    timeoutRef.current = setTimeout(() => {
+      if (!autoExecutedRef.current && !manualLockRef.current) {
+        autoExecutedRef.current = true;
+        cleanup();
+        if (onCompleteRef.current) onCompleteRef.current();
+        window.location.replace(redirectUrl);
+      }
     }, 2000);
 
-    const interval = setInterval(() => {
+    intervalRef.current = setInterval(() => {
       setCountdown((prev) => Math.max(0, prev - 1));
     }, 1000);
 
     return () => {
-      clearTimeout(timer);
-      clearInterval(interval);
+      // Unmount limpa recursos sem executar onComplete automaticamente
+      cleanup();
     };
-  }, [redirectUrl, onComplete]);
+  }, [redirectUrl]);
 
   const handleManualRedirect = () => {
-    if (!redirectUrl || navigatedRef.current) return;
-    navigatedRef.current = true;
-    if (onComplete) onComplete();
+    if (!redirectUrl || manualLockRef.current) return;
+    
+    // Deduplica duplo clique
+    manualLockRef.current = true;
+    
+    // Cancela automático
+    cleanup();
+    
+    if (onCompleteRef.current) onCompleteRef.current();
     window.location.replace(redirectUrl);
+    
+    // Permite nova tentativa deliberada se a página continuou aberta (ex: bloqueio de CNA)
+    setTimeout(() => {
+      manualLockRef.current = false;
+    }, 2000);
   };
 
   return (
@@ -80,9 +116,12 @@ export const SuccessView: React.FC<SuccessViewProps> = ({
             </button>
           </div>
         ) : (
-          <p style={{ color: "#999", fontSize: 12, marginTop: 24 }}>
-            Seu acesso já foi liberado. Você pode fechar esta janela.
-          </p>
+          <div className="mt-6 p-4 bg-gray-50 rounded-lg border border-gray-100">
+            <p className="text-gray-600 text-sm leading-relaxed">
+              Seu acesso já foi liberado com sucesso.<br />
+              <strong>Você já pode fechar esta janela</strong> e aproveitar sua conexão.
+            </p>
+          </div>
         )}
         <Footer />
       </div>
