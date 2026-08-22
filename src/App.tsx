@@ -31,16 +31,6 @@ type Step =
 
 const CAPTIVE_PARAMS_STORAGE_KEY = "mb_captive_params_v2"; // Kept for legacy compat if needed
 
-/** Preserve UniFi captive params across an OAuth round-trip. Using localStorage for better persistence in CNA. */
-/** Legacy stashing - now handled by OAuthTracker */
-function stashCaptiveParams() {
-  OAuthTracker.stashCaptiveParams();
-}
-
-/** Legacy restore - now handled by OAuthTracker */
-function restoreCaptiveParamsIfNeeded() {
-  OAuthTracker.restoreCaptiveParams();
-}
 
 
 
