@@ -165,7 +165,7 @@ async function syncWithClubeMais(lead: {
   phone: string;
   email?: string | null;
   store_id?: string | null;
-}, db: any, traceId?: string | null): Promise<{ ok: boolean; message?: string; error?: string }> {
+}, db: any, traceId?: string | null): Promise<{ ok: boolean; message?: string; error?: string; sync_status?: number }> {
   if (!CLUBEMAIS_API_TOKEN) {
     console.warn("[clubemais] Sync skipped: CLUBEMAIS_API_TOKEN not set");
     return { ok: false, error: "TOKEN_MISSING" };
@@ -210,7 +210,7 @@ async function syncWithClubeMais(lead: {
     if (status >= 200 && status < 300) {
       return { ok: true, message: bodyText };
     }
-    return { ok: false, status, error: bodyText };
+    return { ok: false, sync_status: status, error: bodyText };
   } catch (err) {
     console.error(`[clubemais] Sync exception: ${(err as Error).message}`);
     return { ok: false, error: (err as Error).message };
@@ -318,8 +318,8 @@ interface LogEventArgs {
   trace_id?: string | null;
   store_id?: string | null;
   event_type: string;
-  step: "params" | "form" | "otp" | "unifi" | "redirect" | "system";
-  status?: "info" | "success" | "warning" | "error";
+  step: "params" | "form" | "otp" | "unifi" | "redirect" | "system" | "client";
+  status?: "info" | "success" | "warning" | "error" | "warn";
   error_code?: string | null;
   error_message?: string | null;
   latency_ms?: number | null;
@@ -3903,8 +3903,8 @@ async function handleClientEvent(req: Request): Promise<Response> {
 
   const sessionId = isValidUUID(body.session_id) ? (body.session_id as string) : null;
   const eventName = sanitizeString(body.event, 64) || "client_event";
-  const step = sanitizeString(body.step, 32) || "client";
-  const status = sanitizeString(body.status, 16) || "info";
+  const step = (sanitizeString(body.step, 32) || "client") as any;
+  const status = (sanitizeString(body.status, 16) || "info") as any;
   const errorCode = sanitizeString(body.error_code, 64);
   const errorMessage = sanitizeString(body.error_message, 500);
   const traceId = sanitizeString(body.trace_id, 64) || getTraceId(req, body);
@@ -4086,6 +4086,7 @@ async function authorizeAuthenticatedUser(args: {
     redirect_url: detected.redirect_url || DEFAULT_REDIRECT_URL,
     fail_reason: authResult.ok ? undefined : (authResult.reason || "AUTHORIZE_FAILED"),
     store_slug: storeSlug,
+    store_id: storeId,
   };
 }
 
@@ -4506,7 +4507,8 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
   }
 
   const result = await authorizeAuthenticatedUser({
-    db, userId, ctx, req, authMethod, traceId, clientIp, userAgent: ua, profile,
+    db, userId, ctx, req, authMethod, traceId, clientIp, userAgent: ua, 
+    profile: profile as any,
   });
 
   // Background sync with CRM on authenticated login success (if lead is complete)
