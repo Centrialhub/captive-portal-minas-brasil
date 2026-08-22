@@ -1,10 +1,11 @@
 
 /**
- * Utility to track Google OAuth flow and preserve captive parameters.
+ * Utility to track Google OAuth flow and preserve captive parameters authoritatively.
  */
+import { api } from "./api";
 
-const STORAGE_KEY = "mb_oauth_marker_v1";
-const CAPTIVE_PARAMS_KEY = "mb_captive_params_v3";
+const ATTEMPT_ID_KEY = "mb_oauth_attempt_id";
+const ATTEMPT_TOKEN_KEY = "mb_oauth_attempt_token";
 
 export interface CaptiveParams {
   id?: string;
@@ -19,52 +20,62 @@ export interface CaptiveParams {
 
 export const OAuthTracker = {
   /**
-   * Save captive parameters to localStorage before starting OAuth.
+   * Initialize a server-side OAuth transaction.
    */
-  stashCaptiveParams() {
+  async initOAuthTransaction(): Promise<{ attempt_id: string; token: string } | null> {
     try {
       const p = new URLSearchParams(window.location.search);
-      const out: Record<string, string> = {};
+      const params: Record<string, string> = {};
       const keys = ["id", "mac", "ap", "ssid", "url", "t", "site", "store"];
       
       keys.forEach((k) => {
         const v = p.get(k);
-        if (v) out[k] = v;
+        if (v) params[k] = v;
       });
 
-      if (Object.keys(out).length) {
-        localStorage.setItem(CAPTIVE_PARAMS_KEY, JSON.stringify(out));
+      if (!params.id && !params.mac) {
+        console.warn("[OAuthTracker] Missing MAC address in parameters");
+      }
+
+      const res = await api.initOAuth({
+        params,
+        original_url: window.location.href
+      });
+
+      if (res.attempt_id && res.token) {
+        localStorage.setItem(ATTEMPT_ID_KEY, res.attempt_id);
+        localStorage.setItem(ATTEMPT_TOKEN_KEY, res.token);
+        return { attempt_id: res.attempt_id, token: res.token };
       }
       
-      // Save OAuth marker with timestamp
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({
-        version: "1.0",
-        timestamp: Date.now(),
-        provider: "google"
-      }));
+      return null;
     } catch (e) {
-      console.warn("[OAuthTracker] stash failed:", e);
+      console.error("[OAuthTracker] init failed:", e);
+      return null;
     }
   },
 
   /**
-   * Restore stashed captive parameters into the current URL.
+   * Restore stashed captive parameters into the current URL using the attempt tokens.
    */
   restoreCaptiveParams(): boolean {
     try {
-      const raw = localStorage.getItem(CAPTIVE_PARAMS_KEY);
-      if (!raw) return false;
+      const attemptId = localStorage.getItem(ATTEMPT_ID_KEY);
+      const token = localStorage.getItem(ATTEMPT_TOKEN_KEY);
       
-      const saved = JSON.parse(raw) as CaptiveParams;
+      if (!attemptId || !token) return false;
+      
       const current = new URLSearchParams(window.location.search);
-      
       let changed = false;
-      Object.entries(saved).forEach(([k, v]) => {
-        if (v && !current.has(k)) {
-          current.set(k, v);
-          changed = true;
-        }
-      });
+
+      if (!current.has("attempt_id")) {
+        current.set("attempt_id", attemptId);
+        changed = true;
+      }
+      if (!current.has("resume_token")) {
+        current.set("resume_token", token);
+        changed = true;
+      }
 
       if (changed) {
         const qs = current.toString();
@@ -79,42 +90,46 @@ export const OAuthTracker = {
   },
 
   /**
-   * Check if we are in an active OAuth flow.
-   * TTL: 10 minutes.
+   * Check if we have tokens for an active transaction.
    */
   isValidOAuthFlow(): boolean {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return false;
-      
-      const marker = JSON.parse(raw);
-      const now = Date.now();
-      const tenMinutes = 10 * 60 * 1000;
-      
-      if (marker && marker.timestamp && (now - marker.timestamp) < tenMinutes) {
-        return true;
-      }
-      
-      // Expired or invalid
-      this.clearMarker();
-    } catch (e) {
-      this.clearMarker();
-    }
-    return false;
+    const attemptId = localStorage.getItem(ATTEMPT_ID_KEY);
+    const token = localStorage.getItem(ATTEMPT_TOKEN_KEY);
+    
+    // We also check for tokens in the current URL (callback path)
+    const p = new URLSearchParams(window.location.search);
+    const urlAttemptId = p.get("attempt_id");
+    const urlToken = p.get("resume_token");
+
+    return !!((attemptId && token) || (urlAttemptId && urlToken));
   },
 
-  /**
-   * Clear only the OAuth marker. Captive params stay until authorization finishes.
-   */
-  clearMarker() {
-    localStorage.removeItem(STORAGE_KEY);
+  getTokens() {
+    const p = new URLSearchParams(window.location.search);
+    return {
+      attempt_id: p.get("attempt_id") || localStorage.getItem(ATTEMPT_ID_KEY),
+      token: p.get("resume_token") || localStorage.getItem(ATTEMPT_TOKEN_KEY)
+    };
   },
 
   /**
    * Clear everything.
    */
   clearAll() {
-    localStorage.removeItem(STORAGE_KEY);
-    localStorage.removeItem(CAPTIVE_PARAMS_KEY);
-  }
+    localStorage.removeItem(ATTEMPT_ID_KEY);
+    localStorage.removeItem(ATTEMPT_TOKEN_KEY);
+    
+    // Also remove from URL to prevent infinite reload loops
+    const current = new URLSearchParams(window.location.search);
+    if (current.has("attempt_id") || current.has("resume_token")) {
+      current.delete("attempt_id");
+      current.delete("resume_token");
+      const qs = current.toString();
+      const newUrl = window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash;
+      window.history.replaceState(null, "", newUrl);
+    }
+  },
+
+  // Legacy stubs for App.tsx compatibility during migration
+  stashCaptiveParams() { console.warn("stashCaptiveParams is deprecated, use initOAuthTransaction"); }
 };
