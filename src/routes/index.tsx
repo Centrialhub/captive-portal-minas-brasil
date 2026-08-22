@@ -17,6 +17,7 @@ export default function Documentation() {
             <li>Transações OAuth (Google) autoritativas no servidor (Prompt 05).</li>
             <li>Remoção completa do subsistema OTP/WhatsApp legado (Prompt 09).</li>
             <li>Idempotência transacional autoritativa no servidor (Prompt 06).</li>
+            <li>Melhorias de Design e Interface (Refinamento Visual).</li>
             <li>Build Docker reprodutível com lint e typecheck.</li>
           </ul>
         </section>
