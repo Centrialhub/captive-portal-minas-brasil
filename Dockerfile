@@ -1,11 +1,14 @@
-FROM node:20-alpine AS build
+# Node.js LTS 24.x
+FROM node:24-alpine@sha256:79a5446059b5edc74a0c8b6d859e9b25a2df6b5c0c9394628d08c8e1e75685a4 AS build
 WORKDIR /app
 COPY package*.json ./
-RUN npm install
+# Use npm ci for deterministic builds based on lockfile
+RUN npm ci
 COPY . .
 RUN npm run build
 
-FROM nginx:alpine
+# Nginx alpine stable
+FROM nginx:1.27-alpine@sha256:4ff37a47b85e0513e4b3c0628e378c3a10526017a54a014283c847ec0537fd97
 COPY --from=build /app/dist /usr/share/nginx/html
 
 RUN printf 'server {\n\
@@ -16,14 +19,14 @@ RUN printf 'server {\n\
     absolute_redirect off;\n\
     port_in_redirect off;\n\
 \n\
-    # Health check para EasyPanel\n\
+    # Health check for EasyPanel\n\
     location = /health {\n\
         access_log off;\n\
         default_type text/plain;\n\
         return 200 "ok";\n\
     }\n\
 \n\
-    # Proxy para Edge Functions do Supabase\n\
+    # Proxy for Supabase Edge Functions\n\
     location /api/captive-portal/ {\n\
         proxy_pass https://fqamejlyytrhovawgtwg.supabase.co/functions/v1/captive-portal/;\n\
         proxy_set_header Host fqamejlyytrhovawgtwg.supabase.co;\n\
@@ -44,7 +47,7 @@ RUN printf 'server {\n\
         if ($request_method = OPTIONS) { return 204; }\n\
     }\n\
 \n\
-    # Proxy reverso para o UniFi Controller\n\
+    # Reverse proxy for UniFi Controller\n\
     location /unifi/ {\n\
         proxy_pass https://rwificontroller.drogariaminasbrasil.com.br:8083/;\n\
         proxy_ssl_verify off;\n\
@@ -61,12 +64,12 @@ RUN printf 'server {\n\
         proxy_set_header Connection "upgrade";\n\
     }\n\
 \n\
-    # Redirect do captive portal UniFi para o portal\n\
+    # UniFi redirect alias\n\
     location /guest/s/default/ {\n\
         return 302 https://minasbrasilwifi.com.br/?store=matriz&$args;\n\
     }\n\
 \n\
-    # Probes do CNA\n\
+    # CNA Probes\n\
     location = /generate_204 { return 302 https://minasbrasilwifi.com.br/; }\n\
     location = /gen_204 { return 302 https://minasbrasilwifi.com.br/; }\n\
     location = /hotspot-detect.html { return 302 https://minasbrasilwifi.com.br/; }\n\

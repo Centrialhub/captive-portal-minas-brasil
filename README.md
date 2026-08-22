@@ -1,92 +1,17 @@
-# Welcome to your Lovable project
+# Drogaria Minas Brasil WiFi Portal
 
-## Project info
+Captive portal for Drogaria Minas Brasil WiFi network.
 
-**URL**: https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID
+## Build and Check
 
-## How can I edit this code?
-
-There are several ways of editing your application.
-
-**Use Lovable**
-
-Simply visit the [Lovable Project](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and start prompting.
-
-Changes made via Lovable will be committed automatically to this repo.
-
-**Use your preferred IDE**
-
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
-
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
-
-Follow these steps:
-
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
-
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
-
-# Step 3: Install the necessary dependencies.
-npm i
-
-# Step 4: Start the development server with auto-reloading and an instant preview.
-npm run dev
+```bash
+npm run check
 ```
 
-**Edit a file directly in GitHub**
+## Production
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Click the changes and commit the changes.
+The production environment uses Docker and Node 24 LTS.
 
-**Use GitHub Codespaces**
-
-- Navigate to the main page of your repository.
-- Click the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click "New codespace" to launch a new codespace.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
-
-## What technologies are used for this project?
-
-This project is built with:
-
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
-
-## How can I deploy this project?
-
-Simply open [Lovable](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and click on Share -> Publish.
-
-## Can I connect a custom domain to my Lovable project?
-
-Yes, you can!
-
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
-
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
-
-## UniFi Walled Garden (Pre-Authorization Access)
-
-Para o captive portal funcionar corretamente no Android/iOS, adicione os seguintes domínios na lista **Pre-Authorization Access** (Walled Garden) da rede convidado no UniFi Controller:
-
-| Domínio / IP | Motivo |
-|---|---|
-| `minasbrasilwifi.com.br` | Portal captive (frontend) |
-| `*.minasbrasilwifi.com.br` | Subdomínios do portal |
-| `fqamejlyytrhovawgtwg.supabase.co` | API backend (Supabase) |
-| `*.vercel.app` | CDN do Vercel (assets JS/CSS) |
-| `76.76.21.21` | IP do Vercel |
-| `accounts.google.com` | Autenticação OAuth Google |
-| `oauth.googleapis.com` | Fluxo OAuth Google (tokens) |
-| `ocsp.pki.goog` | Validação de certificado SSL (Google) |
-| `ocsp.digicert.com` | Validação de certificado SSL (DigiCert) |
-| `o.pki.goog` | Validação de certificado SSL (Google) |
-
-> **Dica:** Como as controladoras e o portal agora usam certificados públicos válidos, mantenha o "Secure Portal" ativado no UniFi. O fluxo HTTPS funciona normalmente.
+```bash
+docker build -t minas-brasil-wifi .
+```
