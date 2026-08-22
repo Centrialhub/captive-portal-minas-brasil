@@ -1,4 +1,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.4";
+import { encode } from "https://deno.land/std@0.177.0/encoding/hex.ts";
+import { crypto } from "https://deno.land/std@0.177.0/crypto/mod.ts";
+
 
 // ========== Constants ==========
 const corsHeaders = {
