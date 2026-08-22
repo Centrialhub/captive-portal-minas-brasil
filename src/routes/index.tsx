@@ -2,42 +2,51 @@ export default function Home() {
   return (
     <div className="flex flex-col items-center justify-center min-h-screen p-4 text-center">
       <h1 className="text-2xl font-bold mb-4 uppercase text-red-600">
-        PROMPT 01 — RESTAURAR EXCLUSIVAMENTE A ROTA POST /LOGIN
+        PROMPT 07 — GARANTIR EXCLUSIVAMENTE IDEMPOTÊNCIA SERVER-SIDE NA LIBERAÇÃO
       </h1>
 
       <div className="max-w-2xl text-left bg-white p-6 rounded-lg shadow-md border-t-4 border-red-600">
         <h2 className="font-bold text-lg mb-2">Objetivo único:</h2>
         <p className="mb-4 text-gray-700">
-          Restaurar o roteamento do login por e-mail e senha para o handler `handleLogin` já existente. 
-          Esta interação não deve modificar a lógica interna de autenticação, cadastro, sessão Supabase, 
-          OAuth Google, CPF, redirecionamento, autorização UniFi, banco de dados, interface ou qualquer outro endpoint.
+          Impedir que a mesma tentativa provoque duas sessões ou duas chamadas UniFi. Não alterar o conteúdo da chamada UniFi funcional.
         </p>
 
-        <h2 className="font-bold text-lg mb-2">Diagnóstico confirmado:</h2>
+        <h2 className="font-bold text-lg mb-2">Implementação:</h2>
+        <ol className="list-decimal ml-6 mb-4 text-gray-700">
+          <li>Usar <code>captive_auth_attempts.id</code> como chave idempotente.</li>
+          <li className="mt-2">Adicionar <code>attempt_id</code> obrigatório a authorize-existing e aos demais fluxos que possam autorizar.</li>
+          <li className="mt-2">Criar RPC transacional <code>claim_captive_authorization</code>.</li>
+          <li className="mt-2">A RPC deve bloquear atomicamente a tentativa e permitir transição:
+            <ul className="list-disc ml-6 mt-2">
+              <li>callback_received/awaiting_cpf → authorizing.</li>
+            </ul>
+          </li>
+          <li className="mt-2">Somente a requisição que efetuar essa transição pode:
+            <ul className="list-disc ml-6 mt-2 text-sm italic">
+              <li>criar captive_sessions; atualizar lead; chamar authorizeClient.</li>
+            </ul>
+          </li>
+          <li className="mt-2">Requisições concorrentes devem:
+            <ul className="list-disc ml-6 mt-2">
+              <li>retornar o estado atual; nunca criar nova captive_session; nunca chamar UniFi novamente.</li>
+            </ul>
+          </li>
+          <li className="mt-2">Registrar em captive_auth_attempts:
+            <ul className="list-disc ml-6 mt-2 text-sm italic">
+              <li>captive_session_id; authorization_started_at; authorization_finished_at; authorized; fail_reason normalizado; número de tentativas controladas.</li>
+            </ul>
+          </li>
+        </ol>
+
+        <h2 className="font-bold text-lg mb-2">Testes obrigatórios:</h2>
         <ul className="list-disc ml-6 mb-4 text-gray-700">
-          <li>O frontend chama: <code>POST /login</code> por meio de <code>src/lib/api.ts</code>.</li>
-          <li>O handler <code>handleLogin(req)</code> existe na Edge Function.</li>
-          <li>O Main Router não possuía a condição para encaminhar o path <code>/login</code> (POST).</li>
+          <li>20 requests simultâneos para o mesmo attempt_id geram uma captive_session e uma chamada UniFi.</li>
+          <li>Refresh depois de sucesso retorna o mesmo resultado.</li>
+          <li>INITIAL_SESSION e SIGNED_IN simultâneos geram uma chamada.</li>
         </ul>
 
-        <h2 className="font-bold text-lg mb-2">Implementação realizada:</h2>
-        <p className="mb-4 text-gray-700">
-          Adicionada ao Main Router da Edge Function a condição obrigatória:
-        </p>
-        <pre className="bg-gray-100 p-3 rounded mb-4 overflow-x-auto text-sm">
-          {`if (path === "/login" && req.method === "POST") {
-  return await handleLogin(req);
-}`}
-        </pre>
-
-        <h2 className="font-bold text-lg mb-2">Regras respeitadas:</h2>
-        <ul className="list-disc ml-6 mb-4 text-gray-700">
-          <li>Nenhum novo handler criado ou duplicado.</li>
-          <li>Endpoint original preservado (sem aliases).</li>
-          <li>Payload e formato de resposta inalterados.</li>
-          <li>Nenhuma alteração em CORS ou headers comuns.</li>
-          <li>Nenhuma implementação temporária ou mock adicionado.</li>
-        </ul>
+        <h2 className="font-bold text-lg mb-2">Critério de aceite:</h2>
+        <p className="text-gray-700">Para cada attempt_id, a quantidade máxima de chamadas UniFi bem iniciadas é uma, salvo retry server-side explicitamente controlado após falha transitória.</p>
       </div>
     </div>
   );
