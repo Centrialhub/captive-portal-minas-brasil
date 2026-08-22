@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { api } from "./lib/api";
 import { supabase } from "./integrations/supabase/client";
@@ -6,7 +6,7 @@ import {
   getQueryParams,
   resolvePostAuthRedirect,
   formatCPF,
-  isValidCPF,
+  Validators,
 } from "./lib/portal-utils";
 import { OAuthTracker } from "./lib/oauth-tracker";
 import logoMinasBrasil from "./assets/logo-minas-brasil.png";
@@ -94,10 +94,24 @@ export default function App() {
   const [countdown, setCountdown] = useState(2);
   const redirectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const handleAuthOutcome = (result: any, successMessage: string) => {
+    if (result?.authorized) {
+      setSuccessMsg(successMessage);
+      const params = getQueryParams();
+      const finalUrl = resolvePostAuthRedirect(result.redirect_url, params.redirect_url);
+      setRedirectUrl(finalUrl);
+      setStep("success");
+      authCompletedRef.current = true;
+      OAuthTracker.clearAll();
+      return true;
+    }
+    return false;
+  };
 
-  const handleAuthComplete = useMemo(() => () => {
+  const handleAuthComplete = useCallback(() => {
     OAuthTracker.clearAll();
   }, []);
+
 
   const completeAuthenticatedSession = async (session: any, source: "google" | "silent") => {
     if (authCompletedRef.current) return;
@@ -152,12 +166,7 @@ export default function App() {
             status: "success",
             payload: { source }
           });
-          setSuccessMsg("Wi-Fi liberado com sucesso!");
-          const finalUrl = resolvePostAuthRedirect(result.redirect_url, params.redirect_url);
-          setRedirectUrl(finalUrl);
-          setStep("success");
-          authCompletedRef.current = true;
-
+          handleAuthOutcome(result, "Wi-Fi liberado com sucesso!");
           return result;
         }
 
@@ -303,12 +312,7 @@ export default function App() {
           refresh_token: result.refresh_token,
         });
       }
-      if (result?.authorized) {
-        setSuccessMsg("Conectado com sucesso!");
-        const finalUrl = resolvePostAuthRedirect(result.redirect_url, params.redirect_url);
-        setRedirectUrl(finalUrl);
-        setStep("success");
-      } else {
+      if (!handleAuthOutcome(result, "Conectado com sucesso!")) {
         setError(
           "Login realizado, mas o Wi-Fi não confirmou a liberação. Desconecte e conecte-se novamente à rede.",
         );
@@ -325,7 +329,7 @@ export default function App() {
     setError("");
 
     const digits = promptCpf.replace(/\D/g, "");
-    if (!isValidCPF(digits)) {
+    if (!Validators.cpf(digits)) {
       setError("CPF inválido. Verifique os números informados.");
       return;
     }
@@ -412,12 +416,7 @@ export default function App() {
           refresh_token: result.refresh_token,
         });
       }
-      if (result?.authorized) {
-        setSuccessMsg("Cadastro concluído. Conectado com sucesso!");
-        const finalUrl = resolvePostAuthRedirect(result.redirect_url, params.redirect_url);
-        setRedirectUrl(finalUrl);
-        setStep("success");
-      } else {
+      if (!handleAuthOutcome(result, "Cadastro concluído. Conectado com sucesso!")) {
         setError(
           "Conta criada, mas o Wi-Fi não confirmou a liberação. Desconecte e conecte-se novamente à rede.",
         );

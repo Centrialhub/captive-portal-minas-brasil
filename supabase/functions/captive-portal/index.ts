@@ -64,84 +64,83 @@ function errorResponse(message: string, status = 400) {
 }
 
 // ========== Sanitization & Validation ==========
-function sanitizeString(s: unknown, maxLen: number): string | null {
-  if (typeof s !== "string") return null;
-  return s.replace(/[\x00-\x1F\x7F]/g, "").trim().slice(0, maxLen) || null;
-}
+// ========== Sanitization & Validation ==========
 
-function normalizeMac(mac: unknown): string | null {
-  if (typeof mac !== "string" || !mac) return null;
-  const clean = mac.replace(/[^a-fA-F0-9]/g, "").toUpperCase();
-  return clean.length === 12 ? clean : null;
-}
+const Validators = {
+  string(s: unknown, maxLen: number): string | null {
+    if (typeof s !== "string") return null;
+    return s.replace(/[\x00-\x1F\x7F]/g, "").trim().slice(0, maxLen) || null;
+  },
 
-function isValidMac(mac: string | null): boolean {
-  if (!mac) return false;
-  return MAC_REGEX.test(mac);
-}
+  mac(mac: unknown): string | null {
+    if (typeof mac !== "string" || !mac) return null;
+    const clean = mac.replace(/[^a-fA-F0-9]/g, "").toUpperCase();
+    return clean.length === 12 && MAC_REGEX.test(clean) ? clean : null;
+  },
 
-function isValidEmail(email: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && email.length <= MAX_EMAIL_LEN;
-}
+  email(email: string): boolean {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && email.length <= MAX_EMAIL_LEN;
+  },
 
-// Lista de DDDs brasileiros válidos (ANATEL).
-const VALID_BR_DDD = new Set([
-  11,12,13,14,15,16,17,18,19, 21,22,24,27,28, 31,32,33,34,35,37,38,
-  41,42,43,44,45,46,47,48,49, 51,53,54,55, 61,62,63,64,65,66,67,68,69,
-  71,73,74,75,77,79, 81,82,83,84,85,86,87,88,89, 91,92,93,94,95,96,97,98,99,
-]);
-
-function isValidPhone(phone: string): boolean {
-  let digits = phone.replace(/\D/g, "");
-  if (digits.startsWith("55") && (digits.length === 12 || digits.length === 13)) {
-    digits = digits.slice(2);
-  }
-  if (digits.length !== 10 && digits.length !== 11) return false;
-  const ddd = parseInt(digits.slice(0, 2), 10);
-  if (!VALID_BR_DDD.has(ddd)) return false;
-  if (digits.length === 11 && digits[2] !== "9") return false;
-  if (digits.length === 10 && !/^[2-5]/.test(digits.slice(2, 3))) return false;
-  return true;
-}
-
-
-
-function isValidCPF(cpf: string): boolean {
-  const digits = (cpf || "").replace(/\D/g, "");
-  if (digits.length !== 11) return false;
-  if (/^(\d)\1{10}$/.test(digits)) return false;
-  const calcDV = (base: string, weights: number[]): number => {
-    let sum = 0;
-    for (let i = 0; i < base.length; i++) {
-      sum += parseInt(base[i], 10) * weights[i];
+  phone(phone: string): boolean {
+    let digits = phone.replace(/\D/g, "");
+    if (digits.startsWith("55") && (digits.length === 12 || digits.length === 13)) {
+      digits = digits.slice(2);
     }
-    const remainder = (sum * 10) % 11;
-    return remainder === 10 ? 0 : remainder;
-  };
-  const firstDV = calcDV(digits.slice(0, 9), [10, 9, 8, 7, 6, 5, 4, 3, 2]);
-  if (firstDV !== parseInt(digits[9], 10)) return false;
-  const secondDV = calcDV(digits.slice(0, 10), [11, 10, 9, 8, 7, 6, 5, 4, 3, 2]);
-  if (secondDV !== parseInt(digits[10], 10)) return false;
-  return true;
-}
+    if (digits.length !== 10 && digits.length !== 11) return false;
+    const ddd = parseInt(digits.slice(0, 2), 10);
+    if (!VALID_BR_DDD.has(ddd)) return false;
+    if (digits.length === 11 && digits[2] !== "9") return false;
+    if (digits.length === 10 && !/^[2-5]/.test(digits.slice(2, 3))) return false;
+    return true;
+  },
 
-/**
- * Normaliza telefone para E.164 brasileiro (ex: 5531999999999).
- * O webhook do Centrial Hub exige esse formato — sem '+', apenas dígitos com DDI 55.
- */
+  cpf(cpf: string): boolean {
+    const digits = (cpf || "").replace(/\D/g, "");
+    if (digits.length !== 11) return false;
+    if (/^(\d)\1{10}$/.test(digits)) return false;
+    
+    const calcDV = (base: string, weights: number[]): number => {
+      let sum = 0;
+      for (let i = 0; i < base.length; i++) {
+        sum += parseInt(base[i], 10) * weights[i];
+      }
+      const remainder = (sum * 10) % 11;
+      return remainder === 10 ? 0 : remainder;
+    };
+    
+    const firstDV = calcDV(digits.slice(0, 9), [10, 9, 8, 7, 6, 5, 4, 3, 2]);
+    if (firstDV !== parseInt(digits[9], 10)) return false;
+    
+    const secondDV = calcDV(digits.slice(0, 10), [11, 10, 9, 8, 7, 6, 5, 4, 3, 2]);
+    if (secondDV !== parseInt(digits[10], 10)) return false;
+    
+    return true;
+  },
+
+  uuid(id: unknown): boolean {
+    return typeof id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+  },
+
+  slug(slug: string): boolean {
+    return /^[a-z0-9][a-z0-9_-]{0,48}[a-z0-9]$/.test(slug) || /^[a-z0-9]$/.test(slug);
+  },
+
+  ip(ip: string): boolean {
+    if (/^(\d{1,3}\.){3}\d{1,3}$/.test(ip)) {
+      return ip.split(".").every((part) => parseInt(part) <= 255);
+    }
+    if (/^[0-9a-fA-F:]+$/.test(ip) && ip.includes(":")) return true;
+    return false;
+  }
+};
+
+/** Normaliza telefone para E.164 brasileiro (ex: 5531999999999) */
 function toE164BR(phone: string): string {
   let digits = (phone || "").replace(/\D/g, "");
-  // Remove zero à esquerda (formato antigo de discagem nacional)
   digits = digits.replace(/^0+/, "");
-  // Se já começa com 55 e tem 12-13 dígitos, já está OK
-  if (digits.startsWith("55") && (digits.length === 12 || digits.length === 13)) {
-    return digits;
-  }
-  // Se tem 10 ou 11 dígitos (DDD + número), prefixar 55
-  if (digits.length === 10 || digits.length === 11) {
-    return "55" + digits;
-  }
-  // Fallback: retorna como veio (já validado por isValidPhone)
+  if (digits.startsWith("55") && (digits.length === 12 || digits.length === 13)) return digits;
+  if (digits.length === 10 || digits.length === 11) return "55" + digits;
   return digits;
 }
 
@@ -207,37 +206,21 @@ async function syncWithClubeMais(lead: {
   }
 }
 
-function isValidSlug(slug: string): boolean {
-  return /^[a-z0-9][a-z0-9_-]{0,48}[a-z0-9]$/.test(slug) || /^[a-z0-9]$/.test(slug);
-}
-
-function isValidUUID(id: unknown): boolean {
-  return typeof id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
-}
-
 /** Extract real public IP from request headers (never trust body) */
 function getPublicIp(req: Request): string | null {
   const cfIp = req.headers.get("cf-connecting-ip")?.trim();
-  if (cfIp && isValidIp(cfIp)) return cfIp;
+  if (cfIp && Validators.ip(cfIp)) return cfIp;
 
   const xForwardedFor = req.headers.get("x-forwarded-for");
   if (xForwardedFor) {
     const first = xForwardedFor.split(",")[0]?.trim();
-    if (first && isValidIp(first)) return first;
+    if (first && Validators.ip(first)) return first;
   }
 
   const xRealIp = req.headers.get("x-real-ip")?.trim();
-  if (xRealIp && isValidIp(xRealIp)) return xRealIp;
+  if (xRealIp && Validators.ip(xRealIp)) return xRealIp;
 
   return null;
-}
-
-function isValidIp(ip: string): boolean {
-  if (/^(\d{1,3}\.){3}\d{1,3}$/.test(ip)) {
-    return ip.split(".").every((part) => parseInt(part) <= 255);
-  }
-  if (/^[0-9a-fA-F:]+$/.test(ip) && ip.includes(":")) return true;
-  return false;
 }
 
 async function safeParseJson(req: Request): Promise<Record<string, unknown> | null> {
@@ -2328,13 +2311,36 @@ interface AuthAuthorizeContext {
 
 function extractAuthContext(body: Record<string, unknown>): AuthAuthorizeContext {
   return {
-    clientMac: normalizeMac(body.client_mac),
-    apMac: normalizeMac(body.ap_mac),
-    ssid: sanitizeString(body.ssid, 64),
-    redirectUrl: sanitizeString(body.redirect_url, 500),
-    captiveTimestamp: sanitizeString(body.captive_timestamp, 32),
+    clientMac: Validators.mac(body.client_mac),
+    apMac: Validators.mac(body.ap_mac),
+    ssid: Validators.string(body.ssid, 64),
+    redirectUrl: Validators.string(body.redirect_url, 500),
+    captiveTimestamp: Validators.string(body.captive_timestamp, 32),
   };
 }
+
+async function getValidatedAuthContext(
+  db: ReturnType<typeof supabaseAdmin>,
+  body: Record<string, unknown>,
+  contextName: string
+): Promise<{ ctx: AuthAuthorizeContext; attemptId: string | null; error?: Response }> {
+  let ctx = extractAuthContext(body);
+  const attemptId = typeof body.attempt_id === "string" ? body.attempt_id : null;
+  const resumeToken = typeof body.resume_token === "string" ? body.resume_token : null;
+
+  if (attemptId && resumeToken) {
+    const val = await validateOAuthAttempt(db, attemptId, resumeToken);
+    if (val.status === 'invalid') {
+      return { ctx, attemptId, error: jsonResponse({ error: val.error || "Tentativa inválida.", code: "invalid_attempt" }, 403) };
+    }
+    if (val.params) {
+      ctx = val.params;
+      console.log(`[${contextName}] using authoritative parameters for attempt=${attemptId} mac=${ctx.clientMac}`);
+    }
+  }
+  return { ctx, attemptId };
+}
+
 
 /**
  * Runs authorization for a logged-in user after signup/login/silent-login.
@@ -2852,21 +2858,9 @@ async function handleSignup(req: Request): Promise<Response> {
     return jsonResponse({ error: "Conta criada, mas não foi possível entrar. Tente fazer login.", code: "post_signup_signin_failed" }, 500);
   }
 
-  let ctx = extractAuthContext(body);
-  const attemptId = typeof body.attempt_id === "string" ? body.attempt_id : null;
-  const resumeToken = typeof body.resume_token === "string" ? body.resume_token : null;
+  const { ctx, attemptId, error: authErr } = await getValidatedAuthContext(db, body, "signup");
+  if (authErr) return authErr;
 
-  // Unified Capability Enforcement
-  if (attemptId && resumeToken) {
-    const val = await validateOAuthAttempt(db, attemptId, resumeToken);
-    if (val.status === 'invalid') {
-      return jsonResponse({ error: val.error || "Tentativa inválida.", code: "invalid_attempt" }, 403);
-    }
-    if (val.params) {
-      ctx = val.params;
-      console.log(`[signup] using authoritative parameters for attempt=${attemptId} mac=${ctx.clientMac}`);
-    }
-  }
 
   const result = await authorizeAuthenticatedUser({
     db, userId, ctx, req, authMethod: "password", traceId, clientIp, userAgent: ua,
@@ -2939,21 +2933,9 @@ async function handleLogin(req: Request): Promise<Response> {
     return jsonResponse({ error: "Perfil não encontrado. Faça um novo cadastro.", code: "profile_not_found" }, 404);
   }
 
-  let ctx = extractAuthContext(body);
-  const attemptId = typeof body.attempt_id === "string" ? body.attempt_id : null;
-  const resumeToken = typeof body.resume_token === "string" ? body.resume_token : null;
+  const { ctx, attemptId, error: authErr } = await getValidatedAuthContext(db, body, "login");
+  if (authErr) return authErr;
 
-  // Unified Capability Enforcement
-  if (attemptId && resumeToken) {
-    const val = await validateOAuthAttempt(db, attemptId, resumeToken);
-    if (val.status === 'invalid') {
-      return jsonResponse({ error: val.error || "Tentativa inválida.", code: "invalid_attempt" }, 403);
-    }
-    if (val.params) {
-      ctx = val.params;
-      console.log(`[login] using authoritative parameters for attempt=${attemptId} mac=${ctx.clientMac}`);
-    }
-  }
 
   const result = await authorizeAuthenticatedUser({
     db, userId, ctx, req, authMethod: "password", traceId, clientIp, userAgent: ua, profile,
@@ -2990,11 +2972,9 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
     return jsonResponse({ needs_login: true, error: "missing_token" }, 401);
   }
 
-  let ctx = extractAuthContext(body);
-  
-  // Authoritative Attempt Validation
-  const attemptId = typeof body.attempt_id === "string" ? body.attempt_id : null;
-  const resumeToken = typeof body.resume_token === "string" ? body.resume_token : null;
+  const { ctx, attemptId, error: authErr } = await getValidatedAuthContext(db, body, "silent_login");
+  if (authErr) return authErr;
+
   
   // Validate token via getUser (project rule: use getUser, not getClaims)
   const anonClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
@@ -3285,6 +3265,15 @@ async function handleUpdateProfile(req: Request): Promise<Response> {
 
 // ========== Main Router ==========
 
+
+function isValidUUID(id: unknown): boolean { return Validators.uuid(id); }
+function isValidMac(mac: string | null): boolean { return Validators.mac(mac) !== null; }
+function sanitizeString(s: unknown, maxLen: number): string | null { return Validators.string(s, maxLen); }
+function normalizeMac(mac: unknown): string | null { return Validators.mac(mac); }
+function isValidEmail(email: string): boolean { return Validators.email(email); }
+function isValidPhone(phone: string): boolean { return Validators.phone(phone); }
+function isValidCPF(cpf: string): boolean { return Validators.cpf(cpf); }
+function isValidSlug(slug: string): boolean { return Validators.slug(slug); }
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
