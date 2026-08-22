@@ -3164,7 +3164,10 @@ Deno.serve(async (req: Request) => {
     : url.pathname.replace(/^\/captive-portal/, "");
 
   try {
-    // 1. Redirect standard captive aliases to React portal
+    // 1. System/Health endpoints
+    if (path === "/health" || path === "/ready") return jsonResponse({ status: "ok" });
+
+    // 2. Redirect standard captive aliases to React portal
     if (
       (path === "/" || path === "" || path === "/portal" || path === "/portal/" ||
         path.startsWith("/guest/s/") || path === "/generate_204" || path === "/gen_204" ||
@@ -3172,6 +3175,7 @@ Deno.serve(async (req: Request) => {
         path === "/connecttest.txt" || path === "/ncsi.txt") &&
       req.method === "GET"
     ) return await handlePortalHtml(req, url);
+
 
     // 2. Public portal endpoints
     if (path === "/bootstrap" && req.method === "GET") return await handleBootstrap(req);
