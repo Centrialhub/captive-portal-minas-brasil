@@ -244,7 +244,13 @@ export default function App() {
         await completeAuthenticatedSession(session, source);
         if (callbackTimeout) clearTimeout(callbackTimeout);
       } else if (event === "SIGNED_OUT") {
-        if (step !== "loading") setStep("login");
+        // Only return to login if not in the middle of an OAuth restart flow
+        // or a callback redirection
+        if (stepRef.current !== "loading" && 
+            stepRef.current !== "oauth_redirecting" && 
+            stepRef.current !== "oauth_callback") {
+          setStep("login");
+        }
         authCompletedRef.current = false;
       }
     });
@@ -496,27 +502,57 @@ export default function App() {
   if (step === "cpf_prompt") {
     const handleGoogleRestart = async () => {
       if (busy) return;
-      setBusy(true);
+      setError("");
       const tokens = OAuthTracker.getTokens();
-      if (tokens.attempt_id && tokens.token) {
-        try {
-          const res = await api.restartOAuth({ 
-            attempt_id: tokens.attempt_id,
-            resume_token: tokens.token 
-          });
-          if (res.attempt_id && res.token) {
-            localStorage.setItem("mb_oauth_attempt_id", res.attempt_id);
-            localStorage.setItem("mb_oauth_attempt_token", res.token);
-            await supabase.auth.signOut();
-            window.location.reload();
-            return;
-          }
-        } catch (e) {
-          console.error("Restart failed", e);
-        }
+      
+      if (!tokens.attempt_id || !tokens.token) {
+        setError("Não foi possível identificar a sessão atual para troca.");
+        setStep("login");
+        return;
       }
-      setStep("login");
-      setBusy(false);
+
+      setBusy(true);
+      try {
+        api.clientEvent({ event: "google_oauth_restart_started", step: "oauth" });
+        const res = await api.restartOAuth({ 
+          attempt_id: tokens.attempt_id,
+          resume_token: tokens.token 
+        });
+
+        if (res.attempt_id && res.token) {
+          // Replace tokens atomically in storage and URL
+          OAuthTracker.updateTokens(res.attempt_id, res.token);
+          
+          // Sign out from current Google account in Supabase
+          // We mark the state to know this is a restart-driven signout
+          const { error: signOutErr } = await supabase.auth.signOut();
+          if (signOutErr) throw signOutErr;
+
+          // Now immediately start OAuth again with the NEW tokens
+          const redirectTo = `https://minasbrasilwifi.com.br/oauth/callback?attempt_id=${res.attempt_id}&resume_token=${res.token}`;
+          const { error: oauthErr } = await supabase.auth.signInWithOAuth({
+            provider: "google",
+            options: { redirectTo, skipBrowserRedirect: false },
+          });
+
+          if (oauthErr) throw oauthErr;
+          
+          // Successful initiation, the browser will redirect
+          return;
+        } else {
+          throw new Error("Resposta inválida do servidor de restart.");
+        }
+      } catch (e: any) {
+        console.error("[restart] failed:", e);
+        api.clientEvent({ 
+          event: "google_oauth_restart_failed", 
+          step: "oauth", 
+          status: "error", 
+          error_message: e.message 
+        });
+        setError("Não foi possível trocar de conta. Tente novamente.");
+        setBusy(false);
+      }
     };
 
     return (
