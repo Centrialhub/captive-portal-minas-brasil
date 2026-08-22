@@ -906,6 +906,17 @@ export type Database = {
         Args: { p_attempt_id: string; p_lease_owner: string }
         Returns: boolean
       }
+      safe_restart_oauth_attempt: {
+        Args: {
+          p_attempt_id: string
+          p_client_ip?: string
+          p_resume_token: string
+        }
+        Returns: {
+          new_attempt_id: string
+          new_token: string
+        }[]
+      }
       secure_update_profile: {
         Args: {
           _cpf_digits: string
