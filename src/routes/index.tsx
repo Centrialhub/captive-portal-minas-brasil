@@ -2,133 +2,89 @@ export default function Home() {
   return (
     <div className="flex flex-col items-center justify-center min-h-screen p-4 text-center">
       <h1 className="text-2xl font-bold mb-4 uppercase text-red-600">
-        PROMPT 18 — CRIAR EXCLUSIVAMENTE A SUÍTE DE TESTES, OBSERVABILIDADE E GATE DE RELEASE
+        PROMPT 06 — SUBSTITUIR EXCLUSIVAMENTE O OAUTH TRACKER POR UMA TRANSAÇÃO AUTORITATIVA
       </h1>
 
       <div className="max-w-2xl text-left bg-white p-6 rounded-lg shadow-md border-t-4 border-red-600">
         <h2 className="font-bold text-lg mb-2">Objetivo único:</h2>
         <p className="mb-4">
-          Impedir que uma versão com regressões seja publicada. Não implementar novas funcionalidades.
+          Garantir que cada retorno Google pertença exatamente à tentativa captive que o iniciou. Não alterar a lógica de liberação UniFi, regra de CPF ou destino final.
         </p>
 
-        <h2 className="font-bold text-lg mb-2">Testes unitários:</h2>
-        <ul className="list-disc ml-6 mb-4">
-          <li>normalização de MAC;</li>
-          <li>CPF válido/inválido;</li>
-          <li>redirect;</li>
-          <li>expiração de attempt;</li>
-          <li>validação de token;</li>
-          <li>transições de estado;</li>
-          <li>mapeamento de erros;</li>
-          <li>consentimentos;</li>
-          <li>redaction.</li>
-        </ul>
+        <h2 className="font-bold text-lg mb-2">Problema:</h2>
+        <p className="mb-4">
+          O OAuthTracker salva marcador e parâmetros captive separadamente em localStorage. Parâmetros antigos podem sobreviver ao marcador e ser restaurados em outra visita.
+        </p>
 
-        <h2 className="font-bold text-lg mb-2">Testes React:</h2>
-        <ul className="list-disc ml-6 mb-4">
-          <li>login;</li>
-          <li>Google redirect;</li>
-          <li>callback;</li>
-          <li>timeout;</li>
-          <li>CPF;</li>
-          <li>sucesso;</li>
-          <li>erro;</li>
-          <li>retry;</li>
-          <li>navegador externo;</li>
-          <li>nenhuma violação de hooks;</li>
-          <li>nenhum timer após unmount.</li>
-        </ul>
-
-        <h2 className="font-bold text-lg mb-2">Integração:</h2>
-        <ul className="list-disc ml-6 mb-4">
-          <li>bootstrap;</li>
-          <li>login/senha;</li>
-          <li>Google com sessão simulada;</li>
-          <li>CPF pendente;</li>
-          <li>CPF duplicado;</li>
-          <li>authorize-existing;</li>
-          <li>JWT inválido;</li>
-          <li>role admin;</li>
-          <li>CORS;</li>
-          <li>body excessivo;</li>
-          <li>método inválido;</li>
-          <li>rate limit indisponível.</li>
-        </ul>
-
-        <h2 className="font-bold text-lg mb-2">Concorrência:</h2>
-        <ul className="list-disc ml-6 mb-4">
-          <li>20 chamadas simultâneas no mesmo attempt;</li>
-          <li>evento INITIAL_SESSION + SIGNED_IN;</li>
-          <li>refresh durante authorizing;</li>
-          <li>resposta perdida e retry;</li>
-          <li>callback duplicado;</li>
-          <li>duas instâncias da Edge Function.</li>
-        </ul>
-        <p className="mb-4">Em todos esses testes, uma única chamada UniFi deve ser registrada.</p>
-
-        <h2 className="font-bold text-lg mb-2">Segurança:</h2>
-        <ul className="list-disc ml-6 mb-4">
-          <li>rotas `/diag/*` e `/unifi/*` retornam 404;</li>
-          <li>URL arbitrária não gera fetch;</li>
-          <li>atualização direta de profiles é negada;</li>
-          <li>open redirect é negado;</li>
-          <li>secrets não aparecem no bundle;</li>
-          <li>PII não aparece nos logs;</li>
-          <li>rotas auth/admin exigem credenciais apropriadas.</li>
-        </ul>
-
-        <h2 className="font-bold text-lg mb-2">CI obrigatório:</h2>
+        <h2 className="font-bold text-lg mb-2">Implementação:</h2>
         <ol className="list-decimal ml-6 mb-4">
-          <li>npm ci;</li>
-          <li>lint;</li>
-          <li>frontend typecheck;</li>
-          <li>deno check;</li>
-          <li>testes;</li>
-          <li>build;</li>
-          <li>docker build;</li>
-          <li>nginx -t;</li>
-          <li>secret scan;</li>
-          <li>dependency audit;</li>
-          <li>migration lint;</li>
-          <li>smoke test da imagem.</li>
+          <li>Criar entidade `captive_auth_attempts` com:
+            <ul className="list-disc ml-6 mt-2">
+              <li>id UUID;</li>
+              <li>resume_token_hash;</li>
+              <li>client_mac normalizado;</li>
+              <li>ap_mac;</li>
+              <li>ssid;</li>
+              <li>store_hint;</li>
+              <li>captive_timestamp;</li>
+              <li>original_url apenas para auditoria restrita;</li>
+              <li>status;</li>
+              <li>created_at;</li>
+              <li>expires_at;</li>
+              <li>consumed_at;</li>
+              <li>user_id após autenticação.</li>
+            </ul>
+          </li>
+          <li className="mt-2">Criar endpoint público e rate-limited para iniciar a tentativa.</li>
+          <li className="mt-2">O endpoint deve:
+            <ul className="list-disc ml-6 mt-2">
+              <li>validar parâmetros;</li>
+              <li>gerar token aleatório criptograficamente forte;</li>
+              <li>armazenar somente o hash;</li>
+              <li>expirar em 10 minutos;</li>
+              <li>retornar attempt_id e token opaco.</li>
+            </ul>
+          </li>
+          <li className="mt-2">O `redirectTo` Google deve conter somente attempt_id e resume_token. Não incluir MAC, CPF, e-mail ou AP diretamente.</li>
+          <li className="mt-2">No callback:
+            <ul className="list-disc ml-6 mt-2">
+              <li>validar attempt_id;</li>
+              <li>validar hash do token em comparação constante;</li>
+              <li>verificar expiração e status;</li>
+              <li>carregar parâmetros do servidor;</li>
+              <li>nunca restaurar parâmetros antigos apenas por localStorage.</li>
+            </ul>
+          </li>
+          <li className="mt-2">Remover mb_oauth_marker_v1 e mb_captive_params_v3 como fontes autoritativas.</li>
+          <li className="mt-2">LocalStorage pode guardar somente attempt_id/token como cache temporário, removido em sucesso, cancelamento, erro definitivo ou expiração.</li>
+          <li className="mt-2">Uma tentativa expirada nunca pode ser reativada.</li>
+          <li className="mt-2">Uma tentativa consumida não pode ser vinculada a outro usuário.</li>
+          <li className="mt-2">Criar estados explícitos:
+            <ul className="list-disc ml-6 mt-2 text-sm italic">
+              <li>created; oauth_redirected; callback_received; awaiting_cpf; authorizing; authorized; failed; expired; cancelled.</li>
+            </ul>
+          </li>
+          <li className="mt-2">Não registrar token, MAC, e-mail ou CPF em telemetria do navegador.</li>
+          <li className="mt-2">O `onAuthStateChange` deve ser síncrono: agendar o processamento fora do callback, sem await interno.</li>
+          <li className="mt-2">Garantir um único Promise de processamento por attempt_id.</li>
+          <li className="mt-2">Cancelar processamento atrasado quando a tentativa expirar ou for cancelada.</li>
+          <li className="mt-2">Resetar corretamente refs e busy ao reiniciar.</li>
         </ol>
 
-        <h2 className="font-bold text-lg mb-2">Observabilidade:</h2>
+        <h2 className="font-bold text-lg mb-2">Testes:</h2>
         <ul className="list-disc ml-6 mb-4">
-          <li>métricas por etapa sem PII;</li>
-          <li>taxa de início, callback, CPF, autorização e sucesso;</li>
-          <li>latência p50/p95/p99;</li>
-          <li>callback timeout;</li>
-          <li>DNS/upstream failures;</li>
-          <li>UniFi call count por attempt;</li>
-          <li>CRM outbox;</li>
-          <li>alerta por aumento de erro;</li>
-          <li>trace_id desde o frontend até o backend.</li>
-        </ul>
-
-        <h2 className="font-bold text-lg mb-2">Deploy:</h2>
-        <ul className="list-disc ml-6 mb-4">
-          <li>imagem imutável identificada por digest;</li>
-          <li>canary em uma loja;</li>
-          <li>rollback para imagem anterior;</li>
-          <li>migrations backward-compatible antes da troca;</li>
-          <li>feature flag para Google e CRM;</li>
-          <li>nenhum deploy direto da branch de desenvolvimento.</li>
-        </ul>
-
-        <h2 className="font-bold text-lg mb-2">Gate:</h2>
-        <ul className="list-disc ml-6 mb-4">
-          <li>zero P0/P1 conhecidos;</li>
-          <li>100% dos testes determinísticos aprovados;</li>
-          <li>teste de concorrência confirma uma chamada UniFi;</li>
-          <li>20 ciclos reais consecutivos por plataforma principal sem falha não explicada;</li>
-          <li>canary mínimo de 48 horas;</li>
-          <li>taxa de conclusão de autorização dentro do objetivo acordado;</li>
-          <li>nenhuma ocorrência de PII/secret nos logs.</li>
+          <li>Callback com token correto recupera somente sua tentativa.</li>
+          <li>Token errado, ausente, expirado ou reutilizado é rejeitado.</li>
+          <li>Parâmetros de uma tentativa nunca contaminam outra.</li>
+          <li>Sessão Google antiga sem tentativa válida não autoriza MAC armazenado.</li>
+          <li>Dois callbacks iguais convergem para a mesma tentativa.</li>
+          <li>Timeout seguido de sessão tardia não inicia autorização.</li>
+          <li>Retry cria tentativa nova e funcional.</li>
+          <li>Nenhuma PII aparece na URL além do token opaco.</li>
         </ul>
 
         <h2 className="font-bold text-lg mb-2">Critério de aceite:</h2>
-        <p>A pipeline bloqueia automaticamente qualquer versão que não cumpra todos os gates.</p>
+        <p>A autorização só pode usar parâmetros carregados de uma tentativa server-side válida e não expirada.</p>
       </div>
     </div>
   );
