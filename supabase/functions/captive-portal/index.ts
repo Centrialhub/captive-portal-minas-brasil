@@ -391,7 +391,7 @@ async function detectStoreFromRequest(
       db.from("store_access_points")
         .update({ last_seen_at: new Date().toISOString() })
         .eq("ap_mac", normApMac)
-        .then(() => {}, (e) => console.warn("[ap-mac] last_seen update failed:", (e as Error)?.message));
+        .then(() => {}, (e) => console.warn("[ap-mac] last_seen update failed:", (e as any)?.message));
       return storeResult(store, "ap_mac");
     }
   }
