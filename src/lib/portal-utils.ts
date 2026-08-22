@@ -220,40 +220,50 @@ export function buildSubmitPayload(fields: {
   };
 }
 
-export type PortalStep = "loading" | "form" | "success" | "error";
 
-/**
- * Validates a Brazilian CPF number using the official algorithm.
- * Rejects known invalid patterns (all same digits).
- * Returns true for formally valid CPFs; does NOT check if it exists at Receita Federal.
- */
-export function isValidCPF(cpf: string): boolean {
-  const digits = (cpf || "").replace(/\D/g, "");
-  if (digits.length !== 11) return false;
-  // Reject all same digits
-  if (/^(\d)\1{10}$/.test(digits)) return false;
+export const Validators = {
+  email(email: string): boolean {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  },
+  
+  phone(phone: string): boolean {
+    const digits = (phone || "").replace(/\D/g, "");
+    return digits.length === 10 || digits.length === 11;
+  },
 
-  const calcDV = (base: string, weights: number[]): number => {
-    let sum = 0;
-    for (let i = 0; i < base.length; i++) {
-      sum += parseInt(base[i], 10) * weights[i];
-    }
-    const remainder = (sum * 10) % 11;
-    return remainder === 10 ? 0 : remainder;
-  };
+  /**
+   * Validates a Brazilian CPF number using the official algorithm.
+   * Rejects known invalid patterns (all same digits).
+   */
+  cpf(cpf: string): boolean {
+    const digits = (cpf || "").replace(/\D/g, "");
+    if (digits.length !== 11) return false;
+    if (/^(\d)\1{10}$/.test(digits)) return false;
 
-  const firstDV = calcDV(digits.slice(0, 9), [10, 9, 8, 7, 6, 5, 4, 3, 2]);
-  if (firstDV !== parseInt(digits[9], 10)) return false;
+    const calcDV = (base: string, weights: number[]): number => {
+      let sum = 0;
+      for (let i = 0; i < base.length; i++) {
+        sum += parseInt(base[i], 10) * weights[i];
+      }
+      const remainder = (sum * 10) % 11;
+      return remainder === 10 ? 0 : remainder;
+    };
 
-  const secondDV = calcDV(digits.slice(0, 10), [11, 10, 9, 8, 7, 6, 5, 4, 3, 2]);
-  if (secondDV !== parseInt(digits[10], 10)) return false;
+    const firstDV = calcDV(digits.slice(0, 9), [10, 9, 8, 7, 6, 5, 4, 3, 2]);
+    if (firstDV !== parseInt(digits[9], 10)) return false;
 
-  return true;
-}
+    const secondDV = calcDV(digits.slice(0, 10), [11, 10, 9, 8, 7, 6, 5, 4, 3, 2]);
+    if (secondDV !== parseInt(digits[10], 10)) return false;
+
+    return true;
+  }
+};
+
+/** Compatibility exports */
+export function isValidCPF(cpf: string): boolean { return Validators.cpf(cpf); }
 
 /**
  * Formats a raw CPF string into 000.000.000-00.
- * Non-digit characters are stripped first.
  */
 export function formatCPF(value: string): string {
   const digits = (value || "").replace(/\D/g, "").slice(0, 11);
