@@ -3511,20 +3511,26 @@ async function validateOAuthAttempt(
 async function handleOAuthInit(req: Request): Promise<Response> {
   const db = supabaseAdmin();
   const clientIp = getPublicIp(req);
+  const ua = req.headers.get("user-agent");
   const body = await safeParseJson(req);
-  if (!body) return errorResponse("Invalid JSON");
+  if (!body) return errorResponse("Requisição inválida (JSON esperado).");
 
   const rawParams = (body.params || {}) as Record<string, string>;
   const clientMac = normalizeMac(rawParams.id || rawParams.mac);
+  const apMac = normalizeMac(rawParams.ap);
   
   if (!clientMac) {
     return errorResponse("Endereço MAC do dispositivo não identificado.");
   }
 
-  // Rate limit by IP/MAC
-  const rl = await checkRateLimitDb(db, `oauth-init:mac:${clientMac}`, 60, 5, 300);
-  if (!rl.allowed) return errorResponse("Muitas tentativas. Aguarde alguns minutos.", 429);
-
+  // Rate limit by IP/MAC fail-closed
+  try {
+    const rl = await checkRateLimitDb(db, `oauth-init:mac:${clientMac}`, 60, 5, 300);
+    if (!rl.allowed) return errorResponse("Muitas tentativas. Aguarde alguns minutos.", 429);
+  } catch (e) {
+    console.error("[oauth-init] Rate limiter error:", e);
+    return errorResponse("Serviço temporariamente indisponível.", 503);
+  }
 
   // Cryptographically strong random token (opaque)
   const tokenBytes = new Uint8Array(32);
@@ -3533,10 +3539,7 @@ async function handleOAuthInit(req: Request): Promise<Response> {
 
   // Hash it for DB storage
   const encoder = new TextEncoder();
-  const tokenData = encoder.encode(token);
-  const hashBuffer = await crypto.subtle.digest("SHA-256", tokenData);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  const tokenHash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  const tokenHash = encode(digest(token, 'sha256'), 'hex');
 
   const now = new Date();
   const expiresAt = new Date(now.getTime() + 10 * 60 * 1000); // 10 minutes
@@ -3546,14 +3549,14 @@ async function handleOAuthInit(req: Request): Promise<Response> {
     .insert({
       resume_token_hash: tokenHash,
       client_mac: clientMac,
-      ap_mac: normalizeMac(rawParams.ap),
+      ap_mac: apMac,
       ssid: sanitizeString(rawParams.ssid, 64),
       store_hint: sanitizeString(rawParams.store, 64),
       captive_timestamp: sanitizeString(rawParams.t, 32),
-      original_url: sanitizeString(body.original_url, 500),
+      original_url: sanitizeString(body.original_url as string, 500),
       expires_at: expiresAt.toISOString(),
       status: 'created',
-      metadata: { client_ip: clientIp }
+      metadata: { client_ip: clientIp, user_agent: ua }
     })
     .select("id")
     .single();

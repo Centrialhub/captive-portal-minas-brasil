@@ -370,15 +370,15 @@ export default function App() {
     if (busy) return;
     setError("");
 
-    if (!name || name.trim().length < 2) return setError("Informe seu nome completo.");
-    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return setError("E-mail inválido.");
+    if (!name || name.trim().split(/\s+/).length < 2) return setError("Informe seu nome completo (nome e sobrenome).");
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return setError("Informe um e-mail válido.");
     const phoneDigits = phone.replace(/\D/g, "");
-    if (phoneDigits && (phoneDigits.length < 10 || phoneDigits.length > 11)) return setError("Telefone inválido.");
-    if (password.length < 8) return setError("A senha deve ter ao menos 8 caracteres.");
+    if (!phoneDigits || phoneDigits.length < 10 || phoneDigits.length > 11) return setError("Informe um telefone válido com DDD.");
+    if (password.length < 8) return setError("A senha deve ter pelo menos 8 caracteres.");
     if (!/[A-Za-z]/.test(password) || !/[0-9]/.test(password))
       return setError("A senha deve conter letras e números.");
     if (password !== password2) return setError("As senhas não coincidem.");
-    if (!consented) return setError("Você precisa aceitar os termos.");
+    if (!consented) return setError("Você deve aceitar os termos de uso para continuar.");
 
     setBusy(true);
     try {
@@ -707,61 +707,75 @@ export default function App() {
 
           {error && <div className="portal-error">{error}</div>}
 
-          <form onSubmit={handleSignup}>
-            <label className="portal-label">Nome *</label>
-            <input
-              type="text" value={name} onChange={(e) => setName(e.target.value)}
-              required className="portal-input" placeholder="Seu nome completo"
-            />
+          <form onSubmit={handleSignup} className="space-y-4">
+            <div>
+              <label className="portal-label">Nome Completo *</label>
+              <input
+                type="text" value={name} onChange={(e) => setName(e.target.value)}
+                required className="portal-input" placeholder="Ex: João Silva"
+                autoComplete="name"
+              />
+            </div>
 
-            <label className="portal-label">E-mail *</label>
-            <input
-              type="email" value={email} onChange={(e) => setEmail(e.target.value)}
-              required className="portal-input" placeholder="email@exemplo.com"
-            />
+            <div>
+              <label className="portal-label">E-mail *</label>
+              <input
+                type="email" value={email} onChange={(e) => setEmail(e.target.value)}
+                required className="portal-input" placeholder="seu@email.com"
+                autoComplete="email"
+              />
+            </div>
 
-            <label className="portal-label">Telefone *</label>
-            <input
-              type="tel" value={phone}
-              onChange={(e) => setPhone(formatPhoneBR(e.target.value))}
-              required className="portal-input" placeholder="(11) 99999-9999"
-            />
+            <div>
+              <label className="portal-label">WhatsApp / Celular *</label>
+              <input
+                type="tel" value={phone}
+                onChange={(e) => setPhone(formatPhoneBR(e.target.value))}
+                required className="portal-input" placeholder="(00) 00000-0000"
+                autoComplete="tel"
+              />
+            </div>
 
+            <div>
+              <label className="portal-label">Senha *</label>
+              <input
+                type="password" value={password} onChange={(e) => setPassword(e.target.value)}
+                required minLength={8} className="portal-input"
+                placeholder="Mínimo 8 caracteres (letras e números)"
+                autoComplete="new-password"
+              />
+            </div>
 
-            <label className="portal-label">Senha *</label>
-            <input
-              type="password" value={password} onChange={(e) => setPassword(e.target.value)}
-              required minLength={8} className="portal-input"
-              placeholder="Mínimo 8 caracteres, letras e números"
-              autoComplete="new-password"
-            />
-
-            <label className="portal-label">Confirmar senha *</label>
-            <input
-              type="password" value={password2} onChange={(e) => setPassword2(e.target.value)}
-              required minLength={8} className="portal-input"
-              placeholder="Digite a senha novamente"
-              autoComplete="new-password"
-            />
+            <div>
+              <label className="portal-label">Confirmar Senha *</label>
+              <input
+                type="password" value={password2} onChange={(e) => setPassword2(e.target.value)}
+                required minLength={8} className="portal-input"
+                placeholder="Repita sua senha"
+                autoComplete="new-password"
+              />
+            </div>
 
             {boot.consent && (
-              <>
+              <div className="mt-4">
                 <details className="portal-terms">
-                  <summary>Termos de Uso e Política de Privacidade (LGPD)</summary>
-                  <p>{boot.consent.text}</p>
+                  <summary>Termos de Uso e LGPD</summary>
+                  <div className="p-3 text-[11px] text-gray-500 bg-gray-50 rounded-b-lg border-t border-gray-100 max-h-32 overflow-y-auto">
+                    {boot.consent.text}
+                  </div>
                 </details>
-                <label className="portal-checkbox-label">
+                <label className="portal-checkbox-label mt-2">
                   <input
                     type="checkbox" checked={consented}
                     onChange={(e) => setConsented(e.target.checked)}
                   />
-                  <span>Li e aceito os termos</span>
+                  <span>Li e aceito os <button type="button" className="text-red-600 font-bold hover:underline bg-transparent border-none p-0 inline cursor-pointer" onClick={() => navigate("/privacy")}>Termos de Privacidade</button></span>
                 </label>
-              </>
+              </div>
             )}
 
             <button type="submit" disabled={busy} className="portal-btn">
-              {busy ? "Criando conta..." : "Criar conta e conectar"}
+              {busy ? "Processando..." : "Cadastrar e Conectar"}
             </button>
           </form>
 
@@ -827,22 +841,26 @@ export default function App() {
 
 
 
-        <form onSubmit={handleLogin}>
-          <label className="portal-label">E-mail</label>
-          <input
-            type="email" value={loginEmail}
-            onChange={(e) => setLoginEmail(e.target.value)}
-            required className="portal-input" placeholder="email@exemplo.com"
-            autoComplete="email"
-          />
+        <form onSubmit={handleLogin} className="space-y-4">
+          <div>
+            <label className="portal-label">E-mail</label>
+            <input
+              type="email" value={loginEmail}
+              onChange={(e) => setLoginEmail(e.target.value)}
+              required className="portal-input" placeholder="seu@email.com"
+              autoComplete="email"
+            />
+          </div>
 
-          <label className="portal-label">Senha</label>
-          <input
-            type="password" value={loginPassword}
-            onChange={(e) => setLoginPassword(e.target.value)}
-            required className="portal-input" placeholder="Sua senha"
-            autoComplete="current-password"
-          />
+          <div>
+            <label className="portal-label">Senha</label>
+            <input
+              type="password" value={loginPassword}
+              onChange={(e) => setLoginPassword(e.target.value)}
+              required className="portal-input" placeholder="Sua senha"
+              autoComplete="current-password"
+            />
+          </div>
 
           <button type="submit" disabled={busy} className="portal-btn">
             {busy ? "Entrando..." : "Entrar"}
