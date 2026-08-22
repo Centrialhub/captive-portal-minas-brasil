@@ -273,6 +273,13 @@ export type Database = {
             referencedRelation: "stores_public"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "fk_captive_sessions_attempt"
+            columns: ["attempt_id"]
+            isOneToOne: false
+            referencedRelation: "captive_auth_attempts"
+            referencedColumns: ["id"]
+          },
         ]
       }
       captive_verifications: {
