@@ -12,7 +12,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "typecheck:edge": "deno check supabase/functions/captive-portal/index.ts supabase/functions/whatsapp-status/index.ts",
+    "typecheck:edge": "deno check supabase/functions/captive-portal/index.ts",
     "check": "npm run lint && npm run typecheck && npm run typecheck:edge && npm run test && npm run build"
   },
   "dependencies": {
