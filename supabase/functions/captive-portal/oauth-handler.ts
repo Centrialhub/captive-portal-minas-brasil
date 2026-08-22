@@ -6,7 +6,7 @@
  * Returns the captive parameters if valid and not expired/consumed.
  */
 async function validateOAuthAttempt(
-  db: ReturnType<typeof supabaseAdmin>,
+  db: any,
   attemptId: string,
   token: string
 ): Promise<{
@@ -52,9 +52,8 @@ async function validateOAuthAttempt(
     clientMac: attempt.client_mac,
     apMac: attempt.ap_mac,
     ssid: attempt.ssid,
-    storeHint: attempt.store_hint,
+    redirectUrl: attempt.original_url, 
     captiveTimestamp: attempt.captive_timestamp,
-    redirectUrl: attempt.original_url, // For audit/recovery
   };
 
   return { valid: true, params, attempt };
