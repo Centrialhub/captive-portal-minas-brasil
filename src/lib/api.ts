@@ -222,73 +222,8 @@ export const api = {
     return xhrRequest<any>("/bootstrap", { method: "GET", timeoutMs: 10000 });
   },
 
-  startSession(data: {
-    client_mac?: string;
-    ap_mac?: string;
-    ssid?: string;
-    redirect_url?: string;
-  }) {
-    return xhrRequest<any>("/start", {
-      method: "POST",
-      body: { ...data, user_agent: navigator.userAgent },
-      timeoutMs: 12000,
-    });
-  },
+  // OTP and Lead methods removed (Prompt 08)
 
-  submitLead(data: {
-    session_id?: string;
-    name: string;
-    email?: string;
-    phone?: string;
-    cpf?: string;
-    client_mac?: string;
-    ap_mac?: string;
-    ssid?: string;
-    redirect_url?: string;
-    user_agent?: string;
-    consent_version: string;
-  }) {
-    return xhrRequest<any>("/submit", {
-      method: "POST",
-      body: data,
-      timeoutMs: 35000,
-    });
-  },
-
-  sessionStatus(session_id: string) {
-    return xhrRequest<any>(`/session-status?session_id=${encodeURIComponent(session_id)}`, {
-      method: "GET",
-      timeoutMs: 8000,
-    });
-  },
-
-  /** Last-resort simple POST for captive assistants that block XHR POST bodies. */
-  submitLeadBackup(data: Record<string, unknown>) {
-    try { return queueSimplePost("/submit", { ...data, backup_transport: "simple_post" }); }
-    catch { return false; }
-  },
-
-  requestCode(data: { session_id: string; phone: string }) {
-    return xhrRequest<any>("/request-code", {
-      method: "POST",
-      body: data,
-      timeoutMs: 15000,
-    });
-  },
-
-  verifyCode(data: { session_id: string; code: string }) {
-    return xhrRequest<any>("/verify-code", {
-      method: "POST",
-      body: data,
-      timeoutMs: 30000,
-    });
-  },
-
-  /** Last-resort transport when XHR POST is dropped by captive assistant during OTP verify. */
-  verifyCodeBackup(data: { session_id: string; code: string }) {
-    try { return queueSimplePost("/verify-code", { ...data, backup_transport: "simple_post" }); }
-    catch { return false; }
-  },
 
   // ===== Account-based auth (nome/e-mail/CPF/telefone/senha) =====
 

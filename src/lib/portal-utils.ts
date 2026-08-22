@@ -104,13 +104,11 @@ function normalizeRedirectUrl(url: string): string {
   }
 }
 
-/**
- * Legacy wrapper. Now uses resolvePostAuthRedirect.
- */
 export function sanitizeCaptiveRedirect(url: string | null | undefined): string {
   const q = getQueryParams();
   return resolvePostAuthRedirect(null, url || q.redirect_url);
 }
+
 
 
 const TRACE_KEY = "mb_trace_id";
