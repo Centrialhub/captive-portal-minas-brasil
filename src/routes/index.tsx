@@ -1,4 +1,28 @@
-export default function Documentation() {
+import React, { useState, useEffect } from "react";
+import App from "../App";
+
+export default function AppContainer() {
+  const [showDocumentation, setShowDocumentation] = useState(false);
+
+  useEffect(() => {
+    // Escuta por atalho de teclado (ex: Ctrl+Shift+D) para mostrar documentação
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.shiftKey && e.key === "D") {
+        setShowDocumentation((prev) => !prev);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+  if (!showDocumentation) {
+    return <App />;
+  }
+
+  return <Documentation />;
+}
+
+function Documentation() {
   return (
     <div className="p-8 font-sans max-w-4xl mx-auto">
       <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-lg text-green-800 text-sm">
@@ -57,3 +81,4 @@ export default function Documentation() {
     </div>
   );
 }
+
