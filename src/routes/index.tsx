@@ -2,7 +2,7 @@ export default function Home() {
   return (
     <div className="flex flex-col items-center justify-center min-h-screen p-4 text-center">
       <h1 className="text-2xl font-bold mb-4 uppercase text-red-600">
-        ESTADO ATUAL DO SISTEMA — CAPTIVE PORTAL V2
+        PROMPT 07 — TORNAR O GATE DE CPF EXCLUSIVAMENTE SERVER-AUTHORITATIVO
       </h1>
 
       <div className="max-w-2xl text-left bg-white p-6 rounded-lg shadow-md border-t-4 border-red-600 space-y-6">
