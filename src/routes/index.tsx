@@ -3,57 +3,88 @@ import { Link } from "react-router-dom";
 export default function Home() {
   return (
     <div className="flex flex-col items-center justify-center min-h-screen p-4 text-center">
-      <h1 className="text-2xl font-bold mb-4 uppercase text-red-600">PROMPT 08 — TORNAR EXCLUSIVAMENTE O PERFIL E O GATE DE CPF SERVER-AUTHORITATIVE</h1>
+      <h1 className="text-2xl font-bold mb-4 uppercase text-red-600">PROMPT 09 — SEPARAR EXCLUSIVAMENTE AS ROTAS POR TRUST BOUNDARY</h1>
 
       <div className="max-w-2xl text-left bg-white p-6 rounded-lg shadow-md border-t-4 border-red-600">
         <h2 className="font-bold text-lg mb-2">Objetivo único:</h2>
-        <p className="mb-4">Impedir atualização direta de CPF e cpf_required pelo cliente Supabase. Não alterar a decisão comercial sobre exigir ou não CPF.</p>
+        <p className="mb-4">Evitar que uma única Edge Function com verify_jwt=false concentre rotas públicas, autenticadas, administrativas e webhooks.</p>
 
-        <h2 className="font-bold text-lg mb-2">Implementação:</h2>
+        <h2 className="font-bold text-lg mb-2">Arquitetura:</h2>
         <ol className="list-decimal ml-6 mb-4">
-          <li>Criar migration que revogue INSERT e UPDATE de profiles para authenticated.</li>
-          <li>Remover as policies:
+          <li>`captive-public`, verify_jwt=false:
             <ul className="list-disc ml-6">
-              <li>Users update own profile;</li>
-              <li>Users insert own profile.</li>
+              <li>bootstrap;</li>
+              <li>início de tentativa;</li>
+              <li>login;</li>
+              <li>signup;</li>
+              <li>recuperação de senha;</li>
+              <li>eventos públicos mínimos.</li>
             </ul>
           </li>
-          <li>Manter SELECT do próprio perfil apenas se a interface realmente precisar.</li>
-          <li>Toda criação/alteração de perfil deve ocorrer por Edge Function usando service role.</li>
-          <li>update-profile deve identificar o usuário exclusivamente pelo JWT Bearer validado, nunca por user_id no body.</li>
-          <li>Validar CPF no backend pelo algoritmo completo.</li>
-          <li>Normalizar para exatamente 11 dígitos.</li>
-          <li>Adicionar CHECK de formato no banco.</li>
-          <li>Manter índice unique parcial para CPF não nulo.</li>
-          <li>Atualizar cpf_digits e cpf_required=false na mesma operação.</li>
-          <li>authorize-existing deve considerar CPF concluído somente quando:
+          <li>`captive-auth`, JWT obrigatório:
             <ul className="list-disc ml-6">
-              <li>existe;</li>
-              <li>possui 11 dígitos;</li>
-              <li>passa na validação;</li>
-              <li>cpf_required=false.</li>
+              <li>authorize-existing;</li>
+              <li>update-profile;</li>
+              <li>leitura do próprio perfil;</li>
+              <li>conclusão da tentativa autenticada.</li>
             </ul>
           </li>
-          <li>CPF inválido existente deve voltar a needs_cpf.</li>
-          <li>Não registrar CPF bruto.</li>
-          <li>Erro unique deve resultar em mensagem específica sem indicar a identidade da outra conta.</li>
-          <li>Login por senha deve manter a regra atual, salvo especificação comercial diferente em outro prompt.</li>
+          <li>`captive-admin`, JWT obrigatório:
+            <ul className="list-disc ml-6">
+              <li>dashboard;</li>
+              <li>configurações;</li>
+              <li>relatórios;</li>
+              <li>exports;</li>
+              <li>manutenção.</li>
+            </ul>
+          </li>
+          <li>Webhooks externos em função própria:
+            <ul className="list-disc ml-6">
+              <li>verify_jwt=false;</li>
+              <li>assinatura obrigatória;</li>
+              <li>rejeição fail-closed.</li>
+            </ul>
+          </li>
+          <li>Extrair somente utilitários compartilhados necessários para módulo interno. Não fazer uma refatoração estética geral das 5.000 linhas.</li>
         </ol>
+
+        <h2 className="font-bold text-lg mb-2">Regras:</h2>
+        <ul className="list-disc ml-6 mb-4">
+          <li>Função pública nunca usa rota administrativa.</li>
+          <li>Função autenticada valida JWT na plataforma e novamente identifica o usuário no handler.</li>
+          <li>Função admin valida JWT, role e requisito de MFA.</li>
+          <li>Nenhuma função confia em user_id, store_id ou role enviados no body.</li>
+          <li>CORS somente para `https://minasbrasilwifi.com.br` e origens locais explicitamente habilitadas em desenvolvimento.</li>
+          <li>Requisição sem Origin pode ser aceita apenas nos endpoints necessários ao captive, mantendo os demais controles.</li>
+          <li>Definir allowlist de métodos por rota.</li>
+          <li>Rejeitar content-type inesperado.</li>
+          <li>Limitar body antes do parse.</li>
+          <li>Não usar `Access-Control-Allow-Origin: *` em rotas autenticadas.</li>
+          <li>Preservar os caminhos públicos do frontend por meio do proxy same-origin.</li>
+          <li>Não alterar contratos de resposta além de erros de segurança padronizados.</li>
+        </ul>
+
+        <h2 className="font-bold text-lg mb-2">Rate limit:</h2>
+        <ul className="list-disc ml-6 mb-4">
+          <li>login, signup, reset, OTP remanescente e autorização devem falhar fechado quando o limitador estiver indisponível.</li>
+          <li>bootstrap e health podem degradar de forma segura.</li>
+          <li>não usar somente Map em memória.</li>
+        </ul>
 
         <h2 className="font-bold text-lg mb-2">Testes:</h2>
         <ul className="list-disc ml-6 mb-4">
-          <li>PATCH/POST direto na REST API profiles usando token authenticated é negado.</li>
-          <li>Usuário não altera cpf_required diretamente.</li>
-          <li>CPF inválido não libera.</li>
-          <li>CPF duplicado não libera.</li>
-          <li>update-profile legítimo atualiza atomicamente.</li>
-          <li>Google sem CPF produz zero chamada UniFi.</li>
-          <li>Service role continua operando.</li>
-          <li>RLS testada com dois usuários distintos.</li>
+          <li>rota pública funciona anonimamente.</li>
+          <li>rota auth sem JWT retorna 401 antes da lógica.</li>
+          <li>rota admin com usuário comum retorna 403.</li>
+          <li>função webhook sem assinatura retorna 401/403.</li>
+          <li>método não permitido retorna 405.</li>
+          <li>body excessivo retorna 413.</li>
+          <li>origem não autorizada não recebe CORS.</li>
+          <li>contratos do frontend continuam válidos.</li>
         </ul>
 
         <h2 className="font-bold text-lg mb-2">Critério de aceite:</h2>
-        <p>O frontend não possui permissão de banco para satisfazer artificialmente o gate de CPF.</p>
+        <p>Cada endpoint é executado dentro da fronteira de autenticação apropriada, sem depender de uma função monolítica anônima.</p>
       </div>
 
       <div className="mt-8">
