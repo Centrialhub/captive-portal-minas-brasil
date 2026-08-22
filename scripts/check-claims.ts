@@ -1,10 +1,10 @@
 import { readFileSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 
-const FORBIDDEN_PHRASES = [
-  'PROMPT FINALIZADO',
-  '100% pronto',
-  'GATE DE SEGURANÇA ALCANÇADO'
+const FORBIDDEN_REGEXES = [
+  /PROMPT\s+.*\s+FINALIZADO/i,
+  /100%\s+pronto/i,
+  /GATE\s+DE\s+SEGURANÇA\s+ALCANÇADO/i
 ];
 
 function scanDir(dir: string) {
@@ -17,9 +17,9 @@ function scanDir(dir: string) {
       }
     } else if (file.endsWith('.ts') || file.endsWith('.tsx') || file.endsWith('.js') || file.endsWith('.html')) {
       const content = readFileSync(fullPath, 'utf8');
-      for (const phrase of FORBIDDEN_PHRASES) {
-        if (content.includes(phrase)) {
-          console.error(`❌ Forbidden phrase found in ${fullPath}: "${phrase}"`);
+      for (const regex of FORBIDDEN_REGEXES) {
+        if (regex.test(content)) {
+          console.error(`❌ Forbidden phrase (regex ${regex}) found in ${fullPath}`);
           process.exit(1);
         }
       }
