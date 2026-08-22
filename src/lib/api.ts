@@ -284,7 +284,7 @@ export const api = {
     });
   },
 
-  restartOAuth(data: { attempt_id: string }): Promise<{ attempt_id: string; token: string }> {
+  restartOAuth(data: { attempt_id: string; resume_token: string }): Promise<{ attempt_id: string; token: string }> {
     return xhrRequest<{ attempt_id: string; token: string }>("/oauth/restart", {
       method: "POST",
       body: data,
