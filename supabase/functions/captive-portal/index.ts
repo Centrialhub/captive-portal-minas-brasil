@@ -707,18 +707,6 @@ async function incrementClusterLeadCount(db: ReturnType<typeof supabaseAdmin>, i
   }
 }
 
-// ========== OTP Helpers ==========
-function generateOtpCode(): string {
-  const arr = new Uint32Array(1);
-  crypto.getRandomValues(arr);
-  return String(arr[0] % 1000000).padStart(6, "0");
-}
-
-async function hashOtp(code: string): Promise<string> {
-  const data = new TextEncoder().encode(code + OTP_PEPPER);
-  const hash = await crypto.subtle.digest("SHA-256", data);
-  return Array.from(new Uint8Array(hash)).map((b) => b.toString(16).padStart(2, "0")).join("");
-}
 
 // ========== WhatsApp Webhook Config from DB ==========
 interface WhatsAppConfig {
