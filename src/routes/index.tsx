@@ -58,6 +58,9 @@ function Documentation() {
       <div className="mb-4 p-4 bg-rose-50 border border-rose-200 rounded-lg text-rose-800 text-sm">
         Prompt 14 — Lifecycle Callback Google: Reconstruído o lifecycle do callback OAuth com hook autoritativo, separando bootstrap de controlador, protegendo estados terminais e garantindo execução única por transação.
       </div>
+      <div className="mb-4 p-4 bg-orange-50 border border-orange-200 rounded-lg text-orange-800 text-sm">
+        Prompt 15 — Troca de Conta Google: Implementado cancelamento autoritativo da tentativa anterior e início imediato de novo OAuth com `select_account`, garantindo isolamento de transações e limpeza de URL sem reload.
+      </div>
 
 
       <h1 className="text-3xl font-bold mb-6 text-gray-900 border-b pb-2">Captive Portal - Drogaria Minas Brasil</h1>
