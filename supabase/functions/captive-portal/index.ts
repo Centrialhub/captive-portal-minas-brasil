@@ -2575,6 +2575,7 @@ async function authorizeAuthenticatedUser(args: {
       redirect_url: claim.redirect_url || (detected.redirect_url || DEFAULT_REDIRECT_URL),
       store_slug: storeSlug,
       store_id: storeId,
+      replayed: true
     };
   }
 
