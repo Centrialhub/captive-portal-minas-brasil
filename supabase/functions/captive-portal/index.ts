@@ -2976,10 +2976,6 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
     return jsonResponse({ needs_login: true, error: "missing_token" }, 401);
   }
 
-  const { ctx, attemptId, error: authErr } = await getValidatedAuthContext(db, body, "silent_login");
-  if (authErr) return authErr;
-
-  
   // Validate token via getUser (project rule: use getUser, not getClaims)
   const anonClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     global: { headers: { Authorization: `Bearer ${accessToken}` } },
@@ -2999,12 +2995,10 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
     provider === "apple" ? "apple" :
     "silent";
 
-  // FOR GOOGLE: attempt_id and resume_token are MANDATORY.
-  if (provider === "google") {
   const { ctx: validatedCtx, attemptId, resumeToken, error: authErr } = await getValidatedAuthContext(db, body, "authorize-existing");
   if (authErr) return authErr;
 
-  ctx = validatedCtx;
+  let ctx = validatedCtx;
 
   if (attemptId && resumeToken) {
     const val = await validateOAuthAttempt(db, attemptId, resumeToken);
