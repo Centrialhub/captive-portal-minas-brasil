@@ -357,7 +357,7 @@ function logEvent(db: ReturnType<typeof supabaseAdmin>, args: LogEventArgs): voi
     }
     db.from("captive_sessions").update(patch).eq("id", args.session_id).then(
       () => {},
-      (e) => console.warn("[logEvent] session patch failed:", (e as any)?.message),
+      (e) => Logger.warn("[logEvent] session patch failed", { error: (e as any)?.message }),
     );
   }
 }
@@ -873,7 +873,7 @@ async function unifiTryLogin(
     // UniFi controllers often return 302/303 after successful login — treat 2xx and 3xx as potential success
     if (res.status >= 400) {
       const text = await res.text().catch(() => "");
-      console.log(`[UniFi] Login body (HTTP ${res.status}): ${text.slice(0, 500)}`);
+      Logger.info(`[UniFi] Login failed (HTTP ${res.status})`);
       return { ok: false, error: `Login HTTP ${res.status}: ${text.slice(0, 200)}` };
     }
 
