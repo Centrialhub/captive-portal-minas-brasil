@@ -146,6 +146,7 @@ const Validators = {
   }
 };
 
+
 /** Normaliza telefone para E.164 brasileiro (ex: 5531999999999) */
 function toE164BR(phone: string): string {
   let digits = (phone || "").replace(/\D/g, "");
