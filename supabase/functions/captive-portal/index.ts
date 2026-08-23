@@ -24,6 +24,17 @@ const MAX_EMAIL_LEN = 255;
 const MAX_PHONE_LEN = 30;
 const MAX_SLUG_LEN = 50;
 const DEDUP_WINDOW_SEC = 10;
+const VALID_BR_DDD = new Set([
+  11, 12, 13, 14, 15, 16, 17, 18, 19,
+  21, 22, 24, 27, 28,
+  31, 32, 33, 34, 35, 37, 38,
+  41, 42, 43, 44, 45, 46, 47, 48, 49,
+  51, 53, 54, 55,
+  61, 62, 63, 64, 65, 66, 67, 68, 69,
+  71, 73, 74, 75, 77, 79,
+  81, 82, 83, 84, 85, 86, 87, 88, 89,
+  91, 92, 93, 94, 95, 96, 97, 98, 99
+]);
 
 // GeoIP config
 const GEOIP_ENDPOINT = Deno.env.get("GEOIP_ENDPOINT") || "https://ipapi.co/{ip}/json/";
@@ -2323,22 +2334,26 @@ async function getValidatedAuthContext(
   db: ReturnType<typeof supabaseAdmin>,
   body: Record<string, unknown>,
   contextName: string
-): Promise<{ ctx: AuthAuthorizeContext; attemptId: string | null; error?: Response }> {
+): Promise<{ ctx: AuthAuthorizeContext; attemptId: string | null; resumeToken: string | null; error?: Response }> {
   let ctx = extractAuthContext(body);
   const attemptId = typeof body.attempt_id === "string" ? body.attempt_id : null;
   const resumeToken = typeof body.resume_token === "string" ? body.resume_token : null;
 
-  if (attemptId && resumeToken) {
+  if (attemptId || resumeToken) {
+    if (!attemptId || !resumeToken) {
+      return { ctx, attemptId, resumeToken, error: jsonResponse({ error: "Contrato inválido: attempt_id e resume_token devem ser fornecidos em par.", code: "invalid_contract" }, 400) };
+    }
+    
     const val = await validateOAuthAttempt(db, attemptId, resumeToken);
     if (val.status === 'invalid') {
-      return { ctx, attemptId, error: jsonResponse({ error: val.error || "Tentativa inválida.", code: "invalid_attempt" }, 403) };
+      return { ctx, attemptId, resumeToken, error: jsonResponse({ error: val.error || "Tentativa inválida.", code: "invalid_attempt" }, 403) };
     }
     if (val.params) {
       ctx = val.params;
       console.log(`[${contextName}] using authoritative parameters for attempt=${attemptId} mac=${ctx.clientMac}`);
     }
   }
-  return { ctx, attemptId };
+  return { ctx, attemptId, resumeToken };
 }
 
 
@@ -2366,6 +2381,7 @@ async function authorizeAuthenticatedUser(args: {
   clientIp: string | null;
   userAgent: string | null;
   attemptId: string | null;
+  resumeToken: string | null;
 }): Promise<{
   session_id: string | null;
   authorized: boolean;
@@ -2374,7 +2390,7 @@ async function authorizeAuthenticatedUser(args: {
   store_slug: string;
   store_id: string | null;
 }> {
-  const { db, userId, profile, ctx, req, authMethod, traceId, clientIp, userAgent, attemptId } = args;
+  const { db, userId, profile, ctx, req, authMethod, traceId, clientIp, userAgent, attemptId, resumeToken } = args;
 
 
   const detected = await detectStoreFromRequest(db, req, ctx.apMac);
@@ -2388,8 +2404,18 @@ async function authorizeAuthenticatedUser(args: {
   if (!attemptId) {
     // Legacy support or direct signup/login path without attempt_id should ideally have one,
     // but we allow it for now if not explicitly blocked.
-    // Valid attempt_id is required for everything that releases Wi-Fi.
-    console.error(`[auth] AttemptId missing in authorizeAuthenticatedUser. Method: ${authMethod}`);
+    // Valid attempt_id and resume_token are required for everything that releases Wi-Fi.
+    console.error(`[auth] AttemptId or ResumeToken missing in authorizeAuthenticatedUser. Method: ${authMethod}`);
+    if (!attemptId || !resumeToken) {
+      return {
+        session_id: null,
+        authorized: false,
+        redirect_url: detected.redirect_url || DEFAULT_REDIRECT_URL,
+        fail_reason: "MISSING_ATTEMPT_TOKENS",
+        store_slug: storeSlug,
+        store_id: storeId,
+      };
+    }
     return {
       session_id: null,
       authorized: false,
@@ -2403,7 +2429,8 @@ async function authorizeAuthenticatedUser(args: {
   const { data: claimRes, error: claimErr } = await db.rpc("claim_auth_attempt", {
     p_attempt_id: attemptId,
     p_user_id: userId,
-    p_lease_owner: leaseOwner
+    p_lease_owner: leaseOwner,
+    p_resume_token: resumeToken
   });
 
   if (claimErr || !claimRes || claimRes.length === 0) {
@@ -2858,14 +2885,15 @@ async function handleSignup(req: Request): Promise<Response> {
     return jsonResponse({ error: "Conta criada, mas não foi possível entrar. Tente fazer login.", code: "post_signup_signin_failed" }, 500);
   }
 
-  const { ctx, attemptId, error: authErr } = await getValidatedAuthContext(db, body, "signup");
+  const { ctx, attemptId, resumeToken, error: authErr } = await getValidatedAuthContext(db, body, "signup");
   if (authErr) return authErr;
 
 
   const result = await authorizeAuthenticatedUser({
     db, userId, ctx, req, authMethod: "password", traceId, clientIp, userAgent: ua,
     profile: { full_name: name, cpf_digits: cpfDigits || null, phone_digits: phoneDigits || null, email },
-    attemptId
+    attemptId,
+    resumeToken
   });
 
 
@@ -2933,13 +2961,14 @@ async function handleLogin(req: Request): Promise<Response> {
     return jsonResponse({ error: "Perfil não encontrado. Faça um novo cadastro.", code: "profile_not_found" }, 404);
   }
 
-  const { ctx, attemptId, error: authErr } = await getValidatedAuthContext(db, body, "login");
+  const { ctx, attemptId, resumeToken, error: authErr } = await getValidatedAuthContext(db, body, "login");
   if (authErr) return authErr;
 
 
   const result = await authorizeAuthenticatedUser({
     db, userId, ctx, req, authMethod: "password", traceId, clientIp, userAgent: ua, profile,
-    attemptId
+    attemptId,
+    resumeToken
   });
 
 
@@ -2972,10 +3001,6 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
     return jsonResponse({ needs_login: true, error: "missing_token" }, 401);
   }
 
-  const { ctx, attemptId, error: authErr } = await getValidatedAuthContext(db, body, "silent_login");
-  if (authErr) return authErr;
-
-  
   // Validate token via getUser (project rule: use getUser, not getClaims)
   const anonClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     global: { headers: { Authorization: `Bearer ${accessToken}` } },
@@ -2995,20 +3020,14 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
     provider === "apple" ? "apple" :
     "silent";
 
-  // FOR GOOGLE: attempt_id and resume_token are MANDATORY.
-  if (provider === "google") {
-    if (!attemptId || !resumeToken) {
-      console.error(`[auth] Google login without authoritative tokens. User: ${userId}`);
-      return jsonResponse({ error: "Transação de login inválida ou incompleta.", code: "missing_attempt_tokens" }, 403);
-    }
-  }
+  const { ctx: validatedCtx, attemptId, resumeToken, error: authErr } = await getValidatedAuthContext(db, body, "authorize-existing");
+  if (authErr) return authErr;
+
+  let ctx = validatedCtx;
 
   if (attemptId && resumeToken) {
     const val = await validateOAuthAttempt(db, attemptId, resumeToken);
-    
-    if (val.status === 'invalid') {
-      return jsonResponse({ error: val.error || "Tentativa inválida.", code: "invalid_attempt" }, 403);
-    }
+    // val won't be invalid here because getValidatedAuthContext already checked it.
     
     // Protection against user_id swap
     if (val.attempt.user_id && val.attempt.user_id !== userId) {
@@ -3025,7 +3044,7 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
         .eq("attempt_id", attemptId)
         .maybeSingle();
       
-      const storeRes = await detectStoreFromRequest(db, req, val.params?.apMac);
+      const storeRes = await detectStoreFromRequest(db, req, ctx.apMac);
 
       return jsonResponse({
         session_id: sess?.id || null,
@@ -3038,11 +3057,12 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
         replay: true
       });
     }
-
-    // Overwrite context with authoritative parameters from server
-    if (val.params) {
-      ctx = val.params;
-      console.log(`[auth] using authoritative parameters for attempt=${attemptId} mac=${ctx.clientMac}`);
+  } else {
+    // Both missing (allowed for non-authoritative paths like direct email login)
+    // but google auth MUST have tokens
+    if (authMethod === "google") {
+      console.error(`[auth] Google login without authoritative tokens. User: ${userId}`);
+      return jsonResponse({ error: "Transação de login inválida ou incompleta.", code: "missing_attempt_tokens" }, 403);
     }
   }
 
@@ -3130,11 +3150,9 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
   const result = await authorizeAuthenticatedUser({
     db, userId, ctx, req, authMethod, traceId, clientIp, userAgent: ua, 
     profile: profile as any,
-    attemptId
+    attemptId,
+    resumeToken
   });
-
-  // Authorization results are now handled by finalize_auth_attempt inside authorizeAuthenticatedUser
-  // The terminal state update here is redundant but we preserve trace if needed.
 
 
 
