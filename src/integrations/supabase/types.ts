@@ -858,21 +858,38 @@ export type Database = {
       }
     }
     Functions: {
-      claim_auth_attempt: {
-        Args: {
-          p_attempt_id: string
-          p_lease_duration?: string
-          p_lease_owner: string
-          p_user_id: string
-        }
-        Returns: {
-          authorized: boolean
-          fail_reason: string
-          redirect_url: string
-          result_status: string
-          session_id: string
-        }[]
-      }
+      claim_auth_attempt:
+        | {
+            Args: {
+              p_attempt_id: string
+              p_lease_duration?: string
+              p_lease_owner: string
+              p_user_id: string
+            }
+            Returns: {
+              authorized: boolean
+              fail_reason: string
+              redirect_url: string
+              result_status: string
+              session_id: string
+            }[]
+          }
+        | {
+            Args: {
+              p_attempt_id: string
+              p_lease_duration?: string
+              p_lease_owner: string
+              p_resume_token?: string
+              p_user_id: string
+            }
+            Returns: {
+              authorized: boolean
+              fail_reason: string
+              redirect_url: string
+              result_status: string
+              session_id: string
+            }[]
+          }
       finalize_auth_attempt: {
         Args: {
           p_attempt_id: string
