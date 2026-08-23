@@ -1,9 +1,9 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   background-color: #E30613; /* Brand Red */
-  background-image: linear-gradient(135deg, #E30613 0%, #B90510 100%);
+  background-image: radial-gradient(circle at top left, #E30613 0%, #B90510 100%);
   color: #1a1a1a;
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
@@ -23,12 +23,14 @@ body {
 
 .portal-card {
   background: #ffffff;
-  border-radius: 24px;
-  padding: 40px 32px;
+  border-radius: 28px;
+  padding: 48px 36px;
   max-width: 440px;
   width: 100%;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.35);
-  border-bottom: 8px solid #f5c542; /* Brand Yellow accent */
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+  border-bottom: 6px solid #f5b800; /* Brand Yellow accent */
+  position: relative;
+  overflow: hidden;
 }
 
 
@@ -50,12 +52,13 @@ body {
 }
 
 .portal-title {
-  font-size: 24px;
-  font-weight: 900;
+  font-size: 26px;
+  font-weight: 800;
   text-align: center;
-  margin-bottom: 6px;
-  color: #1a1a1a;
-  letter-spacing: -0.5px;
+  margin-bottom: 8px;
+  color: #111827;
+  letter-spacing: -0.025em;
+  line-height: 1.2;
 }
 
 .portal-subtitle {
@@ -77,16 +80,18 @@ body {
 .portal-input {
   width: 100%;
   padding: 12px 16px;
-  border: 2px solid #e2e8f0;
-  border-radius: 12px;
+  border: 1.5px solid #e5e7eb;
+  border-radius: 10px;
   font-size: 16px;
   outline: none;
-  transition: border-color 0.15s;
-  background: #fff;
+  transition: all 0.2s ease;
+  background: #f9fafb;
   color: #1a1a1a;
 }
 .portal-input:focus {
-  border-color: #f5c542;
+  border-color: #f5b800;
+  background: #fff;
+  box-shadow: 0 0 0 4px rgba(245, 184, 0, 0.1);
 }
 
 
@@ -148,22 +153,23 @@ body {
 }
 
 .portal-btn {
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 100%;
-  padding: 16px;
-  background: #f5c542; /* Brand Yellow */
+  padding: 14px 24px;
+  background: #f5b800; /* Brand Yellow */
   border: none;
-  border-radius: 14px;
-  font-size: 17px;
-  font-weight: 800;
+  border-radius: 12px;
+  font-size: 16px;
+  font-weight: 700;
   color: #1a1a1a;
   cursor: pointer;
-  margin-top: 16px;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  margin-top: 20px;
+  transition: all 0.2s ease;
   text-align: center;
   text-decoration: none;
-  box-shadow: 0 4px 0 #d4a72c;
-  transform: translateY(0);
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
 }
 .portal-btn:active:not(:disabled) {
   transform: translateY(2px);

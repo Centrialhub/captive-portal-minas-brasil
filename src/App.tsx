@@ -60,6 +60,13 @@ function formatPhoneBR(value: string): string {
 export default function App() {
   const navigate = useNavigate();
   const location = useLocation();
+  
+  // Use a local ref to track if component is mounted to prevent state updates on unmounted component
+  const isMounted = useRef(true);
+  useEffect(() => {
+    return () => { isMounted.current = false; };
+  }, []);
+
   const [step, setStep] = useState<Step>("loading");
   const [boot, setBoot] = useState<BootstrapData>(FALLBACK_BOOT);
   const [redirectUrl, setRedirectUrl] = useState<string | null>(null);
@@ -84,17 +91,32 @@ export default function App() {
   // CPF Prompt (for Google users)
   const [promptCpf, setPromptCpf] = useState("");
 
-  // signup form (CPF is no longer collected)
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [phone, setPhone] = useState("");
-  const [password, setPassword] = useState("");
-  const [password2, setPassword2] = useState("");
-  const [consented, setConsented] = useState(false);
+  // signup form fields state
+  const [signupFields, setSignupFields] = useState({
+    name: "",
+    email: "",
+    phone: "",
+    password: "",
+    passwordConfirm: "",
+    consented: false
+  });
   const [countdown, setCountdown] = useState(2);
   const redirectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const handleAuthOutcome = (result: any, successMessage: string) => {
+  // Grouped logic for signup form to improve code quality
+  const isSignupValid = useMemo(() => {
+    const { name, email, phone, password, passwordConfirm, consented } = signupFields;
+    return (
+      name.trim().split(/\s+/).length >= 2 &&
+      Validators.email(email) &&
+      Validators.phone(phone.replace(/\D/g, "")) &&
+      password.length >= 8 &&
+      password === passwordConfirm &&
+      consented
+    );
+  }, [signupFields]);
+
+  const handleAuthOutcome = useCallback((result: any, successMessage: string) => {
     if (result?.authorized) {
       setSuccessMsg(successMessage);
       const params = getQueryParams();
@@ -106,7 +128,7 @@ export default function App() {
       return true;
     }
     return false;
-  };
+  }, []);
 
   const handleAuthComplete = useCallback(() => {
     OAuthTracker.clearAll();
@@ -166,7 +188,10 @@ export default function App() {
             status: "success",
             payload: { source }
           });
-          handleAuthOutcome(result, "Wi-Fi liberado com sucesso!");
+          const outcomeHandled = handleAuthOutcome(result, "Wi-Fi liberado com sucesso!");
+          if (outcomeHandled && isMounted.current) {
+            // Success step set inside handleAuthOutcome
+          }
           return result;
         }
 
@@ -374,14 +399,18 @@ export default function App() {
     if (busy) return;
     setError("");
 
+    const { name, email, phone, password, passwordConfirm, consented } = signupFields;
+
     if (!name || name.trim().split(/\s+/).length < 2) return setError("Informe seu nome completo (nome e sobrenome).");
-    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return setError("Informe um e-mail válido.");
+    if (!Validators.email(email)) return setError("Informe um e-mail válido.");
+    
     const phoneDigits = phone.replace(/\D/g, "");
-    if (!phoneDigits || phoneDigits.length < 10 || phoneDigits.length > 11) return setError("Informe um telefone válido com DDD.");
+    if (!Validators.phone(phoneDigits)) return setError("Informe um telefone válido com DDD.");
+    
     if (password.length < 8) return setError("A senha deve ter pelo menos 8 caracteres.");
     if (!/[A-Za-z]/.test(password) || !/[0-9]/.test(password))
       return setError("A senha deve conter letras e números.");
-    if (password !== password2) return setError("As senhas não coincidem.");
+    if (password !== passwordConfirm) return setError("As senhas não coincidem.");
     if (!consented) return setError("Você deve aceitar os termos de uso para continuar.");
 
     setBusy(true);
