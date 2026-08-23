@@ -43,6 +43,9 @@ function Documentation() {
       <div className="mb-4 p-4 bg-slate-50 border border-slate-200 rounded-lg text-slate-800 text-sm">
         Prompt 09 — Estados Terminais Autoritativos: RPC <code>claim_auth_attempt</code> refatorado para garantir que tentativas canceladas ou concluídas sejam irrevogáveis, protegendo contra reentrância e CNA loops.
       </div>
+      <div className="mb-4 p-4 bg-cyan-50 border border-cyan-200 rounded-lg text-cyan-800 text-sm">
+        Prompt 10 — Propriedade da Lease na Finalização: RPC <code>finalize_auth_attempt</code> agora exige a lease ativa e retorna um objeto estruturado, garantindo que o sucesso só seja entregue ao usuário após a persistência correta no banco.
+      </div>
 
 
       <h1 className="text-3xl font-bold mb-6 text-gray-900 border-b pb-2">Captive Portal - Drogaria Minas Brasil</h1>
