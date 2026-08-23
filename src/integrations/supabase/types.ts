@@ -900,7 +900,13 @@ export type Database = {
           p_result_code?: string
           p_session_id: string
         }
-        Returns: boolean
+        Returns: {
+          authorized: boolean
+          finalized: boolean
+          redirect_url: string
+          session_id: string
+          status_final: string
+        }[]
       }
       has_role: {
         Args: {

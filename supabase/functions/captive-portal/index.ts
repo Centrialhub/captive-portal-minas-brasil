@@ -2508,7 +2508,7 @@ async function authorizeAuthenticatedUser(args: {
       if (check.state === 'authorized') {
         console.log(`[auth] Recovery successful: MAC ${macToCheck} is already authorized in UniFi.`);
         const finalRedirect = detected.redirect_url || DEFAULT_REDIRECT_URL;
-        await db.rpc("finalize_auth_attempt", {
+        const { data: finalizeRes } = await db.rpc("finalize_auth_attempt", {
           p_attempt_id: attemptId,
           p_lease_owner: leaseOwner,
           p_session_id: claim.session_id,
@@ -2517,13 +2517,14 @@ async function authorizeAuthenticatedUser(args: {
           p_fail_reason: null,
           p_result_code: "RECOVERED_ALREADY_AUTHORIZED"
         });
+
+        const isFinalized = Array.isArray(finalizeRes) && finalizeRes[0]?.finalized;
+
         return {
           session_id: claim.session_id,
-          authorized: true,
-          redirect_url: finalRedirect,
-          store_slug: storeSlug,
-          store_id: storeId,
-        };
+          authorized: isFinalized ? (finalizeRes[0]?.authorized ?? false) : false,
+          redirect_url: isFinalized ? (finalizeRes[0]?.redirect_url ?? finalRedirect) : finalRedirect,
+          fail_reason: isFinalized ? undefined : "FINALIZE_RECOVERY_FAILED",
       } else if (check.state === 'not_authorized') {
         console.log(`[auth] Recovery: MAC ${macToCheck} NOT authorized. Releasing for retry.`);
         await db.rpc("release_auth_retry", {
@@ -2684,9 +2685,9 @@ async function authorizeAuthenticatedUser(args: {
     { apMac: ctx.apMac, ssid: ctx.ssid, fastReturn: false },
   );
 
-  // FINALIZATION (PROMPT 06)
+  // FINALIZATION (PROMPT 10)
   const finalRedirect = detected.redirect_url || DEFAULT_REDIRECT_URL;
-  await db.rpc("finalize_auth_attempt", {
+  const { data: finalizeRes, error: finalizeErr } = await db.rpc("finalize_auth_attempt", {
     p_attempt_id: attemptId,
     p_lease_owner: leaseOwner,
     p_session_id: sessionId,
@@ -2696,11 +2697,19 @@ async function authorizeAuthenticatedUser(args: {
     p_result_code: authResult.ok ? "SUCCESS" : "UNIFI_ERROR"
   });
 
+  const finalRecord = Array.isArray(finalizeRes) ? finalizeRes[0] : null;
+  const isActuallyFinalized = !!finalRecord?.finalized;
+  const isActuallyAuthorized = isActuallyFinalized && !!finalRecord?.authorized;
+
+  if (finalizeErr || !isActuallyFinalized) {
+    console.error(`[auth] Finalization failed for attempt ${attemptId}:`, finalizeErr?.message || finalRecord?.status_final);
+  }
+
   return {
     session_id: sessionId,
-    authorized: !!authResult.ok,
-    redirect_url: finalRedirect,
-    fail_reason: authResult.ok ? undefined : (authResult.reason || "AUTHORIZE_FAILED"),
+    authorized: isActuallyAuthorized,
+    redirect_url: isActuallyAuthorized ? (finalRecord?.redirect_url || finalRedirect) : finalRedirect,
+    fail_reason: isActuallyAuthorized ? undefined : (authResult.reason || finalRecord?.status_final || "AUTHORIZE_FAILED"),
     store_slug: storeSlug,
     store_id: storeId,
   };
