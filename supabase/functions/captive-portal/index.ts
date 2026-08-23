@@ -1142,7 +1142,7 @@ async function checkUnifiAuthorizationState(
     
     return { state: "not_authorized" };
   } catch (err) {
-    console.error("[unifi-check] failed:", err);
+    Logger.error("[unifi-check] failed", { error: err });
     return { state: "inconclusive" };
   } finally {
     try { httpClient?.close(); } catch (e) { /* ignore close error */ }
@@ -1196,7 +1196,7 @@ async function unifiAuthorizeByMac(
     const staUrl0 = stamgrUrls[0].replace("/cmd/stamgr", "/stat/sta");
     let stationsRes = await unifiFetchStations(staUrl0, headers, httpClient);
     if (stationsRes.sessionExpired) {
-      console.warn("[unifi-auth] reason=UNIFI_SESSION_EXPIRED phase=pre-stations action=re-login");
+      Logger.warn("[unifi-auth] reason=UNIFI_SESSION_EXPIRED phase=pre-stations action=re-login");
       login = await unifiLogin(baseUrl, httpClient, username, password);
       if (login.ok) { headers = buildHeaders(login); stationsRes = await unifiFetchStations(staUrl0, headers, httpClient); }
     }
@@ -1249,7 +1249,7 @@ async function unifiAuthorizeByMac(
       for (const url of stamgrUrls) {
         let cmd = await unifiSendAuthorizeCmd(url, headers, httpClient, buildPayload(mins));
         if (cmd.sessionExpired) {
-          console.warn("[unifi-auth] reason=UNIFI_SESSION_EXPIRED phase=cmd action=re-login");
+          Logger.warn("[unifi-auth] reason=UNIFI_SESSION_EXPIRED phase=cmd action=re-login");
           login = await unifiLogin(baseUrl, httpClient, username, password);
           if (login.ok) { headers = buildHeaders(login); cmd = await unifiSendAuthorizeCmd(url, headers, httpClient, buildPayload(mins)); }
         }
@@ -1297,7 +1297,7 @@ async function unifiAuthorizeByMac(
         for (let attempt = 1; attempt <= VERIFY_BACKOFF_MS.length; attempt++) {
           let staRes = await unifiFetchStations(staUrl, headers, httpClient);
           if (staRes.sessionExpired) {
-            console.warn(`[unifi-auth] reason=UNIFI_SESSION_EXPIRED phase=poll attempt=${attempt} action=re-login`);
+            Logger.warn(`[unifi-auth] reason=UNIFI_SESSION_EXPIRED phase=poll`, { attempt });
             login = await unifiLogin(baseUrl, httpClient, username, password);
             if (login.ok) { headers = buildHeaders(login); staRes = await unifiFetchStations(staUrl, headers, httpClient); }
           }
@@ -2604,7 +2604,7 @@ async function authorizeAuthenticatedUser(args: {
   }
 
   if (claim.result_status === 'processing') {
-    console.log(`[auth] Concurrent request active for attempt ${attemptId}.`);
+    Logger.info(`[auth] Concurrent request active`, { attempt_id: attemptId });
     return {
       session_id: claim.session_id,
       authorized: false,
@@ -2647,7 +2647,7 @@ async function authorizeAuthenticatedUser(args: {
       .single();
 
     if (sErr || !session?.id) {
-      console.error("[auth] captive_sessions insert failed:", sErr?.message);
+      Logger.error("[auth] captive_sessions insert failed", { error: sErr?.message });
       // Finalize as failed so the claim is released
       await db.rpc("finalize_auth_attempt", {
         p_attempt_id: attemptId,
