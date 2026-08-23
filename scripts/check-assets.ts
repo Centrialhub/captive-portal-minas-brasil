@@ -34,7 +34,7 @@ try {
   console.log("Checking TypeScript/Import resolution...");
   execSync('npm run typecheck', { stdio: 'inherit' });
   console.log("✅ Typecheck passed.");
-} catch (e) {
+} catch (_e) {
   console.error("❌ Typecheck failed - possible import resolution error.");
   process.exit(1);
 }
