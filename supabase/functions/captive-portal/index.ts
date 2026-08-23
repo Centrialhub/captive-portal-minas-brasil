@@ -2418,7 +2418,8 @@ async function authorizeAuthenticatedUser(args: {
   const { data: claimRes, error: claimErr } = await db.rpc("claim_auth_attempt", {
     p_attempt_id: attemptId,
     p_user_id: userId,
-    p_lease_owner: leaseOwner
+    p_lease_owner: leaseOwner,
+    p_resume_token: resumeToken
   });
 
   if (claimErr || !claimRes || claimRes.length === 0) {
