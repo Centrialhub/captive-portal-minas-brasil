@@ -14,7 +14,7 @@
     "test:watch": "vitest",
     "typecheck": "tsc -b tsconfig.json",
     "typecheck:edge": "deno check supabase/functions/captive-portal/index.ts",
-    "check": "bash scripts/check-compliance-artifacts.sh && npm run lint && npm run typecheck && npm run typecheck:edge && npm run test && npm run build"
+    "check": "bash scripts/release-gate.sh"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.99.0",
