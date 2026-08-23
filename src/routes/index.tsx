@@ -26,10 +26,10 @@ function Documentation() {
   return (
     <div className="p-8 font-sans max-w-4xl mx-auto">
       <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-lg text-green-800 text-sm">
-        Integridade de ativos binários restaurada (Prompt 38). Logotipo e favicons verificados e script de integridade automatizado no fluxo de build. Conformidade visual e técnica confirmada.
+         
       </div>
       <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg text-blue-800 text-sm">
-        Prompt 46 — Build Determinístico e Healthchecks: Dockerfile configurado para falhar em configurações ausentes, build-info gerado dinamicamente e rotas /health e /ready implementadas.
+        Prompt 48 — Qualidade e Polimento de UI: Refinamento visual de cards, botões e inputs; otimização de estado do formulário de cadastro; e validações robustas centralizadas.
       </div>
       <h1 className="text-3xl font-bold mb-6 text-gray-900 border-b pb-2">Captive Portal - Drogaria Minas Brasil</h1>
       <p className="mb-6 text-gray-600">Documentação visual de arquitetura, segurança e integridade do sistema.</p>
@@ -84,4 +84,3 @@ function Documentation() {
     </div>
   );
 }
-

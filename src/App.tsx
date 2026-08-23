@@ -134,6 +134,12 @@ export default function App() {
     OAuthTracker.clearAll();
   }, []);
 
+  // Use a local ref to track if component is mounted to prevent state updates on unmounted component
+  const isMounted = useRef(true);
+  useEffect(() => {
+    return () => { isMounted.current = false; };
+  }, []);
+
 
   const completeAuthenticatedSession = async (session: any, source: "google" | "silent") => {
     if (authCompletedRef.current) return;
@@ -768,7 +774,8 @@ export default function App() {
             <div>
               <label className="portal-label">Nome Completo *</label>
               <input
-                type="text" value={name} onChange={(e) => setName(e.target.value)}
+                type="text" value={signupFields.name} 
+                onChange={(e) => setSignupFields(prev => ({ ...prev, name: e.target.value }))}
                 required className="portal-input" placeholder="Ex: João Silva"
                 autoComplete="name"
               />
@@ -777,7 +784,8 @@ export default function App() {
             <div>
               <label className="portal-label">E-mail *</label>
               <input
-                type="email" value={email} onChange={(e) => setEmail(e.target.value)}
+                type="email" value={signupFields.email} 
+                onChange={(e) => setSignupFields(prev => ({ ...prev, email: e.target.value }))}
                 required className="portal-input" placeholder="seu@email.com"
                 autoComplete="email"
               />
@@ -786,8 +794,8 @@ export default function App() {
             <div>
               <label className="portal-label">WhatsApp / Celular *</label>
               <input
-                type="tel" value={phone}
-                onChange={(e) => setPhone(formatPhoneBR(e.target.value))}
+                type="tel" value={formatPhoneBR(signupFields.phone)}
+                onChange={(e) => setSignupFields(prev => ({ ...prev, phone: e.target.value }))}
                 required className="portal-input" placeholder="(00) 00000-0000"
                 autoComplete="tel"
               />
@@ -796,7 +804,8 @@ export default function App() {
             <div>
               <label className="portal-label">Senha *</label>
               <input
-                type="password" value={password} onChange={(e) => setPassword(e.target.value)}
+                type="password" value={signupFields.password} 
+                onChange={(e) => setSignupFields(prev => ({ ...prev, password: e.target.value }))}
                 required minLength={8} className="portal-input"
                 placeholder="Mínimo 8 caracteres (letras e números)"
                 autoComplete="new-password"
@@ -806,7 +815,8 @@ export default function App() {
             <div>
               <label className="portal-label">Confirmar Senha *</label>
               <input
-                type="password" value={password2} onChange={(e) => setPassword2(e.target.value)}
+                type="password" value={signupFields.passwordConfirm} 
+                onChange={(e) => setSignupFields(prev => ({ ...prev, passwordConfirm: e.target.value }))}
                 required minLength={8} className="portal-input"
                 placeholder="Repita sua senha"
                 autoComplete="new-password"
@@ -823,8 +833,8 @@ export default function App() {
                 </details>
                 <label className="portal-checkbox-label mt-2">
                   <input
-                    type="checkbox" checked={consented}
-                    onChange={(e) => setConsented(e.target.checked)}
+                    type="checkbox" checked={signupFields.consented}
+                    onChange={(e) => setSignupFields(prev => ({ ...prev, consented: e.target.checked }))}
                   />
                   <span>Li e aceito os <button type="button" className="text-red-600 font-bold hover:underline bg-transparent border-none p-0 inline cursor-pointer" onClick={() => navigate("/privacy")}>Termos de Privacidade</button></span>
                 </label>
