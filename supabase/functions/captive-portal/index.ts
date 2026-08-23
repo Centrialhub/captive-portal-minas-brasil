@@ -39,7 +39,7 @@ const VALID_BR_DDD = new Set([
 // GeoIP config
 const GEOIP_ENDPOINT = Deno.env.get("GEOIP_ENDPOINT") || "https://ipapi.co/{ip}/json/";
 const GEOIP_TIMEOUT_MS = parseInt(Deno.env.get("GEOIP_TIMEOUT_MS") || "1500");
-const GEOIP_CACHE_TTL_HOURS = parseInt(Deno.env.get("GEOIP_CACHE_TTL_HOURS") || "168");
+const _GEOIP_CACHE_TTL_HOURS = parseInt(Deno.env.get("GEOIP_CACHE_TTL_HOURS") || "168");
 const _GEOIP_PROVIDER = Deno.env.get("GEOIP_PROVIDER") || "ipapi";
 
 // OTP subsystem removed (Prompt 08)
@@ -2027,7 +2027,7 @@ async function handleCronHousekeeping(req: Request): Promise<Response> {
 }
 
 // ========== Self-contained HTML Portal ==========
-async function handlePortalHtml(req: Request, url: URL): Promise<Response> {
+async function handlePortalHtml(_req: Request, url: URL): Promise<Response> {
   // Deterministic redirect to the canonical React portal
   // Preserves all captive parameters for the SPA to pick up
   const target = new URL("https://minasbrasilwifi.com.br");
