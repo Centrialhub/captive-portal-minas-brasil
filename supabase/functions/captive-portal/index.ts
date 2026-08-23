@@ -2680,10 +2680,60 @@ async function authorizeAuthenticatedUser(args: {
     user_agent: userAgent,
   });
 
-  const authResult = await authorizeClient(
-    db, storeId, storeSlug, ctx.clientMac, sessionId, clientIp || "",
-    { apMac: ctx.apMac, ssid: ctx.ssid, fastReturn: false },
-  );
+  let authResult: { ok: boolean; reason?: string; userMessage?: string; cmd_accepted_at?: string; last_verify_result?: Record<string, unknown> | null; pending_confirmation?: boolean; confirm?: Promise<any> };
+  
+  try {
+    authResult = await authorizeClient(
+      db, storeId, storeSlug, ctx.clientMac, sessionId, clientIp || "",
+      { apMac: ctx.apMac, ssid: ctx.ssid, fastReturn: false },
+    );
+  } catch (err: any) {
+    const errorMsg = err?.message || String(err);
+    console.error(`[auth] authorizeClient exception for attempt ${attemptId}:`, errorMsg);
+    
+    // Log exception event
+    logEvent(db, {
+      session_id: sessionId,
+      trace_id: traceId,
+      store_id: storeId,
+      event_type: "unifi_authorize_exception",
+      step: "unifi",
+      status: "error",
+      error_code: "AUTHORIZE_CLIENT_EXCEPTION",
+      error_message: errorMsg,
+      payload: { auth_method: authMethod, store_slug: storeSlug, attempt_id: attemptId },
+      client_ip: clientIp,
+      user_agent: userAgent,
+    });
+
+    // We do NOT finalize as failed yet if it's an ambiguous exception (like timeout/network)
+    // to allow for manual or automated recovery. 
+    // However, if the lease is held, we must release it or mark as ambigous.
+    // Prompt 11 requirement: "resultado ambíguo após possível envio; exceção interna antes da chamada"
+    
+    // Mark as ambiguous if it could have been sent
+    const isAmbiguous = errorMsg.includes("fetch") || errorMsg.includes("timeout") || errorMsg.includes("Network");
+    
+    const { data: finalizeAmbRes } = await db.rpc("finalize_auth_attempt", {
+      p_attempt_id: attemptId,
+      p_lease_owner: leaseOwner,
+      p_session_id: sessionId,
+      p_authorized: false,
+      p_fail_reason: isAmbiguous ? "AUTHORIZE_AMBIGUOUS_ERROR" : "AUTHORIZE_INTERNAL_ERROR",
+      p_result_code: isAmbiguous ? "AMBIGUOUS" : "FAILED"
+    });
+
+    const finalAmbRecord = Array.isArray(finalizeAmbRes) ? finalizeAmbRes[0] : null;
+
+    return {
+      session_id: sessionId,
+      authorized: false,
+      redirect_url: detected.redirect_url || DEFAULT_REDIRECT_URL,
+      fail_reason: isAmbiguous ? "CONNECTION_AMBIGUOUS" : "INTERNAL_ERROR",
+      store_slug: storeSlug,
+      store_id: storeId,
+    };
+  }
 
   // FINALIZATION (PROMPT 10)
   const finalRedirect = detected.redirect_url || DEFAULT_REDIRECT_URL;

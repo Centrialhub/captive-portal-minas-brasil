@@ -46,6 +46,9 @@ function Documentation() {
       <div className="mb-4 p-4 bg-cyan-50 border border-cyan-200 rounded-lg text-cyan-800 text-sm">
         Prompt 10 — Propriedade da Lease na Finalização: RPC <code>finalize_auth_attempt</code> agora exige a lease ativa e retorna um objeto estruturado, garantindo que o sucesso só seja entregue ao usuário após a persistência correta no banco.
       </div>
+      <div className="mb-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg text-yellow-800 text-sm">
+        Prompt 11 — Exceções de authorizeClient: Implementado try/catch robusto em torno da autorização UniFi, garantindo que timeouts ou falhas de rede resultem em estado ambíguo recuperável em vez de abandono da lease.
+      </div>
 
 
       <h1 className="text-3xl font-bold mb-6 text-gray-900 border-b pb-2">Captive Portal - Drogaria Minas Brasil</h1>
