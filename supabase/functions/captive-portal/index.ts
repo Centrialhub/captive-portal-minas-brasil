@@ -2874,14 +2874,15 @@ async function handleSignup(req: Request): Promise<Response> {
     return jsonResponse({ error: "Conta criada, mas não foi possível entrar. Tente fazer login.", code: "post_signup_signin_failed" }, 500);
   }
 
-  const { ctx, attemptId, error: authErr } = await getValidatedAuthContext(db, body, "signup");
+  const { ctx, attemptId, resumeToken, error: authErr } = await getValidatedAuthContext(db, body, "signup");
   if (authErr) return authErr;
 
 
   const result = await authorizeAuthenticatedUser({
     db, userId, ctx, req, authMethod: "password", traceId, clientIp, userAgent: ua,
     profile: { full_name: name, cpf_digits: cpfDigits || null, phone_digits: phoneDigits || null, email },
-    attemptId
+    attemptId,
+    resumeToken
   });
 
 
