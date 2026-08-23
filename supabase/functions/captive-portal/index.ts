@@ -3229,9 +3229,16 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
   // authMethod is already determined earlier to support replay logic
 
   // Check if CPF is required before UniFi authorization
+    // Authoritative CPF validation (Prompt 20)
+  const storedCpf = profile?.cpf_digits || "";
+  const isCpfInvalid = !Validators.cpf(storedCpf);
+  
   if (authMethod === "google") {
-    const isCpfPending = !profile?.cpf_digits || (profile as any)?.cpf_required === true;
-    if (isCpfPending) {
+    if (profile?.cpf_required || isCpfInvalid) {
+      logEvent(db, {
+        trace_id: traceId, event_type: "google_auth_cpf_pending", step: "form", status: "info",
+        payload: { email: profile?.email, mac: ctx.clientMac, attempt_id: attemptId, is_invalid: isCpfInvalid }, client_ip: clientIp,
+      });
       logEvent(db, {
         trace_id: traceId, event_type: "google_auth_cpf_pending", step: "form", status: "info",
         payload: { email: profile?.email, mac: ctx.clientMac, attempt_id: attemptId }, client_ip: clientIp,
@@ -3330,9 +3337,9 @@ async function handleUpdateProfile(req: Request): Promise<Response> {
 
   const updatePayload: Record<string, any> = {};
   if (cpfDigits) {
-    if (!isValidCPF(cpfDigits)) return errorResponse("CPF inválido.");
-    updatePayload.cpf_digits = cpfDigits;
-    updatePayload.cpf_required = false;
+
+
+
   }
   if (phoneDigits) {
     if (!isValidPhone(phoneDigits)) return errorResponse("Telefone inválido.");
