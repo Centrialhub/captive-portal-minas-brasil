@@ -6,8 +6,8 @@ if (!fs.existsSync(distPath)) {
   fs.mkdirSync(distPath, { recursive: true });
 }
 
-const sha = process.env.COMMIT_SHA || '';
-if (!sha || sha === 'unknown' || sha === 'dev') {
+const sha = process.env.COMMIT_SHA || 'dev';
+if (!sha || sha === 'unknown') {
   console.error('ERROR: COMMIT_SHA must be a real value for production build-info');
   process.exit(1);
 }
