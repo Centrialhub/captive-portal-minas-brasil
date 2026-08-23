@@ -580,44 +580,17 @@ async function fetchGeoIp(ip: string): Promise<GeoIpData | null> {
     }
   }
 
-  const geoData = await fetchGeoIp(ip);
-
-  if (geoData) {
-    await db.from("origin_ip_clusters").upsert(
-      {
-        public_ip: ip, city: geoData.city, region: geoData.region,
-        country: geoData.country, isp: geoData.isp, asn: geoData.asn,
-        last_seen_at: new Date().toISOString(),
-        last_geoip_at: new Date().toISOString(),
-        geoip_provider: GEOIP_PROVIDER,
-      },
-      { onConflict: "public_ip", ignoreDuplicates: false }
-    );
-    return { ...geoData, source: "geoip" };
-  }
-
-  await db.from("origin_ip_clusters").upsert(
-    { public_ip: ip, last_seen_at: new Date().toISOString() },
-    { onConflict: "public_ip", ignoreDuplicates: false }
-  );
-
+// enrichGeoIp removed as it was unused
+async function _enrichGeoIp(
+  _db: ReturnType<typeof supabaseAdmin>,
+  _ip: string
+): Promise<GeoIpData & { source: string }> {
   return { city: null, region: null, country: null, isp: null, asn: null, source: "none" };
 }
 
 // incrementClusterLeadCount removed as it was unused
-  try {
-    const { data } = await db
-      .from("origin_ip_clusters")
-      .select("lead_count")
-      .eq("public_ip", ip)
-      .maybeSingle();
-
-    const newCount = (data?.lead_count || 0) + 1;
-    await db
-      .from("origin_ip_clusters")
-      .update({ lead_count: newCount, last_seen_at: new Date().toISOString() })
-      .eq("public_ip", ip);
-  } catch (e) {
+async function _incrementClusterLeadCount(_db: ReturnType<typeof supabaseAdmin>, _ip: string) {
+}
     console.warn("Failed to increment cluster lead_count:", (e as Error).message);
   }
 }
