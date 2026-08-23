@@ -20,6 +20,7 @@ export const SuccessView: React.FC<SuccessViewProps> = ({
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const autoExecutedRef = useRef(false);
   const manualLockRef = useRef(false);
+  const completedOnceRef = useRef(false);
 
   // Keep onComplete ref updated without restarting effects
   useEffect(() => {
@@ -34,22 +35,28 @@ export const SuccessView: React.FC<SuccessViewProps> = ({
     intervalRef.current = null;
   };
 
+  const executeCompletion = () => {
+    if (completedOnceRef.current) return;
+    completedOnceRef.current = true;
+    if (onCompleteRef.current) onCompleteRef.current();
+  };
+
   useEffect(() => {
-    // URL nula cria zero timers e mostra mensagem para fechar a janela
     if (!redirectUrl) {
       cleanup();
       return;
     }
 
-    // Effect principal depende apenas de redirectUrl estável
-    // O automático: cria um timeout e um interval
+    // Ensure we don't recreate timers if already auto-executed or manual redirect happened
+    if (autoExecutedRef.current || manualLockRef.current) return;
+
     cleanup();
     
     timeoutRef.current = setTimeout(() => {
       if (!autoExecutedRef.current && !manualLockRef.current) {
         autoExecutedRef.current = true;
         cleanup();
-        if (onCompleteRef.current) onCompleteRef.current();
+        executeCompletion();
         window.location.replace(redirectUrl);
       }
     }, 2000);
@@ -59,7 +66,6 @@ export const SuccessView: React.FC<SuccessViewProps> = ({
     }, 1000);
 
     return () => {
-      // Unmount limpa recursos sem executar onComplete automaticamente
       cleanup();
     };
   }, [redirectUrl]);
@@ -67,16 +73,16 @@ export const SuccessView: React.FC<SuccessViewProps> = ({
   const handleManualRedirect = () => {
     if (!redirectUrl || manualLockRef.current) return;
     
-    // Deduplica duplo clique
+    // Lock to prevent concurrent clicks
     manualLockRef.current = true;
     
-    // Cancela automático
+    // Cancel auto-timer
     cleanup();
     
-    if (onCompleteRef.current) onCompleteRef.current();
+    executeCompletion();
     window.location.replace(redirectUrl);
     
-    // Permite nova tentativa deliberada se a página continuou aberta (ex: bloqueio de CNA)
+    // Allow manual retry after 2s if navigation was blocked
     setTimeout(() => {
       manualLockRef.current = false;
     }, 2000);
