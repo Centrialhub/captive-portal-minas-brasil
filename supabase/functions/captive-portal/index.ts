@@ -3001,18 +3001,14 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
 
   // FOR GOOGLE: attempt_id and resume_token are MANDATORY.
   if (provider === "google") {
-    if (!attemptId || !resumeToken) {
-      console.error(`[auth] Google login without authoritative tokens. User: ${userId}`);
-      return jsonResponse({ error: "Transação de login inválida ou incompleta.", code: "missing_attempt_tokens" }, 403);
-    }
-  }
+  const { ctx: validatedCtx, attemptId, resumeToken, error: authErr } = await getValidatedAuthContext(db, body, "authorize-existing");
+  if (authErr) return authErr;
+
+  ctx = validatedCtx;
 
   if (attemptId && resumeToken) {
     const val = await validateOAuthAttempt(db, attemptId, resumeToken);
-    
-    if (val.status === 'invalid') {
-      return jsonResponse({ error: val.error || "Tentativa inválida.", code: "invalid_attempt" }, 403);
-    }
+    // val won't be invalid here because getValidatedAuthContext already checked it.
     
     // Protection against user_id swap
     if (val.attempt.user_id && val.attempt.user_id !== userId) {
@@ -3029,7 +3025,7 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
         .eq("attempt_id", attemptId)
         .maybeSingle();
       
-      const storeRes = await detectStoreFromRequest(db, req, val.params?.apMac);
+      const storeRes = await detectStoreFromRequest(db, req, ctx.apMac);
 
       return jsonResponse({
         session_id: sess?.id || null,
@@ -3042,11 +3038,12 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
         replay: true
       });
     }
-
-    // Overwrite context with authoritative parameters from server
-    if (val.params) {
-      ctx = val.params;
-      console.log(`[auth] using authoritative parameters for attempt=${attemptId} mac=${ctx.clientMac}`);
+  } else {
+    // Both missing (allowed for non-authoritative paths like direct email login)
+    // but google auth MUST have tokens
+    if (authMethod === "google") {
+      console.error(`[auth] Google login without authoritative tokens. User: ${userId}`);
+      return jsonResponse({ error: "Transação de login inválida ou incompleta.", code: "missing_attempt_tokens" }, 403);
     }
   }
 
