@@ -240,7 +240,7 @@ async function syncWithClubeMais(lead: {
 }
 
 /** Extract real public IP from request headers (never trust body) */
-function getPublicIp( _req: Request): string | null {
+function getPublicIp(req: Request): string | null {
   const cfIp = req.headers.get("cf-connecting-ip")?.trim();
   if (cfIp && Validators.ip(cfIp)) return cfIp;
 
@@ -256,7 +256,7 @@ function getPublicIp( _req: Request): string | null {
   return null;
 }
 
-async function safeParseJson( _req: Request): Promise<Record<string, unknown> | null> {
+async function safeParseJson(req: Request): Promise<Record<string, unknown> | null> {
   try {
     const ct = req.headers.get("content-type") || "";
     if (ct.includes("application/json")) {
@@ -293,7 +293,7 @@ async function safeParseJson( _req: Request): Promise<Record<string, unknown> | 
 
 
 // ========== Trace ID + Event Logging ==========
-function getTraceId( _req: Request, body?: Record<string, unknown> | null): string {
+function getTraceId(req: Request, body?: Record<string, unknown> | null): string {
   const fromHeader = req.headers.get("x-trace-id")?.trim();
   if (fromHeader && fromHeader.length <= 64) return fromHeader;
   const fromBody = body && typeof body.trace_id === "string" ? body.trace_id.trim() : "";
@@ -367,7 +367,7 @@ function logEvent(db: ReturnType<typeof supabaseAdmin>, args: LogEventArgs): voi
 //   5. Generic fallback                 (caller should trigger discoverStoreByClientMac)
 async function detectStoreFromRequest(
   db: ReturnType<typeof supabaseAdmin>,
-   _req: Request,
+  req: Request,
   apMac?: string | null,
 ): Promise<{ store_id: string | null; store_slug: string; redirect_url: string | null; store_name: string; store_city: string | null; detection_source: string }> {
 
@@ -1404,7 +1404,7 @@ async function _getControllerBaseForGuestRedirect(controllerUrl: string): Promis
   return `${u.origin}${path}`;
 }
 
-async function handleBootstrap( _req: Request): Promise<Response> {
+async function handleBootstrap(req: Request): Promise<Response> {
   const db = supabaseAdmin();
 
   // Detect store: ?store=slug > IP mapping > single active store
@@ -1487,7 +1487,7 @@ async function internalHousekeeping(db: ReturnType<typeof supabaseAdmin>): Promi
 
 // ========== Admin Endpoints ==========
 
-async function requireAdmin( _req: Request): Promise<{ db: ReturnType<typeof supabaseAdmin>; userId: string } | Response> {
+async function requireAdmin(req: Request): Promise<{ db: ReturnType<typeof supabaseAdmin>; userId: string } | Response> {
   const authHeader = req.headers.get("Authorization");
   if (!authHeader?.startsWith("Bearer ")) return errorResponse("Unauthorized", 401);
 
@@ -1512,7 +1512,7 @@ async function requireAdmin( _req: Request): Promise<{ db: ReturnType<typeof sup
 }
 
 // ========== Admin: Global Settings ==========
-async function handleAdminSettings( _req: Request): Promise<Response> {
+async function handleAdminSettings(req: Request): Promise<Response> {
   const auth = await requireAdmin(req);
   if (auth instanceof Response) return auth;
   const { db } = auth;
@@ -1538,7 +1538,7 @@ async function handleAdminSettings( _req: Request): Promise<Response> {
   return errorResponse("Method not allowed", 405);
 }
 
-async function handleAdminStores( _req: Request): Promise<Response> {
+async function handleAdminStores(req: Request): Promise<Response> {
   const auth = await requireAdmin(req);
   if (auth instanceof Response) return auth;
   const { db } = auth;
@@ -1620,7 +1620,7 @@ async function handleAdminStores( _req: Request): Promise<Response> {
   return errorResponse("Method not allowed", 405);
 }
 
-async function handleAdminLeads( _req: Request, url: URL): Promise<Response> {
+async function handleAdminLeads(req: Request, url: URL): Promise<Response> {
   const auth = await requireAdmin(req);
   if (auth instanceof Response) return auth;
   const { db } = auth;
@@ -1675,7 +1675,7 @@ async function handleAdminLeads( _req: Request, url: URL): Promise<Response> {
   return jsonResponse({ data, total: count, page, limit });
 }
 
-async function handleAdminConsent( _req: Request): Promise<Response> {
+async function handleAdminConsent(req: Request): Promise<Response> {
   const auth = await requireAdmin(req);
   if (auth instanceof Response) return auth;
   const { db } = auth;
@@ -1710,7 +1710,7 @@ async function handleAdminConsent( _req: Request): Promise<Response> {
   return errorResponse("Method not allowed", 405);
 }
 
-async function handleAdminSessions( _req: Request, url: URL): Promise<Response> {
+async function handleAdminSessions(req: Request, url: URL): Promise<Response> {
   const auth = await requireAdmin(req);
   if (auth instanceof Response) return auth;
   const { db } = auth;
@@ -1733,7 +1733,7 @@ async function handleAdminSessions( _req: Request, url: URL): Promise<Response> 
   return jsonResponse({ data, total: count, page, limit });
 }
 
-async function handleAdminClusters( _req: Request, url: URL): Promise<Response> {
+async function handleAdminClusters(req: Request, url: URL): Promise<Response> {
   const auth = await requireAdmin(req);
   if (auth instanceof Response) return auth;
   const { db } = auth;
@@ -1775,7 +1775,7 @@ async function handleAdminClusters( _req: Request, url: URL): Promise<Response> 
 }
 
 // ========== Admin: Store Public IPs ==========
-async function handleAdminStoreIps( _req: Request, url: URL): Promise<Response> {
+async function handleAdminStoreIps(req: Request, url: URL): Promise<Response> {
   const auth = await requireAdmin(req);
   if (auth instanceof Response) return auth;
   const { db } = auth;
@@ -1818,7 +1818,7 @@ async function handleAdminStoreIps( _req: Request, url: URL): Promise<Response> 
 }
 
 // ========== Admin: Access Points (AP MAC -> Store mapping) ==========
-async function handleAdminAccessPoints( _req: Request, url: URL): Promise<Response> {
+async function handleAdminAccessPoints(req: Request, url: URL): Promise<Response> {
   const auth = await requireAdmin(req);
   if (auth instanceof Response) return auth;
   const { db } = auth;
@@ -1945,7 +1945,7 @@ function escapeXml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
 }
 
-async function handleAdminLeadsXml( _req: Request, url: URL): Promise<Response> {
+async function handleAdminLeadsXml(req: Request, url: URL): Promise<Response> {
   const auth = await requireAdmin(req);
   if (auth instanceof Response) return auth;
   const { db } = auth;
@@ -2016,7 +2016,7 @@ async function handleAdminLeadsXml( _req: Request, url: URL): Promise<Response> 
 }
 
 // ========== Housekeeping (Admin manual) ==========
-async function handleHousekeeping( _req: Request): Promise<Response> {
+async function handleHousekeeping(req: Request): Promise<Response> {
   const auth = await requireAdmin(req);
   if (auth instanceof Response) return auth;
   const { db } = auth;
@@ -2026,7 +2026,7 @@ async function handleHousekeeping( _req: Request): Promise<Response> {
 }
 
 // ========== Housekeeping (Cron) ==========
-async function handleCronHousekeeping( _req: Request): Promise<Response> {
+async function handleCronHousekeeping(req: Request): Promise<Response> {
   // Authenticate via CRON_SECRET
   const authHeader = req.headers.get("Authorization");
   const token = authHeader?.replace("Bearer ", "");
@@ -2043,7 +2043,7 @@ async function handleCronHousekeeping( _req: Request): Promise<Response> {
 }
 
 // ========== Self-contained HTML Portal ==========
-async function handlePortalHtml( _req: Request, url: URL): Promise<Response> {
+async function handlePortalHtml(req: Request, url: URL): Promise<Response> {
   // Deterministic redirect to the canonical React portal
   // Preserves all captive parameters for the SPA to pick up
   const target = new URL("https://minasbrasilwifi.com.br");
@@ -2058,7 +2058,7 @@ async function handlePortalHtml( _req: Request, url: URL): Promise<Response> {
  * Deterministic handler for OAuth callbacks (Google/Apple).
  * Ensures session parameters are passed back to the React SPA correctly.
  */
-async function handleOAuthCallback( _req: Request): Promise<Response> {
+async function handleOAuthCallback(req: Request): Promise<Response> {
   const url = new URL(req.url);
   const target = new URL("https://minasbrasilwifi.com.br");
   
@@ -2070,7 +2070,7 @@ async function handleOAuthCallback( _req: Request): Promise<Response> {
 }
 
 // ========== Client-side telemetry ==========
-async function handleClientEvent( _req: Request): Promise<Response> {
+async function handleClientEvent(req: Request): Promise<Response> {
   const clientIp = getPublicIp(req) || "unknown";
   const ua = req.headers.get("user-agent")?.slice(0, 500) || null;
   const db = supabaseAdmin();
@@ -2208,7 +2208,7 @@ async function authorizeAuthenticatedUser(args: {
   userId: string;
   profile: { full_name: string; cpf_digits: string | null; phone_digits: string | null; email: string; cpf_required?: boolean };
   ctx: AuthAuthorizeContext;
-   _req: Request;
+  req: Request;
   authMethod: "password" | "silent" | "google" | "apple";
   traceId: string;
   clientIp: string | null;
@@ -2575,7 +2575,7 @@ function validatePasswordStrength(pw: unknown): { ok: boolean; reason?: string }
 }
 
 /** Compute site base URL for building password-reset redirect */
-function getSiteBaseUrl( _req: Request): string {
+function getSiteBaseUrl(req: Request): string {
   const origin = req.headers.get("origin") || req.headers.get("referer");
   if (origin) {
     try { const u = new URL(origin); return `${u.protocol}//${u.host}`; } catch { /* ignore */ }
@@ -2588,7 +2588,7 @@ function getSiteBaseUrl( _req: Request): string {
   return "https://minasbrasilwifi.com.br";
 }
 
-async function handleRequestPasswordReset( _req: Request): Promise<Response> {
+async function handleRequestPasswordReset(req: Request): Promise<Response> {
   const db = supabaseAdmin();
   const clientIp = getPublicIp(req);
   const ua = req.headers.get("user-agent") || "";
@@ -2641,7 +2641,7 @@ function maskEmail(email: string): string {
   return `${shown}${"*".repeat(Math.max(1, local.length - shown.length))}@${domain}`;
 }
 
-async function handleSignup( _req: Request): Promise<Response> {
+async function handleSignup(req: Request): Promise<Response> {
   const db = supabaseAdmin();
   const clientIp = getPublicIp(req);
   const ua = req.headers.get("user-agent") || "";
@@ -2814,7 +2814,7 @@ async function handleSignup( _req: Request): Promise<Response> {
   });
 }
 
-async function handleLogin( _req: Request): Promise<Response> {
+async function handleLogin(req: Request): Promise<Response> {
   const db = supabaseAdmin();
   const clientIp = getPublicIp(req);
   const ua = req.headers.get("user-agent") || "";
@@ -2893,7 +2893,7 @@ async function handleLogin( _req: Request): Promise<Response> {
   });
 }
 
-async function handleAuthorizeExisting( _req: Request): Promise<Response> {
+async function handleAuthorizeExisting(req: Request): Promise<Response> {
   const db = supabaseAdmin();
   const clientIp = getPublicIp(req);
   const ua = req.headers.get("user-agent") || "";
@@ -3110,7 +3110,7 @@ async function handleAuthorizeExisting( _req: Request): Promise<Response> {
 }
 
 
-async function handleUpdateProfile( _req: Request): Promise<Response> {
+async function handleUpdateProfile(req: Request): Promise<Response> {
   const db = supabaseAdmin();
   const clientIp = getPublicIp(req);
   const ua = req.headers.get("user-agent") || "";
@@ -3222,7 +3222,7 @@ function isValidPhone(phone: string): boolean { return Validators.phone(phone); 
 function isValidCPF(cpf: string): boolean { return Validators.cpf(cpf); }
 function isValidSlug(slug: string): boolean { return Validators.slug(slug); }
 
-Deno.serve(async ( _req: Request) => {
+Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
@@ -3358,7 +3358,7 @@ async function validateOAuthAttempt(
   return { status, params, attempt };
 }
 
-async function handleOAuthInit( _req: Request): Promise<Response> {
+async function handleOAuthInit(req: Request): Promise<Response> {
   const db = supabaseAdmin();
   const clientIp = getPublicIp(req);
   const ua = req.headers.get("user-agent");
@@ -3424,7 +3424,7 @@ async function handleOAuthInit( _req: Request): Promise<Response> {
   });
 }
 
-async function handleOAuthRestart( _req: Request): Promise<Response> {
+async function handleOAuthRestart(req: Request): Promise<Response> {
   const db = supabaseAdmin();
   const clientIp = getPublicIp(req);
   const body = await safeParseJson(req);
