@@ -940,9 +940,13 @@ export type Database = {
           new_token: string
         }[]
       }
+      secure_set_cpf: {
+        Args: { _cpf_digits: string; _user_id: string }
+        Returns: Json
+      }
       secure_update_profile: {
         Args: {
-          _cpf_digits: string
+          _cpf_digits?: string
           _full_name: string
           _phone_digits: string
           _user_id: string

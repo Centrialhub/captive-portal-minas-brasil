@@ -3229,9 +3229,16 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
   // authMethod is already determined earlier to support replay logic
 
   // Check if CPF is required before UniFi authorization
+    // Authoritative CPF validation (Prompt 20)
+  const storedCpf = profile?.cpf_digits || "";
+  const isCpfInvalid = !Validators.cpf(storedCpf);
+  
   if (authMethod === "google") {
-    const isCpfPending = !profile?.cpf_digits || (profile as any)?.cpf_required === true;
-    if (isCpfPending) {
+    if (profile?.cpf_required || isCpfInvalid) {
+      logEvent(db, {
+        trace_id: traceId, event_type: "google_auth_cpf_pending", step: "form", status: "info",
+        payload: { email: profile?.email, mac: ctx.clientMac, attempt_id: attemptId, is_invalid: isCpfInvalid }, client_ip: clientIp,
+      });
       logEvent(db, {
         trace_id: traceId, event_type: "google_auth_cpf_pending", step: "form", status: "info",
         payload: { email: profile?.email, mac: ctx.clientMac, attempt_id: attemptId }, client_ip: clientIp,
@@ -3329,11 +3336,7 @@ async function handleUpdateProfile(req: Request): Promise<Response> {
   const name = typeof body.name === "string" ? sanitizeString(body.name, MAX_NAME_LEN) : null;
 
   const updatePayload: Record<string, any> = {};
-  if (cpfDigits) {
-    if (!isValidCPF(cpfDigits)) return errorResponse("CPF inválido.");
-    updatePayload.cpf_digits = cpfDigits;
-    updatePayload.cpf_required = false;
-  }
+  
   if (phoneDigits) {
     if (!isValidPhone(phoneDigits)) return errorResponse("Telefone inválido.");
     updatePayload.phone_digits = phoneDigits;
@@ -3344,20 +3347,41 @@ async function handleUpdateProfile(req: Request): Promise<Response> {
 
   const { data: userProfile } = await db.from("profiles").select("email").eq("id", userId).maybeSingle();
 
-  // Use the secure RPC instead of direct update to enforce constraints and logic
-  const { data: rpcRes, error: rpcErr } = await db.rpc("secure_update_profile", {
-    _user_id: userId,
-    _full_name: name,
-    _phone_digits: phoneDigits,
-    _cpf_digits: cpfDigits,
-  });
-
-  if (rpcErr || !rpcRes?.ok) {
-    if (rpcRes?.error === "CPF_ALREADY_EXISTS") {
-      return errorResponse("Este CPF já está cadastrado em outra conta.", 409);
+  // --- CPF Handle ---
+  if (cpfDigits) {
+    if (!Validators.cpf(cpfDigits)) {
+      console.warn(`[captive-portal] Invalid CPF attempt user=${userId} cpf=${cpfDigits.slice(0, 3)}...`);
+      return errorResponse("CPF inválido.", 400);
     }
-    console.error("[update-profile] RPC failed:", rpcErr || rpcRes?.error);
-    return errorResponse("Erro ao atualizar perfil.");
+
+    const { data: cpfRes, error: cpfErr } = await db.rpc("secure_set_cpf", {
+      _user_id: userId,
+      _cpf_digits: cpfDigits,
+    });
+
+    if (cpfErr || !cpfRes?.ok) {
+      const err = cpfErr?.message || cpfRes?.error || "CPF_UPDATE_FAILED";
+      if (err === "CPF_ALREADY_EXISTS") {
+        return errorResponse("Este CPF já está cadastrado em outra conta.", 409);
+      }
+      console.error(`[captive-portal] secure_set_cpf error user=${userId}:`, err);
+      return errorResponse("Erro ao atualizar CPF.", 400);
+    }
+    console.log(`[captive-portal] CPF set successfully user=${userId}`);
+  }
+
+  // --- Profile Update (Name/Phone) ---
+  if (name || phoneDigits) {
+    const { data: profileRes, error: profileErr } = await db.rpc("secure_update_profile", {
+      _user_id: userId,
+      _full_name: name,
+      _phone_digits: phoneDigits,
+    });
+
+    if (profileErr || !profileRes?.ok) {
+      console.error(`[captive-portal] secure_update_profile error user=${userId}:`, profileErr || profileRes?.error);
+      return errorResponse("Erro ao atualizar perfil.");
+    }
   }
 
   // Background sync with CRM on profile update
