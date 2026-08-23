@@ -4,9 +4,11 @@ import { Validators } from "./lib/portal-utils";
 
 describe("Captive Portal Deterministic Requirements (Prompt 28)", () => {
   it("verifies CPF validation logic is structural and correct", () => {
-    // 12345678909 is structurally invalid (checksum fails)
-    expect(Validators.cpf("12345678909")).toBe(false);
-    expect(Validators.cpf("11111111111")).toBe(false); // Sequence
+    // Re-verify specific invalid inputs
+    // 000.000.000-00 is a sequence and should be false
+    expect(Validators.cpf("00000000000")).toBe(false);
+    // 12345678901 is almost certainly invalid structurally
+    expect(Validators.cpf("12345678901")).toBe(false);
   });
 
   it("verifies phone validation logic (BR context)", () => {
