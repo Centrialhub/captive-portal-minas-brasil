@@ -500,7 +500,7 @@ function AuthPill({ method, hasUser }: { method: string | null; hasUser: boolean
     google: ["#fee2e2", "#991b1b", "Google"],
     apple: ["#111827", "#f9fafb", "Apple"],
     silent: ["#ecfeff", "#0e7490", "silent"],
-    otp_legacy: ["#fef3c7", "#92400e", "otp (legado)"],
+    
   };
 
   const [bg, fg, label] = map[method || ""] || ["#f3f4f6", "#374151", method || "—"];

@@ -720,32 +720,6 @@ async function incrementClusterLeadCount(db: ReturnType<typeof supabaseAdmin>, i
 }
 
 
-// ========== WhatsApp Webhook Config from DB ==========
-interface WhatsAppConfig {
-  url: string;
-  secret: string | null;
-}
-
-async function getWhatsappConfig(
-  db: ReturnType<typeof supabaseAdmin>,
-  _storeId: string | null
-): Promise<WhatsAppConfig | null> {
-  // Future: could check per-store config first
-  // For now, use global_settings only
-  const { data } = await db
-    .from("global_settings")
-    .select("whatsapp_webhook_url, whatsapp_webhook_secret, whatsapp_webhook_enabled")
-    .eq("id", 1)
-    .maybeSingle();
-
-  if (!data) return null;
-  if (!data.whatsapp_webhook_enabled || !data.whatsapp_webhook_url) return null;
-
-  return {
-    url: data.whatsapp_webhook_url,
-    secret: data.whatsapp_webhook_secret || null,
-  };
-}
 
 
 
@@ -1672,53 +1646,19 @@ async function handleAdminSettings(req: Request): Promise<Response> {
   if (req.method === "GET") {
     const { data, error } = await db
       .from("global_settings")
-      .select("whatsapp_webhook_url, whatsapp_webhook_secret, whatsapp_webhook_enabled, updated_at")
+      .select("updated_at")
       .eq("id", 1)
       .maybeSingle();
 
     if (error) return errorResponse(error.message, 500);
 
     return jsonResponse({
-      whatsapp_webhook_url: data?.whatsapp_webhook_url || null,
-      whatsapp_webhook_enabled: data?.whatsapp_webhook_enabled || false,
-      whatsapp_webhook_secret_configured: !!data?.whatsapp_webhook_secret,
       updated_at: data?.updated_at || null,
     });
   }
 
   if (req.method === "PUT") {
-    const body = await safeParseJson(req);
-    if (!body) return errorResponse("Invalid JSON");
-
-    const updateData: Record<string, unknown> = {};
-
-    if (body.whatsapp_webhook_url !== undefined) {
-      const url = sanitizeString(body.whatsapp_webhook_url, 500);
-      if (url && !url.startsWith("https://")) return errorResponse("URL deve começar com https://");
-      updateData.whatsapp_webhook_url = url || null;
-    }
-
-    if (body.whatsapp_webhook_enabled !== undefined) {
-      updateData.whatsapp_webhook_enabled = !!body.whatsapp_webhook_enabled;
-    }
-
-    // Secret: only accept if explicitly provided (replace)
-    if (typeof body.whatsapp_webhook_secret === "string") {
-      const secret = body.whatsapp_webhook_secret.trim();
-      if (secret.length > 0 && secret.length < 8) return errorResponse("Secret deve ter pelo menos 8 caracteres");
-      updateData.whatsapp_webhook_secret = secret || null;
-    }
-
-    if (Object.keys(updateData).length === 0) return errorResponse("Nenhum campo para atualizar");
-
-    const { error } = await db
-      .from("global_settings")
-      .update(updateData)
-      .eq("id", 1);
-
-    if (error) return errorResponse(error.message, 500);
-
-    return jsonResponse({ ok: true, message: "Configurações atualizadas." });
+    return errorResponse("Settings update disabled", 403);
   }
 
   return errorResponse("Method not allowed", 405);
