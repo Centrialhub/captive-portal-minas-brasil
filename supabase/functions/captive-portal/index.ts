@@ -3336,11 +3336,7 @@ async function handleUpdateProfile(req: Request): Promise<Response> {
   const name = typeof body.name === "string" ? sanitizeString(body.name, MAX_NAME_LEN) : null;
 
   const updatePayload: Record<string, any> = {};
-  if (cpfDigits) {
-
-
-
-  }
+  
   if (phoneDigits) {
     if (!isValidPhone(phoneDigits)) return errorResponse("Telefone inválido.");
     updatePayload.phone_digits = phoneDigits;
