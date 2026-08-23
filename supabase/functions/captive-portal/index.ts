@@ -2125,47 +2125,6 @@ async function handleAdminAccessPoints(req: Request, url: URL): Promise<Response
 
 
 
-// ========== Test Endpoint (Admin Only) ==========
-async function handleTestAuthorize(req: Request): Promise<Response> {
-  const auth = await requireAdmin(req);
-  if (auth instanceof Response) return auth;
-  const { db } = auth;
-
-  const body = await safeParseJson(req);
-  if (!body) return errorResponse("Invalid JSON");
-
-  const storeSlug = sanitizeString(body.store_slug, MAX_SLUG_LEN);
-  const mac = normalizeMac(body.mac);
-  if (!storeSlug) return errorResponse("store_slug obrigatório");
-  if (!mac || !isValidMac(mac)) return errorResponse("MAC inválido (ex: AA:BB:CC:DD:EE:FF)");
-
-  const { data: store } = await db.from("stores")
-    .select("id, unifi_controller_url, unifi_site_id")
-    .eq("slug", storeSlug).maybeSingle();
-
-  if (!store) return errorResponse("Store not found", 404);
-  if (!store.unifi_controller_url) {
-    return jsonResponse({ ok: false, reason: "UNIFI_NOT_CONFIGURED", message: "Loja não possui unifi_controller_url configurada." });
-  }
-  if (!UNIFI_USERNAME || !UNIFI_PASSWORD) {
-    return jsonResponse({ ok: false, reason: "UNIFI_CREDENTIALS_MISSING", message: "Secrets UNIFI_USERNAME/UNIFI_PASSWORD não configurados." });
-  }
-
-  const siteId = store.unifi_site_id || "default";
-  const result = await unifiAuthorizeWithRetry(store.unifi_controller_url, siteId, mac);
-
-  await db.from("audit_logs").insert({
-    store_id: store.id, entity: "session", entity_id: null,
-    action: result.ok ? "test_authorize_success" : "test_authorize_fail",
-    meta: { mac, store_slug: storeSlug, result: result.ok ? "success" : result.error?.slice(0, 300), attempts: result.attempts },
-  });
-
-  return jsonResponse({
-    ok: result.ok, attempts: result.attempts,
-    error: result.ok ? undefined : result.error?.slice(0, 200),
-    message: result.ok ? "MAC autorizado com sucesso" : "Falha na autorização",
-  });
-}
 
 // ========== XML Export (Admin) ==========
 function escapeXml(s: string): string {
@@ -3497,7 +3456,7 @@ Deno.serve(async (req: Request) => {
     if (path === "/admin/consent") return await handleAdminConsent(req);
     if (path === "/admin/sessions") return await handleAdminSessions(req, url);
     if (path === "/admin/clusters") return await handleAdminClusters(req, url);
-    if (path === "/admin/test-authorize" && req.method === "POST") return await handleTestAuthorize(req);
+    
     
     if (path === "/admin/housekeeping" && req.method === "POST") return await handleHousekeeping(req);
 
