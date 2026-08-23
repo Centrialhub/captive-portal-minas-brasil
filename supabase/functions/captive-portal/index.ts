@@ -2950,13 +2950,14 @@ async function handleLogin(req: Request): Promise<Response> {
     return jsonResponse({ error: "Perfil não encontrado. Faça um novo cadastro.", code: "profile_not_found" }, 404);
   }
 
-  const { ctx, attemptId, error: authErr } = await getValidatedAuthContext(db, body, "login");
+  const { ctx, attemptId, resumeToken, error: authErr } = await getValidatedAuthContext(db, body, "login");
   if (authErr) return authErr;
 
 
   const result = await authorizeAuthenticatedUser({
     db, userId, ctx, req, authMethod: "password", traceId, clientIp, userAgent: ua, profile,
-    attemptId
+    attemptId,
+    resumeToken
   });
 
 
