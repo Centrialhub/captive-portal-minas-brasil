@@ -134,11 +134,6 @@ export default function App() {
     OAuthTracker.clearAll();
   }, []);
 
-  // Use a local ref to track if component is mounted to prevent state updates on unmounted component
-  const isMounted = useRef(true);
-  useEffect(() => {
-    return () => { isMounted.current = false; };
-  }, []);
 
 
   const completeAuthenticatedSession = async (session: any, source: "google" | "silent") => {
