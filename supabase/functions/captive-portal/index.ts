@@ -3125,11 +3125,9 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
   const result = await authorizeAuthenticatedUser({
     db, userId, ctx, req, authMethod, traceId, clientIp, userAgent: ua, 
     profile: profile as any,
-    attemptId
+    attemptId,
+    resumeToken
   });
-
-  // Authorization results are now handled by finalize_auth_attempt inside authorizeAuthenticatedUser
-  // The terminal state update here is redundant but we preserve trace if needed.
 
 
 
