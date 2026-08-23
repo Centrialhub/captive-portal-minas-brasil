@@ -52,6 +52,30 @@ const CRON_SECRET = Deno.env.get("CRON_SECRET") || "";
 const CLUBEMAIS_API_URL = "https://painelzoombox.drogariaminasbrasil.com.br:510/api2/v3/cliente";
 const CLUBEMAIS_API_TOKEN = Deno.env.get("CLUBEMAIS_API_TOKEN") || "";
 
+
+/** Structured logger with allowlist (Prompt 22) */
+const Logger = {
+  redact(s: string): string {
+    return s
+      .replace(/([Cc]ookie|[Ss]et-[Cc]ookie|[Aa]uthorization):\s*[^\r\n,;]+/gi, "$1: [REDACTED]")
+      .replace(/(password|token|secret|resume_token|access_token|refresh_token|csrf_token)=[^&\r\n,;\s]+/gi, "$1=[REDACTED]")
+      .replace(/"(password|token|secret|resume_token|access_token|refresh_token|csrf_token)":\s*"[^"]+"/gi, "\"$1\": \"[REDACTED]\"")
+      .replace(/Bearer\s+[a-zA-Z0-9\-\._~\+/]+=*/gi, "Bearer [REDACTED]");
+  },
+  info(msg: string, meta?: any) {
+    const payload = meta ? ` | ${JSON.stringify(meta)}` : "";
+    console.log(this.redact(`[INFO] ${msg}${payload}`));
+  },
+  warn(msg: string, meta?: any) {
+    const payload = meta ? ` | ${JSON.stringify(meta)}` : "";
+    console.warn(this.redact(`[WARN] ${msg}${payload}`));
+  },
+  error(msg: string, meta?: any) {
+    const payload = meta ? ` | ${JSON.stringify(meta)}` : "";
+    console.error(this.redact(`[ERROR] ${msg}${payload}`));
+  }
+};
+
 // ========== Helpers ==========
 function supabaseAdmin() {
   return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
@@ -812,9 +836,9 @@ async function unifiTryLogin(
         .filter(Boolean)
         .join("; ");
       await warmRes.body?.cancel().catch(() => {});
-      console.log(`[UniFi] Warmup GET ${baseUrl}/: HTTP ${warmRes.status}, cookies="${warmupCookies.slice(0, 120)}", csrf="${warmupCsrf.slice(0, 40)}"`);
+      Logger.info(`[UniFi] Warmup GET ${baseUrl}/: HTTP ${warmRes.status}`);
     } catch (e) {
-      console.log(`[UniFi] Warmup GET failed (non-fatal): ${(e as Error).message}`);
+      Logger.info(`[UniFi] Warmup GET failed (non-fatal): ${(e as Error).message}`);
     }
 
     // ---- POST login ----
@@ -829,7 +853,7 @@ async function unifiTryLogin(
       strict: true,
     };
 
-    console.log(`[UniFi] Login attempt: ${loginUrl} (custom client: ${!!httpClient}, warm cookies: ${warmupCookies ? "yes" : "no"})`);
+    Logger.info(`[UniFi] Login attempt: ${loginUrl} (custom client: ${!!httpClient}, warm cookies: ${warmupCookies ? "yes" : "no"})`);
     const fetchOpts: Record<string, unknown> = {
       method: "POST",
       headers,
@@ -844,7 +868,7 @@ async function unifiTryLogin(
     const respSetCookie = res.headers.get("set-cookie") || "";
     const respCsrf = res.headers.get("x-csrf-token") || "";
     const respServer = res.headers.get("server") || "";
-    console.log(`[UniFi] Login response ${loginUrl}: HTTP ${res.status} | server="${respServer}" | set-cookie="${respSetCookie.slice(0, 200)}" | x-csrf-token="${respCsrf.slice(0, 40)}"`);
+    Logger.info(`[UniFi] Login response ${loginUrl}: HTTP ${res.status} | server="${respServer}"`);
 
     // UniFi controllers often return 302/303 after successful login — treat 2xx and 3xx as potential success
     if (res.status >= 400) {
@@ -1183,7 +1207,7 @@ async function unifiAuthorizeByMac(
     let apMacForPayload = options.apMac || null;
 
     if (pick.remapped) {
-      console.log(`[unifi-auth] reason=MAC_REMAPPED_OK portal=${formattedMac} controller=${effectiveMac} ap=${apMacForPayload || "?"}`);
+      Logger.info(`[unifi-auth] reason=MAC_REMAPPED_OK portal=${formattedMac} controller=${effectiveMac} ap=${apMacForPayload || "?"}`);
     } else if (!pick.mac) {
       if (pick.candidateCount > 1) {
         console.warn(`[unifi-auth] reason=MAC_RANDOMIZATION_AMBIGUOUS candidates=${pick.candidateCount} ap=${apMacForPayload || "?"}`);
@@ -1201,9 +1225,9 @@ async function unifiAuthorizeByMac(
       const found = stations.find((s) => (s.mac || "").toLowerCase() === effectiveMac);
       if (found?.ap_mac) {
         apMacForPayload = found.ap_mac;
-        console.log(`[unifi-auth] reason=AP_MAC_DISCOVERED ap=${apMacForPayload}`);
+        Logger.info(`[unifi-auth] reason=AP_MAC_DISCOVERED ap=${apMacForPayload}`);
       } else {
-        console.log(`[unifi-auth] reason=AP_MAC_MISSING_FALLBACK mac=${effectiveMac}`);
+        Logger.info(`[unifi-auth] reason=AP_MAC_MISSING_FALLBACK mac=${effectiveMac}`);
       }
     }
 
@@ -1233,7 +1257,7 @@ async function unifiAuthorizeByMac(
           activeUrl = url;
           cmdSentAt = Math.floor(Date.now() / 1000);
           cmdAcceptedAtIso = new Date().toISOString();
-          console.log(`[unifi-auth] reason=CMD_ACCEPTED url=${url} mac=${effectiveMac} ap=${apMacForPayload || "-"} minutes=${mins}`);
+          Logger.info(`[unifi-auth] reason=CMD_ACCEPTED url=${url} mac=${effectiveMac} ap=${apMacForPayload || "-"} minutes=${mins}`);
           return true;
         }
         if (cmd.ok && !cmd.rcOk) {
@@ -1295,7 +1319,7 @@ async function unifiAuthorizeByMac(
                 attempt, latency_ms: ms,
               };
               if (found.authorized === true) {
-                console.log(`[unifi-auth] reason=AUTH_CONFIRMED mac=${effectiveMac} ap=${found.ap_mac || "-"} ip=${found.ip || "-"} attempts=${attempt} ms=${ms}`);
+                Logger.info(`[unifi-auth] reason=AUTH_CONFIRMED mac=${effectiveMac} ap=${found.ap_mac || "-"} ip=${found.ip || "-"} attempts=${attempt} ms=${ms}`);
                 return {
                   ok: true, effective_mac: effectiveMac.replace(/:/g, "").toUpperCase(),
                   ap_mac_used: apMacForPayload, latency_ms: ms,
@@ -2241,7 +2265,7 @@ async function handleCronHousekeeping(req: Request): Promise<Response> {
   const db = supabaseAdmin();
   const cleaned = await internalHousekeeping(db);
 
-  console.log("Cron housekeeping completed:", JSON.stringify(cleaned));
+  console.log("Cron housekeeping completed");
   return jsonResponse({ ok: true, cleaned });
 }
 
@@ -2693,7 +2717,7 @@ async function authorizeAuthenticatedUser(args: {
     );
   } catch (err: any) {
     const errorMsg = err?.message || String(err);
-    console.error(`[auth] authorizeClient exception for attempt ${attemptId}:`, errorMsg);
+    Logger.error(`[auth] authorizeClient exception for attempt ${attemptId}:`, errorMsg);
     
     // Log exception event
     logEvent(db, {
