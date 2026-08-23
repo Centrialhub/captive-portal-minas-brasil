@@ -2340,21 +2340,41 @@ async function getValidatedAuthContext(
   const attemptId = typeof body.attempt_id === "string" ? body.attempt_id : null;
   const resumeToken = typeof body.resume_token === "string" ? body.resume_token : null;
 
-  if (attemptId || resumeToken) {
-    if (!attemptId || !resumeToken) {
-      return { ctx: initialCtx, attemptId, resumeToken, error: jsonResponse({ error: "Contrato inválido: attempt_id e resume_token devem ser fornecidos em par.", code: "invalid_contract" }, 400) };
-    }
-    
-    const val = await validateOAuthAttempt(db, attemptId, resumeToken);
-    if (val.status === 'invalid') {
-      return { ctx: initialCtx, attemptId, resumeToken, error: jsonResponse({ error: val.error || "Tentativa inválida.", code: "invalid_attempt" }, 403) };
-    }
-    if (val.params) {
-      console.log(`[${contextName}] using authoritative parameters for attempt=${attemptId} mac=${val.params.clientMac}`);
-      return { ctx: val.params, attemptId, resumeToken };
-    }
+  if (!attemptId && !resumeToken) {
+    return { 
+      ctx: initialCtx, 
+      attemptId: null, 
+      resumeToken: null, 
+      error: jsonResponse({ 
+        error: "Tentativa server-side obrigatória não encontrada. Inicie o processo novamente.", 
+        code: "ATTEMPT_REQUIRED" 
+      }, 403) 
+    };
+  }
+
+  if (!attemptId || !resumeToken) {
+    return { 
+      ctx: initialCtx, 
+      attemptId, 
+      resumeToken, 
+      error: jsonResponse({ 
+        error: "Contrato inválido: attempt_id e resume_token devem ser fornecidos em par.", 
+        code: "INVALID_ATTEMPT_PAIR" 
+      }, 400) 
+    };
+  }
+  
+  const val = await validateOAuthAttempt(db, attemptId, resumeToken);
+  if (val.status === 'invalid') {
+    return { ctx: initialCtx, attemptId, resumeToken, error: jsonResponse({ error: val.error || "Tentativa inválida.", code: "invalid_attempt" }, 403) };
+  }
+  if (val.params) {
+    console.log(`[${contextName}] using authoritative parameters for attempt=${attemptId} mac=${val.params.clientMac}`);
+    return { ctx: val.params, attemptId, resumeToken };
   }
   return { ctx: initialCtx, attemptId, resumeToken };
+
+
 }
 
 
@@ -2755,7 +2775,11 @@ async function handleSignup(req: Request): Promise<Response> {
   const traceId = getTraceId(req, body);
 
   const name = sanitizeString(body.name, MAX_NAME_LEN);
+  const { ctx, attemptId, resumeToken, error: authErr } = await getValidatedAuthContext(db, body, "signup");
+  if (authErr) return authErr;
+
   const email = sanitizeString(body.email, MAX_EMAIL_LEN)?.toLowerCase() || null;
+
   const cpfDigits = typeof body.cpf === "string" ? body.cpf.replace(/\D/g, "") : "";
   const phoneDigits = typeof body.phone === "string" ? body.phone.replace(/\D/g, "") : "";
   const password = typeof body.password === "string" ? body.password : "";
@@ -2886,8 +2910,9 @@ async function handleSignup(req: Request): Promise<Response> {
     return jsonResponse({ error: "Conta criada, mas não foi possível entrar. Tente fazer login.", code: "post_signup_signin_failed" }, 500);
   }
 
-  const { ctx, attemptId, resumeToken, error: authErr } = await getValidatedAuthContext(db, body, "signup");
-  if (authErr) return authErr;
+  // Already validated at start of handleSignup
+
+
 
 
   const result = await authorizeAuthenticatedUser({
@@ -2924,7 +2949,11 @@ async function handleLogin(req: Request): Promise<Response> {
 
   const email = sanitizeString(body.email, MAX_EMAIL_LEN)?.toLowerCase() || null;
   const password = typeof body.password === "string" ? body.password : "";
+  const { ctx, attemptId, resumeToken, error: authErr } = await getValidatedAuthContext(db, body, "login");
+  if (authErr) return authErr;
+
   if (!email || !isValidEmail(email) || !password) {
+
     return jsonResponse({ error: "E-mail ou senha inválidos.", code: "invalid_credentials" }, 400);
   }
 
@@ -2962,8 +2991,8 @@ async function handleLogin(req: Request): Promise<Response> {
     return jsonResponse({ error: "Perfil não encontrado. Faça um novo cadastro.", code: "profile_not_found" }, 404);
   }
 
-  const { ctx, attemptId, resumeToken, error: authErr } = await getValidatedAuthContext(db, body, "login");
-  if (authErr) return authErr;
+  // Already validated at start of handleLogin
+
 
 
   const result = await authorizeAuthenticatedUser({
