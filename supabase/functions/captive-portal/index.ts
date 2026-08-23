@@ -40,7 +40,7 @@ const VALID_BR_DDD = new Set([
 const GEOIP_ENDPOINT = Deno.env.get("GEOIP_ENDPOINT") || "https://ipapi.co/{ip}/json/";
 const GEOIP_TIMEOUT_MS = parseInt(Deno.env.get("GEOIP_TIMEOUT_MS") || "1500");
 const GEOIP_CACHE_TTL_HOURS = parseInt(Deno.env.get("GEOIP_CACHE_TTL_HOURS") || "168");
-const GEOIP_PROVIDER = Deno.env.get("GEOIP_PROVIDER") || "ipapi";
+const _GEOIP_PROVIDER = Deno.env.get("GEOIP_PROVIDER") || "ipapi";
 
 // OTP subsystem removed (Prompt 08)
 
@@ -541,7 +541,7 @@ interface GeoIpData {
   asn: string | null;
 }
 
-async function fetchGeoIp(ip: string): Promise<GeoIpData | null> {
+async async function _fetchGeoIp(ip: string): Promise<GeoIpData | null> {
   const url = GEOIP_ENDPOINT.replace("{ip}", encodeURIComponent(ip));
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), GEOIP_TIMEOUT_MS);
@@ -992,7 +992,7 @@ async function checkUnifiAuthorizationState(
     Logger.error("[unifi-check] failed", { error: err });
     return { state: "inconclusive" };
   } finally {
-    try { httpClient?.close(); } catch (_e) { /* ignore close error */ }
+    try { httpClient?.close(); } catch (_) { /* ignore close error */ }
   }
 }
 
@@ -2524,7 +2524,7 @@ async function authorizeAuthenticatedUser(args: {
       p_result_code: isAmbiguous ? "AMBIGUOUS" : "FAILED"
     });
 
-    const finalAmbRecord = Array.isArray(finalizeAmbRes) ? finalizeAmbRes[0] : null;
+    const _finalAmbRecord = Array.isArray(finalizeAmbRes) ? finalizeAmbRes[0] : null;
 
     return {
       session_id: sessionId,
@@ -2928,7 +2928,7 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
   const { ctx: validatedCtx, attemptId, resumeToken, error: authErr } = await getValidatedAuthContext(db, body, "authorize-existing");
   if (authErr) return authErr;
 
-  let ctx = validatedCtx;
+  const ctx = validatedCtx;
 
   if (attemptId && resumeToken) {
     const val = await validateOAuthAttempt(db, attemptId, resumeToken);

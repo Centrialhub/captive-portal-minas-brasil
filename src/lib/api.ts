@@ -57,7 +57,7 @@ function xhrRequest<T = any>(path: string, opts: XhrOptions = {}): Promise<T> {
     const xhr = new XMLHttpRequest();
     try {
       xhr.open(method, url, true);
-    } catch (_e) {
+    } catch (_) {
       reject(new ApiError("network", "Erro ao abrir conexão."));
       return;
     }
@@ -112,7 +112,7 @@ function xhrRequest<T = any>(path: string, opts: XhrOptions = {}): Promise<T> {
 
     try {
       xhr.send(body !== undefined ? JSON.stringify(body) : null);
-    } catch (_e) {
+    } catch (_) {
       reject(new ApiError("network", "Não foi possível enviar a requisição."));
     }
   });
