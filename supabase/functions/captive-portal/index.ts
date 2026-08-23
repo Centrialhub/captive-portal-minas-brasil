@@ -1398,6 +1398,7 @@ async function authorizeClient(
  * configure the controller URL accordingly.
  */
 // getControllerBaseForGuestRedirect removed as it was unused
+async function _getControllerBaseForGuestRedirect(controllerUrl: string): Promise<string> {
   const u = new URL(controllerUrl);
   const path = u.pathname.replace(/\/+$/, "");
   return `${u.origin}${path}`;
