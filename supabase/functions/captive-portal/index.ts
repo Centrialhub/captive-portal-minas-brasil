@@ -541,7 +541,7 @@ interface GeoIpData {
   asn: string | null;
 }
 
-async async function _fetchGeoIp(ip: string): Promise<GeoIpData | null> {
+async function _fetchGeoIp(ip: string): Promise<GeoIpData | null> {
   const url = GEOIP_ENDPOINT.replace("{ip}", encodeURIComponent(ip));
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), GEOIP_TIMEOUT_MS);
