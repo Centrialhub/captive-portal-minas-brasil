@@ -2525,6 +2525,9 @@ async function authorizeAuthenticatedUser(args: {
           authorized: isFinalized ? (finalizeRes[0]?.authorized ?? false) : false,
           redirect_url: isFinalized ? (finalizeRes[0]?.redirect_url ?? finalRedirect) : finalRedirect,
           fail_reason: isFinalized ? undefined : "FINALIZE_RECOVERY_FAILED",
+          store_slug: storeSlug,
+          store_id: storeId,
+        };
       } else if (check.state === 'not_authorized') {
         console.log(`[auth] Recovery: MAC ${macToCheck} NOT authorized. Releasing for retry.`);
         await db.rpc("release_auth_retry", {
