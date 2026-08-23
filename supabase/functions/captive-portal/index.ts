@@ -591,9 +591,6 @@ async function _enrichGeoIp(
 // incrementClusterLeadCount removed as it was unused
 async function _incrementClusterLeadCount(_db: ReturnType<typeof supabaseAdmin>, _ip: string) {
 }
-    console.warn("Failed to increment cluster lead_count:", (e as Error).message);
-  }
-}
 
 
 
