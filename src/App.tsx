@@ -73,6 +73,14 @@ export default function App() {
   const [error, setError] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
   const [busy, setBusy] = useState(false);
+  
+  // Scroll to top on error to ensure user sees the message
+  useEffect(() => {
+    if (error) {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  }, [error]);
+
   const stepRef = useRef<Step>("loading");
   useEffect(() => { stepRef.current = step; }, [step]);
   
@@ -343,8 +351,8 @@ export default function App() {
           "Login realizado, mas o Wi-Fi não confirmou a liberação. Desconecte e conecte-se novamente à rede.",
         );
       }
-    } catch {
-      setError("Não foi possível conectar. Por favor, verifique seus dados e tente novamente.");
+    } catch (err: any) {
+      setError(err?.message || "Não foi possível conectar. Por favor, verifique seus dados e tente novamente.");
     }
     setBusy(false);
   };
@@ -451,8 +459,8 @@ export default function App() {
           "Conta criada, mas o Wi-Fi não confirmou a liberação. Desconecte e conecte-se novamente à rede.",
         );
       }
-    } catch {
-      setError("Não foi possível concluir seu cadastro. Por favor, verifique os dados e tente novamente.");
+    } catch (err: any) {
+      setError(err?.message || "Não foi possível concluir seu cadastro. Por favor, verifique os dados e tente novamente.");
     }
     setBusy(false);
   };
@@ -771,7 +779,7 @@ export default function App() {
               <input
                 type="text" value={signupFields.name} 
                 onChange={(e) => setSignupFields(prev => ({ ...prev, name: e.target.value }))}
-                required className="portal-input" placeholder="Ex: João Silva"
+                required className="portal-input" placeholder="Seu nome e sobrenome"
                 autoComplete="name"
               />
             </div>
@@ -780,7 +788,7 @@ export default function App() {
               <label className="portal-label">E-mail *</label>
               <input
                 type="email" value={signupFields.email} 
-                onChange={(e) => setSignupFields(prev => ({ ...prev, email: e.target.value }))}
+                onChange={(e) => setSignupFields(prev => ({ ...prev, email: e.target.value.toLowerCase().trim() }))}
                 required className="portal-input" placeholder="seu@email.com"
                 autoComplete="email"
               />
@@ -789,8 +797,8 @@ export default function App() {
             <div>
               <label className="portal-label">WhatsApp / Celular *</label>
               <input
-                type="tel" value={formatPhoneBR(signupFields.phone)}
-                onChange={(e) => setSignupFields(prev => ({ ...prev, phone: e.target.value }))}
+                type="tel" value={signupFields.phone}
+                onChange={(e) => setSignupFields(prev => ({ ...prev, phone: formatPhoneBR(e.target.value) }))}
                 required className="portal-input" placeholder="(00) 00000-0000"
                 autoComplete="tel"
               />

@@ -204,17 +204,19 @@ async function syncWithClubeMais(lead: {
 
     const status = res.status;
     const bodyText = await res.text();
-    const latency = Date.now() - t0;
+    const duration = Date.now() - t0;
 
-    console.log(`[clubemais] Sync response: status=${status} latency=${latency}ms body=${bodyText.slice(0, 200)}`);
+    console.log(`[clubemais] Sync trace=${traceId} status=${status} latency=${duration}ms`);
 
-    if (status >= 200 && status < 300) {
-      return { ok: true, message: bodyText };
+    if (res.ok) {
+      return { ok: true, sync_status: status };
     }
-    return { ok: false, sync_status: status, error: bodyText };
-  } catch (err) {
-    console.error(`[clubemais] Sync exception: ${(err as Error).message}`);
-    return { ok: false, error: (err as Error).message };
+    
+    console.error(`[clubemais] Sync error trace=${traceId} status=${status} body=${bodyText.slice(0, 200)}`);
+    return { ok: false, sync_status: status, error: "API_ERROR" };
+  } catch (err: any) {
+    console.error(`[clubemais] Sync exception trace=${traceId}: ${err.message}`);
+    return { ok: false, error: "NETWORK_ERROR" };
   }
 }
 
@@ -2280,20 +2282,23 @@ async function handleClientEvent(req: Request): Promise<Response> {
   if (!body) return errorResponse("Invalid JSON body");
 
   const sessionId = isValidUUID(body.session_id) ? (body.session_id as string) : null;
-  const eventName = sanitizeString(body.event, 64) || "client_event";
-  const step = (sanitizeString(body.step, 32) || "client") as any;
-  const status = (sanitizeString(body.status, 16) || "info") as any;
-  const errorCode = sanitizeString(body.error_code, 64);
-  const errorMessage = sanitizeString(body.error_message, 500);
-  const traceId = sanitizeString(body.trace_id, 64) || getTraceId(req, body);
+  const eventName = (Validators.string(body.event, 64) || "client_event").toLowerCase();
+  const step = (Validators.string(body.step, 32) || "client") as any;
+  const status = (Validators.string(body.status, 16) || "info") as any;
+  const errorCode = Validators.string(body.error_code, 64);
+  const errorMessage = Validators.string(body.error_message, 500);
+  const traceId = Validators.string(body.trace_id, 64) || getTraceId(req, body);
 
-  // Light rate limit per session/ip — keep cheap, telemetry must not block flow
-  const rl = await checkRateLimitDb(db, `client-event:${sessionId || clientIp}`, 60, 60, 60);
+  // Rate limit per session/ip - more aggressive for non-critical telemetry
+  const rl = await checkRateLimitDb(db, `client-event:${sessionId || clientIp}:${eventName}`, 30, 60, 100);
   if (!rl.allowed) return jsonResponse({ ok: true, throttled: true });
 
-  let payload: unknown = null;
-  try { payload = body.payload && typeof body.payload === "object" ? body.payload : null; } catch { payload = null; }
+  let payload: Record<string, unknown> | null = null;
+  if (body.payload && typeof body.payload === "object" && !Array.isArray(body.payload)) {
+    payload = body.payload as Record<string, unknown>;
+  }
 
+  // Fire and forget logging
   logEvent(db, {
     session_id: sessionId,
     trace_id: traceId,
@@ -2302,7 +2307,7 @@ async function handleClientEvent(req: Request): Promise<Response> {
     status,
     error_code: errorCode || undefined,
     error_message: errorMessage || undefined,
-    payload: payload as Record<string, unknown> | null,
+    payload,
     client_ip: clientIp,
     user_agent: ua,
   });
@@ -2366,12 +2371,22 @@ async function getValidatedAuthContext(
   
   const val = await validateOAuthAttempt(db, attemptId, resumeToken);
   if (val.status === 'invalid') {
-    return { ctx: initialCtx, attemptId, resumeToken, error: jsonResponse({ error: val.error || "Tentativa inválida.", code: "invalid_attempt" }, 403) };
+    return { 
+      ctx: initialCtx, 
+      attemptId, 
+      resumeToken, 
+      error: jsonResponse({ 
+        error: val.error || "Tentativa expirada ou inválida. Por favor, reinicie o processo.", 
+        code: "invalid_attempt" 
+      }, 403) 
+    };
   }
+  
   if (val.params) {
-    console.log(`[${contextName}] using authoritative parameters for attempt=${attemptId} mac=${val.params.clientMac}`);
+    console.log(`[${contextName}] auth context validated for attempt=${attemptId}`);
     return { ctx: val.params, attemptId, resumeToken };
   }
+  
   return { ctx: initialCtx, attemptId, resumeToken };
 
 
