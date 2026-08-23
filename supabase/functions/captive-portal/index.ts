@@ -2372,6 +2372,8 @@ async function getValidatedAuthContext(
     console.log(`[${contextName}] using authoritative parameters for attempt=${attemptId} mac=${val.params.clientMac}`);
     return { ctx: val.params, attemptId, resumeToken };
   }
+  return { ctx: initialCtx, attemptId, resumeToken };
+
 
 }
 
