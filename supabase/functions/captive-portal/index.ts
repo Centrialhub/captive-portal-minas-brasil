@@ -507,7 +507,7 @@ async function discoverStoreByClientMac(
     const user = UNIFI_USERNAME;
     const pass = UNIFI_PASSWORD;
     if (!user || !pass) {
-      console.warn(`[discover] UNIFI_SECRET_NOT_CONFIGURED for store ${store.slug}`);
+      Logger.warn(`[discover] UNIFI_SECRET_NOT_CONFIGURED`, { store: store.slug });
       return null;
     }
     const siteId = store.unifi_site_id || "default";
@@ -528,7 +528,7 @@ async function discoverStoreByClientMac(
       if (!match) return null;
       return { store, apMac: (match.ap_mac as string) || null };
     } catch (e) {
-      console.warn(`[discover] probe ${store.slug} failed:`, (e as Error)?.message);
+      Logger.warn(`[discover] probe ${store.slug} failed`, { error: (e as Error)?.message });
       return null;
     } finally {
       httpClient?.close();
