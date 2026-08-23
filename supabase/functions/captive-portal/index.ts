@@ -204,17 +204,19 @@ async function syncWithClubeMais(lead: {
 
     const status = res.status;
     const bodyText = await res.text();
-    const latency = Date.now() - t0;
+    const duration = Date.now() - t0;
 
-    console.log(`[clubemais] Sync response: status=${status} latency=${latency}ms body=${bodyText.slice(0, 200)}`);
+    console.log(`[clubemais] Sync trace=${traceId} status=${status} latency=${duration}ms`);
 
-    if (status >= 200 && status < 300) {
-      return { ok: true, message: bodyText };
+    if (res.ok) {
+      return { ok: true, sync_status: status };
     }
-    return { ok: false, sync_status: status, error: bodyText };
-  } catch (err) {
-    console.error(`[clubemais] Sync exception: ${(err as Error).message}`);
-    return { ok: false, error: (err as Error).message };
+    
+    console.error(`[clubemais] Sync error trace=${traceId} status=${status} body=${bodyText.slice(0, 200)}`);
+    return { ok: false, sync_status: status, error: "API_ERROR" };
+  } catch (err: any) {
+    console.error(`[clubemais] Sync exception trace=${traceId}: ${err.message}`);
+    return { ok: false, error: "NETWORK_ERROR" };
   }
 }
 

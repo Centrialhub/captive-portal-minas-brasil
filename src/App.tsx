@@ -779,7 +779,7 @@ export default function App() {
               <input
                 type="text" value={signupFields.name} 
                 onChange={(e) => setSignupFields(prev => ({ ...prev, name: e.target.value }))}
-                required className="portal-input" placeholder="Ex: João Silva"
+                required className="portal-input" placeholder="Seu nome e sobrenome"
                 autoComplete="name"
               />
             </div>
@@ -788,7 +788,7 @@ export default function App() {
               <label className="portal-label">E-mail *</label>
               <input
                 type="email" value={signupFields.email} 
-                onChange={(e) => setSignupFields(prev => ({ ...prev, email: e.target.value }))}
+                onChange={(e) => setSignupFields(prev => ({ ...prev, email: e.target.value.toLowerCase().trim() }))}
                 required className="portal-input" placeholder="seu@email.com"
                 autoComplete="email"
               />
@@ -797,8 +797,8 @@ export default function App() {
             <div>
               <label className="portal-label">WhatsApp / Celular *</label>
               <input
-                type="tel" value={formatPhoneBR(signupFields.phone)}
-                onChange={(e) => setSignupFields(prev => ({ ...prev, phone: e.target.value }))}
+                type="tel" value={signupFields.phone}
+                onChange={(e) => setSignupFields(prev => ({ ...prev, phone: formatPhoneBR(e.target.value) }))}
                 required className="portal-input" placeholder="(00) 00000-0000"
                 autoComplete="tel"
               />
