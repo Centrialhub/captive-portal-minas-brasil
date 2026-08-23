@@ -31,6 +31,10 @@ function Documentation() {
       <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg text-blue-800 text-sm">
         Prompt 52 — Máquina de Estados Autoritativa: Constraint de status em captive_auth_attempts atualizada para permitir transições oauth_redirected, awaiting_cpf e callback_received.
       </div>
+      <div className="mb-4 p-4 bg-purple-50 border border-purple-200 rounded-lg text-purple-800 text-sm">
+        Prompt 53 — Refinamento Estrutural e Autenticação: Otimização de consultas, padronização de nomenclatura no banco e eliminação de redundâncias no fluxo de login.
+      </div>
+
       <h1 className="text-3xl font-bold mb-6 text-gray-900 border-b pb-2">Captive Portal - Drogaria Minas Brasil</h1>
       <p className="mb-6 text-gray-600">Documentação visual de arquitetura, segurança e integridade do sistema.</p>
       
