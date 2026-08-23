@@ -73,6 +73,14 @@ export default function App() {
   const [error, setError] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
   const [busy, setBusy] = useState(false);
+  
+  // Scroll to top on error to ensure user sees the message
+  useEffect(() => {
+    if (error) {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  }, [error]);
+
   const stepRef = useRef<Step>("loading");
   useEffect(() => { stepRef.current = step; }, [step]);
   

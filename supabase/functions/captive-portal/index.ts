@@ -2369,12 +2369,22 @@ async function getValidatedAuthContext(
   
   const val = await validateOAuthAttempt(db, attemptId, resumeToken);
   if (val.status === 'invalid') {
-    return { ctx: initialCtx, attemptId, resumeToken, error: jsonResponse({ error: val.error || "Tentativa inválida.", code: "invalid_attempt" }, 403) };
+    return { 
+      ctx: initialCtx, 
+      attemptId, 
+      resumeToken, 
+      error: jsonResponse({ 
+        error: val.error || "Tentativa expirada ou inválida. Por favor, reinicie o processo.", 
+        code: "invalid_attempt" 
+      }, 403) 
+    };
   }
+  
   if (val.params) {
-    console.log(`[${contextName}] using authoritative parameters for attempt=${attemptId} mac=${val.params.clientMac}`);
+    console.log(`[${contextName}] auth context validated for attempt=${attemptId}`);
     return { ctx: val.params, attemptId, resumeToken };
   }
+  
   return { ctx: initialCtx, attemptId, resumeToken };
 
 
