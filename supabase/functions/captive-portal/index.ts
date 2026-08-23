@@ -2393,8 +2393,18 @@ async function authorizeAuthenticatedUser(args: {
   if (!attemptId) {
     // Legacy support or direct signup/login path without attempt_id should ideally have one,
     // but we allow it for now if not explicitly blocked.
-    // Valid attempt_id is required for everything that releases Wi-Fi.
-    console.error(`[auth] AttemptId missing in authorizeAuthenticatedUser. Method: ${authMethod}`);
+    // Valid attempt_id and resume_token are required for everything that releases Wi-Fi.
+    console.error(`[auth] AttemptId or ResumeToken missing in authorizeAuthenticatedUser. Method: ${authMethod}`);
+    if (!attemptId || !resumeToken) {
+      return {
+        session_id: null,
+        authorized: false,
+        redirect_url: detected.redirect_url || DEFAULT_REDIRECT_URL,
+        fail_reason: "MISSING_ATTEMPT_TOKENS",
+        store_slug: storeSlug,
+        store_id: storeId,
+      };
+    }
     return {
       session_id: null,
       authorized: false,
