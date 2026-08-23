@@ -60,6 +60,13 @@ function formatPhoneBR(value: string): string {
 export default function App() {
   const navigate = useNavigate();
   const location = useLocation();
+  
+  // Use a local ref to track if component is mounted to prevent state updates on unmounted component
+  const isMounted = useRef(true);
+  useEffect(() => {
+    return () => { isMounted.current = false; };
+  }, []);
+
   const [step, setStep] = useState<Step>("loading");
   const [boot, setBoot] = useState<BootstrapData>(FALLBACK_BOOT);
   const [redirectUrl, setRedirectUrl] = useState<string | null>(null);
@@ -84,17 +91,32 @@ export default function App() {
   // CPF Prompt (for Google users)
   const [promptCpf, setPromptCpf] = useState("");
 
-  // signup form (CPF is no longer collected)
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [phone, setPhone] = useState("");
-  const [password, setPassword] = useState("");
-  const [password2, setPassword2] = useState("");
-  const [consented, setConsented] = useState(false);
+  // signup form fields state
+  const [signupFields, setSignupFields] = useState({
+    name: "",
+    email: "",
+    phone: "",
+    password: "",
+    passwordConfirm: "",
+    consented: false
+  });
   const [countdown, setCountdown] = useState(2);
   const redirectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const handleAuthOutcome = (result: any, successMessage: string) => {
+  // Grouped logic for signup form to improve code quality
+  const isSignupValid = useMemo(() => {
+    const { name, email, phone, password, passwordConfirm, consented } = signupFields;
+    return (
+      name.trim().split(/\s+/).length >= 2 &&
+      Validators.email(email) &&
+      Validators.phone(phone.replace(/\D/g, "")) &&
+      password.length >= 8 &&
+      password === passwordConfirm &&
+      consented
+    );
+  }, [signupFields]);
+
+  const handleAuthOutcome = useCallback((result: any, successMessage: string) => {
     if (result?.authorized) {
       setSuccessMsg(successMessage);
       const params = getQueryParams();
@@ -106,11 +128,12 @@ export default function App() {
       return true;
     }
     return false;
-  };
+  }, []);
 
   const handleAuthComplete = useCallback(() => {
     OAuthTracker.clearAll();
   }, []);
+
 
 
   const completeAuthenticatedSession = async (session: any, source: "google" | "silent") => {
@@ -166,7 +189,10 @@ export default function App() {
             status: "success",
             payload: { source }
           });
-          handleAuthOutcome(result, "Wi-Fi liberado com sucesso!");
+          const outcomeHandled = handleAuthOutcome(result, "Wi-Fi liberado com sucesso!");
+          if (outcomeHandled && isMounted.current) {
+            // Success step set inside handleAuthOutcome
+          }
           return result;
         }
 
@@ -374,14 +400,18 @@ export default function App() {
     if (busy) return;
     setError("");
 
+    const { name, email, phone, password, passwordConfirm, consented } = signupFields;
+
     if (!name || name.trim().split(/\s+/).length < 2) return setError("Informe seu nome completo (nome e sobrenome).");
-    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return setError("Informe um e-mail válido.");
+    if (!Validators.email(email)) return setError("Informe um e-mail válido.");
+    
     const phoneDigits = phone.replace(/\D/g, "");
-    if (!phoneDigits || phoneDigits.length < 10 || phoneDigits.length > 11) return setError("Informe um telefone válido com DDD.");
+    if (!Validators.phone(phoneDigits)) return setError("Informe um telefone válido com DDD.");
+    
     if (password.length < 8) return setError("A senha deve ter pelo menos 8 caracteres.");
     if (!/[A-Za-z]/.test(password) || !/[0-9]/.test(password))
       return setError("A senha deve conter letras e números.");
-    if (password !== password2) return setError("As senhas não coincidem.");
+    if (password !== passwordConfirm) return setError("As senhas não coincidem.");
     if (!consented) return setError("Você deve aceitar os termos de uso para continuar.");
 
     setBusy(true);
@@ -739,7 +769,8 @@ export default function App() {
             <div>
               <label className="portal-label">Nome Completo *</label>
               <input
-                type="text" value={name} onChange={(e) => setName(e.target.value)}
+                type="text" value={signupFields.name} 
+                onChange={(e) => setSignupFields(prev => ({ ...prev, name: e.target.value }))}
                 required className="portal-input" placeholder="Ex: João Silva"
                 autoComplete="name"
               />
@@ -748,7 +779,8 @@ export default function App() {
             <div>
               <label className="portal-label">E-mail *</label>
               <input
-                type="email" value={email} onChange={(e) => setEmail(e.target.value)}
+                type="email" value={signupFields.email} 
+                onChange={(e) => setSignupFields(prev => ({ ...prev, email: e.target.value }))}
                 required className="portal-input" placeholder="seu@email.com"
                 autoComplete="email"
               />
@@ -757,8 +789,8 @@ export default function App() {
             <div>
               <label className="portal-label">WhatsApp / Celular *</label>
               <input
-                type="tel" value={phone}
-                onChange={(e) => setPhone(formatPhoneBR(e.target.value))}
+                type="tel" value={formatPhoneBR(signupFields.phone)}
+                onChange={(e) => setSignupFields(prev => ({ ...prev, phone: e.target.value }))}
                 required className="portal-input" placeholder="(00) 00000-0000"
                 autoComplete="tel"
               />
@@ -767,7 +799,8 @@ export default function App() {
             <div>
               <label className="portal-label">Senha *</label>
               <input
-                type="password" value={password} onChange={(e) => setPassword(e.target.value)}
+                type="password" value={signupFields.password} 
+                onChange={(e) => setSignupFields(prev => ({ ...prev, password: e.target.value }))}
                 required minLength={8} className="portal-input"
                 placeholder="Mínimo 8 caracteres (letras e números)"
                 autoComplete="new-password"
@@ -777,7 +810,8 @@ export default function App() {
             <div>
               <label className="portal-label">Confirmar Senha *</label>
               <input
-                type="password" value={password2} onChange={(e) => setPassword2(e.target.value)}
+                type="password" value={signupFields.passwordConfirm} 
+                onChange={(e) => setSignupFields(prev => ({ ...prev, passwordConfirm: e.target.value }))}
                 required minLength={8} className="portal-input"
                 placeholder="Repita sua senha"
                 autoComplete="new-password"
@@ -794,8 +828,8 @@ export default function App() {
                 </details>
                 <label className="portal-checkbox-label mt-2">
                   <input
-                    type="checkbox" checked={consented}
-                    onChange={(e) => setConsented(e.target.checked)}
+                    type="checkbox" checked={signupFields.consented}
+                    onChange={(e) => setSignupFields(prev => ({ ...prev, consented: e.target.checked }))}
                   />
                   <span>Li e aceito os <button type="button" className="text-red-600 font-bold hover:underline bg-transparent border-none p-0 inline cursor-pointer" onClick={() => navigate("/privacy")}>Termos de Privacidade</button></span>
                 </label>
