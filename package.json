@@ -6,7 +6,7 @@
   "packageManager": "npm@10.9.4",
   "scripts": {
     "dev": "vite",
-    "build": "vite build && node scripts/generate-build-info.js",
+    "build": "vite build && node scripts/generate-build-info.cjs",
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
     "preview": "vite preview",

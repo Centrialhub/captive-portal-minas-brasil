@@ -1,17 +1,19 @@
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const fs = require('fs');
+const path = require('path');
 
 const distPath = path.resolve(__dirname, '../dist');
 if (!fs.existsSync(distPath)) {
   fs.mkdirSync(distPath, { recursive: true });
 }
 
+const sha = process.env.COMMIT_SHA || 'dev';
+if (!sha || sha === 'unknown') {
+  console.error('ERROR: COMMIT_SHA must be a real value for production build-info');
+  process.exit(1);
+}
+
 const buildInfo = {
-  sha: process.env.COMMIT_SHA || 'dev',
+  sha: sha,
   timestamp: new Date().toISOString(),
   build: 'production'
 };
