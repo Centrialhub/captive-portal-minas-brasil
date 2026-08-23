@@ -478,7 +478,8 @@ export default function App() {
       const tokens = OAuthTracker.getTokens();
       
       if (!tokens.attempt_id || !tokens.token) {
-        setError("Não foi possível identificar a sessão atual para troca.");
+        setError("Sessão expirada. Por favor, reinicie o login.");
+        OAuthTracker.clearAll();
         setStep("login");
         return;
       }
@@ -486,43 +487,48 @@ export default function App() {
       setBusy(true);
       try {
         api.clientEvent({ event: "google_oauth_restart_started", step: "oauth" });
+        
+        // 1. Backend cancels old and creates new attempt
         const res = await api.restartOAuth({ 
           attempt_id: tokens.attempt_id,
           resume_token: tokens.token 
         });
 
         if (res.attempt_id && res.token) {
-          // Replace tokens atomically in storage and URL
+          // 2. Remove old pair from URL using history API to prevent concurrency
+          const current = new URLSearchParams(window.location.search);
+          current.delete("attempt_id");
+          current.delete("resume_token");
+          const qs = current.toString();
+          const cleanUrl = window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash;
+          window.history.replaceState(null, "", cleanUrl);
+
+          // 3. Update storage with NEW pair
           OAuthTracker.updateTokens(res.attempt_id, res.token);
           
-          // Sign out from current Google account in Supabase
-          // We mark the state to know this is a restart-driven signout
-          const { error: signOutErr } = await supabase.auth.signOut();
-          if (signOutErr) throw signOutErr;
+          // 4. Controlled signOut
+          await supabase.auth.signOut();
 
-          // Now immediately start OAuth again with the NEW tokens
-          const redirectTo = `https://minasbrasilwifi.com.br/oauth/callback?attempt_id=${res.attempt_id}&resume_token=${res.token}`;
+          // 5. Immediate new OAuth with strictly the new pair
+          const callbackUrl = `https://minasbrasilwifi.com.br/oauth/callback?attempt_id=${res.attempt_id}&resume_token=${res.token}`;
+          
           const { error: oauthErr } = await supabase.auth.signInWithOAuth({
             provider: "google",
-            options: { redirectTo, skipBrowserRedirect: false },
+            options: { 
+              redirectTo: callbackUrl, 
+              skipBrowserRedirect: false,
+              queryParams: { prompt: "select_account" }
+            },
           });
 
           if (oauthErr) throw oauthErr;
-          
-          // Successful initiation, the browser will redirect
-          return;
+          return; // Browser will redirect
         } else {
-          throw new Error("Resposta inválida do servidor de restart.");
+          throw new Error("Falha ao reiniciar sessão no servidor.");
         }
       } catch (e: any) {
         console.error("[restart] failed:", e);
-        api.clientEvent({ 
-          event: "google_oauth_restart_failed", 
-          step: "oauth", 
-          status: "error", 
-          error_message: e.message 
-        });
-        setError("Não foi possível trocar de conta. Tente novamente.");
+        setError("Não foi possível trocar de conta. Tente novamente ou faça login manual.");
         setBusy(false);
       }
     };
