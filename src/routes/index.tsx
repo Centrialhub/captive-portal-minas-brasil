@@ -40,6 +40,9 @@ function Documentation() {
       <div className="mb-4 p-4 bg-orange-50 border border-orange-200 rounded-lg text-orange-800 text-sm">
         Prompt 55 — Otimização de Backend e Segurança: Refinamento de validações, proteção contra ataques de força bruta e melhoria na performance das rotas críticas.
       </div>
+      <div className="mb-4 p-4 bg-slate-50 border border-slate-200 rounded-lg text-slate-800 text-sm">
+        Prompt 09 — Estados Terminais Autoritativos: RPC <code>claim_auth_attempt</code> refatorado para garantir que tentativas canceladas ou concluídas sejam irrevogáveis, protegendo contra reentrância e CNA loops.
+      </div>
 
 
       <h1 className="text-3xl font-bold mb-6 text-gray-900 border-b pb-2">Captive Portal - Drogaria Minas Brasil</h1>

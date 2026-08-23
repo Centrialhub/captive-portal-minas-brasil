@@ -1,0 +1,2 @@
+REVOKE EXECUTE ON FUNCTION public.claim_auth_attempt(UUID, UUID, TEXT, INTERVAL, TEXT) FROM anon, authenticated, PUBLIC;
+GRANT EXECUTE ON FUNCTION public.claim_auth_attempt(UUID, UUID, TEXT, INTERVAL, TEXT) TO service_role;
