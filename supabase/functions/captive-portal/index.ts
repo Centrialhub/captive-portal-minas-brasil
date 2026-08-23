@@ -3344,20 +3344,41 @@ async function handleUpdateProfile(req: Request): Promise<Response> {
 
   const { data: userProfile } = await db.from("profiles").select("email").eq("id", userId).maybeSingle();
 
-  // Use the secure RPC instead of direct update to enforce constraints and logic
-  const { data: rpcRes, error: rpcErr } = await db.rpc("secure_update_profile", {
-    _user_id: userId,
-    _full_name: name,
-    _phone_digits: phoneDigits,
-    _cpf_digits: cpfDigits,
-  });
-
-  if (rpcErr || !rpcRes?.ok) {
-    if (rpcRes?.error === "CPF_ALREADY_EXISTS") {
-      return errorResponse("Este CPF já está cadastrado em outra conta.", 409);
+  // --- CPF Handle ---
+  if (cpfDigits) {
+    if (!Validators.cpf(cpfDigits)) {
+      console.warn(`[captive-portal] Invalid CPF attempt user=${userId} cpf=${cpfDigits.slice(0, 3)}...`);
+      return errorResponse("CPF inválido.", 400);
     }
-    console.error("[update-profile] RPC failed:", rpcErr || rpcRes?.error);
-    return errorResponse("Erro ao atualizar perfil.");
+
+    const { data: cpfRes, error: cpfErr } = await db.rpc("secure_set_cpf", {
+      _user_id: userId,
+      _cpf_digits: cpfDigits,
+    });
+
+    if (cpfErr || !cpfRes?.ok) {
+      const err = cpfErr?.message || cpfRes?.error || "CPF_UPDATE_FAILED";
+      if (err === "CPF_ALREADY_EXISTS") {
+        return errorResponse("Este CPF já está cadastrado em outra conta.", 409);
+      }
+      console.error(`[captive-portal] secure_set_cpf error user=${userId}:`, err);
+      return errorResponse("Erro ao atualizar CPF.", 400);
+    }
+    console.log(`[captive-portal] CPF set successfully user=${userId}`);
+  }
+
+  // --- Profile Update (Name/Phone) ---
+  if (name || phoneDigits) {
+    const { data: profileRes, error: profileErr } = await db.rpc("secure_update_profile", {
+      _user_id: userId,
+      _full_name: name,
+      _phone_digits: phoneDigits,
+    });
+
+    if (profileErr || !profileRes?.ok) {
+      console.error(`[captive-portal] secure_update_profile error user=${userId}:`, profileErr || profileRes?.error);
+      return errorResponse("Erro ao atualizar perfil.");
+    }
   }
 
   // Background sync with CRM on profile update
