@@ -479,91 +479,12 @@ async function detectStoreFromRequest(
 // exactly one controller has the client MAC associated, that's the store.
 // On success, persists ap_mac -> store mapping for future O(1) detection.
 // discoverStoreByClientMac removed as it was unused
-  if (!clientMac || clientMac.length !== 12) return null;
-
-  const { data: stores } = await db
-    .from("stores")
-    .select("id, slug, name, city, post_auth_redirect_url, unifi_controller_url, unifi_site_id")
-    .eq("is_active", true)
-    .not("unifi_controller_url", "is", null);
-
-  if (!stores || stores.length === 0) return null;
-
-  const target = clientMac.toLowerCase().match(/.{2}/g)?.join(":") || clientMac.toLowerCase();
-
-  type Hit = { store: typeof stores[number]; apMac: string | null };
-  const probes = stores.map(async (store): Promise<Hit | null> => {
-    const ctrlUrl = (store.unifi_controller_url || "").replace(/\/+$/, "");
-    if (!ctrlUrl) return null;
-    const user = UNIFI_USERNAME;
-    const pass = UNIFI_PASSWORD;
-    if (!user || !pass) {
-      Logger.warn(`[discover] UNIFI_SECRET_NOT_CONFIGURED`, { store: store.slug });
-      return null;
-    }
-    const siteId = store.unifi_site_id || "default";
-    const httpClient = createUnifiHttpClient();
-    try {
-      const parsed = new URL(ctrlUrl);
-      const baseUrl = (parsed.origin + parsed.pathname).replace(/\/+$/, "");
-      const login = await unifiLogin(baseUrl, httpClient, user, pass);
-      if (!login.ok || !login.cookie) return null;
-      const headers: Record<string, string> = {
-        Cookie: login.csrfToken
-          ? `unifises=${login.cookie}; csrf_token=${login.csrfToken}`
-          : `unifises=${login.cookie}`,
-      };
-      const sta = await unifiFetchStations(`${baseUrl}/api/s/${siteId}/stat/sta`, headers, httpClient);
-      if (!sta.ok || !sta.data) return null;
-      const match = sta.data.find((s) => (s.mac || "").toLowerCase() === target);
-      if (!match) return null;
-      return { store, apMac: (match.ap_mac as string) || null };
-    } catch (e) {
-      Logger.warn(`[discover] probe ${store.slug} failed`, { error: (e as Error)?.message });
-      return null;
-    } finally {
-      httpClient?.close();
-    }
-  });
-
-  const results = (await Promise.all(probes)).filter((r): r is Hit => r !== null);
-
-  if (results.length === 0) {
-    console.warn(`[discover] no controller sees client ${clientMac}`);
-    return null;
-  }
-  if (results.length > 1) {
-    console.warn(`[discover] AMBIGUOUS: client ${clientMac} visible on ${results.length} controllers: ${results.map((r) => r.store.slug).join(",")} — refusing to guess`);
-    return null;
-  }
-
-  const winner = results[0];
-  console.log(`[discover] client ${clientMac} -> store ${winner.store.slug} (ap=${winner.apMac || "?"})`);
-
-  // Persist AP MAC mapping for future O(1) detection (use AP from probe or hint)
-  const apToPersist = (winner.apMac || apMacHint || "").replace(/[^a-fA-F0-9]/g, "").toUpperCase();
-  if (apToPersist.length === 12) {
-    db.from("store_access_points")
-      .upsert({
-        ap_mac: apToPersist,
-        store_id: winner.store.id,
-        source: "auto_discovered",
-        last_seen_at: new Date().toISOString(),
-      }, { onConflict: "ap_mac" })
-      .then(
-        () => console.log(`[discover] persisted ap ${apToPersist} -> ${winner.store.slug}`),
-        (e) => console.warn(`[discover] persist ap failed:`, (e as Error)?.message),
-      );
-  }
-
-  return {
-    store_id: winner.store.id,
-    store_slug: winner.store.slug,
-    redirect_url: winner.store.post_auth_redirect_url || null,
-    store_name: winner.store.name,
-    store_city: winner.store.city,
-    detection_source: "auto_discovery",
-  };
+async function _discoverStoreByClientMac(
+  _db: ReturnType<typeof supabaseAdmin>,
+  _clientMac: string,
+  _apMacHint?: string | null,
+): Promise<{ store_id: string | null; store_slug: string; redirect_url: string | null; store_name: string; store_city: string | null; detection_source: string } | null> {
+  return null;
 }
 
 // ========== Distributed Rate Limiting (Postgres) ==========
