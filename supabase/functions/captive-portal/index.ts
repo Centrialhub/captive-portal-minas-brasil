@@ -21,7 +21,7 @@ const UNIFI_RETRY_COUNT = 1;
 const MAC_REGEX = /^[0-9A-F]{12}$/;
 const MAX_NAME_LEN = 200;
 const MAX_EMAIL_LEN = 255;
-const MAX_PHONE_LEN = 30;
+// MAX_PHONE_LEN removed as it was unused
 const MAX_SLUG_LEN = 50;
 const DEDUP_WINDOW_SEC = 10;
 const VALID_BR_DDD = new Set([
@@ -172,13 +172,8 @@ const Validators = {
 
 
 /** Normaliza telefone para E.164 brasileiro (ex: 5531999999999) */
-function toE164BR(phone: string): string {
-  let digits = (phone || "").replace(/\D/g, "");
-  digits = digits.replace(/^0+/, "");
-  if (digits.startsWith("55") && (digits.length === 12 || digits.length === 13)) return digits;
-  if (digits.length === 10 || digits.length === 11) return "55" + digits;
-  return digits;
-}
+/** Normaliza telefone para E.164 brasileiro (ex: 5531999999999) */
+// toE164BR was removed as it was unused (Prompt 24 removed WhatsApp residues)
 
 /**
  * Sync lead with external CRM API (ClubeMais).
@@ -483,11 +478,7 @@ async function detectStoreFromRequest(
 // Logs in to every active controller in parallel and queries /stat/sta. If
 // exactly one controller has the client MAC associated, that's the store.
 // On success, persists ap_mac -> store mapping for future O(1) detection.
-async function discoverStoreByClientMac(
-  db: ReturnType<typeof supabaseAdmin>,
-  clientMac: string,
-  apMacHint?: string | null,
-): Promise<{ store_id: string | null; store_slug: string; redirect_url: string | null; store_name: string; store_city: string | null; detection_source: string } | null> {
+// discoverStoreByClientMac removed as it was unused
   if (!clientMac || clientMac.length !== 12) return null;
 
   const { data: stores } = await db
@@ -611,13 +602,7 @@ async function checkRateLimitDb(
 // ========== Dedup Map (in-memory) ==========
 const dedupMap = new Map<string, number>();
 
-function isDuplicate(key: string): boolean {
-  const now = Date.now();
-  const last = dedupMap.get(key);
-  if (last && now - last < DEDUP_WINDOW_SEC * 1000) return true;
-  dedupMap.set(key, now);
-  return false;
-}
+// isDuplicate removed as it was unused
 
 setInterval(() => {
   const now = Date.now();
@@ -657,10 +642,7 @@ async function fetchGeoIp(ip: string): Promise<GeoIpData | null> {
   }
 }
 
-async function enrichGeoIp(
-  db: ReturnType<typeof supabaseAdmin>,
-  ip: string
-): Promise<GeoIpData & { source: string }> {
+// enrichGeoIp removed as it was unused
   const { data: cached } = await db
     .from("origin_ip_clusters")
     .select("city, region, country, isp, asn, last_geoip_at")
@@ -701,7 +683,7 @@ async function enrichGeoIp(
   return { city: null, region: null, country: null, isp: null, asn: null, source: "none" };
 }
 
-async function incrementClusterLeadCount(db: ReturnType<typeof supabaseAdmin>, ip: string) {
+// incrementClusterLeadCount removed as it was unused
   try {
     const { data } = await db
       .from("origin_ip_clusters")
@@ -906,7 +888,7 @@ async function unifiLogin(
 // Captive assistants typically time out around 5-10s, so we keep this short
 // and rely on the hotspot fallback redirect for the final handshake.
 const VERIFY_BACKOFF_MS = [500, 1000, 1500];
-const RESEND_AFTER_ATTEMPT = 999; // disable mid-poll re-emission (kept for clarity)
+// RESEND_AFTER_ATTEMPT removed as it was unused
 
 interface UnifiStation {
   mac?: string;
@@ -1119,7 +1101,7 @@ async function checkUnifiAuthorizationState(
     Logger.error("[unifi-check] failed", { error: err });
     return { state: "inconclusive" };
   } finally {
-    try { httpClient?.close(); } catch (e) { /* ignore close error */ }
+    try { httpClient?.close(); } catch (_e) { /* ignore close error */ }
   }
 }
 
@@ -1524,7 +1506,7 @@ async function authorizeClient(
  * silently drop it. If the controller is reachable only at the origin root,
  * configure the controller URL accordingly.
  */
-function getControllerBaseForGuestRedirect(controllerUrl: string): string {
+// getControllerBaseForGuestRedirect removed as it was unused
   const u = new URL(controllerUrl);
   const path = u.pathname.replace(/\/+$/, "");
   return `${u.origin}${path}`;
