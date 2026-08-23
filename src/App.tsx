@@ -343,8 +343,8 @@ export default function App() {
           "Login realizado, mas o Wi-Fi não confirmou a liberação. Desconecte e conecte-se novamente à rede.",
         );
       }
-    } catch {
-      setError("Não foi possível conectar. Por favor, verifique seus dados e tente novamente.");
+    } catch (err: any) {
+      setError(err?.message || "Não foi possível conectar. Por favor, verifique seus dados e tente novamente.");
     }
     setBusy(false);
   };
@@ -451,8 +451,8 @@ export default function App() {
           "Conta criada, mas o Wi-Fi não confirmou a liberação. Desconecte e conecte-se novamente à rede.",
         );
       }
-    } catch {
-      setError("Não foi possível concluir seu cadastro. Por favor, verifique os dados e tente novamente.");
+    } catch (err: any) {
+      setError(err?.message || "Não foi possível concluir seu cadastro. Por favor, verifique os dados e tente novamente.");
     }
     setBusy(false);
   };

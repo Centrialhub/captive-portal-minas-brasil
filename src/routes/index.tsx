@@ -37,6 +37,9 @@ function Documentation() {
       <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-800 text-sm">
         Prompt 54 — Capability Pair Obrigatório: Implementada exigência server-side do par (attempt_id, resume_token) para todos os métodos de autenticação e criação de conta.
       </div>
+      <div className="mb-4 p-4 bg-orange-50 border border-orange-200 rounded-lg text-orange-800 text-sm">
+        Prompt 55 — Otimização de Backend e Segurança: Refinamento de validações, proteção contra ataques de força bruta e melhoria na performance das rotas críticas.
+      </div>
 
 
       <h1 className="text-3xl font-bold mb-6 text-gray-900 border-b pb-2">Captive Portal - Drogaria Minas Brasil</h1>
