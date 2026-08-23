@@ -3506,7 +3506,7 @@ Deno.serve(async (req: Request) => {
 
     return errorResponse("Not found", 404);
   } catch (err) {
-    console.error("Unhandled error:", err);
+    Logger.error("Unhandled error", { error: err });
     return errorResponse("Internal server error", 500);
   }
 });
