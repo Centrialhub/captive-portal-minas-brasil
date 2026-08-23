@@ -26,7 +26,7 @@ function Documentation() {
   return (
     <div className="p-8 font-sans max-w-4xl mx-auto">
       <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-lg text-green-800 text-sm">
-         
+        Prompt 50 — Imutabilidade do Contexto: Eliminada reatribuição de constante ctx via extração segura e retorno determinístico no helper de contexto.
       </div>
       <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg text-blue-800 text-sm">
         Prompt 48 — Qualidade e Polimento de UI: Refinamento visual de cards, botões e inputs; otimização de estado do formulário de cadastro; e validações robustas centralizadas.
