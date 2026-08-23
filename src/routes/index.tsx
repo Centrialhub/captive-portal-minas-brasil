@@ -64,7 +64,9 @@ function Documentation() {
       <div className="mb-4 p-4 bg-lime-50 border border-lime-200 rounded-lg text-lime-800 text-sm">
         Prompt 16 — SuccessView One-Shot: Implementado controle rigoroso de execução única para `onComplete` e navegação automática, garantindo que cronômetros sejam limpos corretamente e que a ação manual permaneça funcional sem repetições.
       </div>
-
+      <div className="mb-4 p-4 bg-teal-50 border border-teal-200 rounded-lg text-teal-800 text-sm">
+        Prompt 17 — Contrato has_role: Restaurada execução segura de `public.has_role` via SECURITY DEFINER, garantindo que usuários autenticados consultem apenas a própria role e protegendo contra enumeração.
+      </div>
 
       <h1 className="text-3xl font-bold mb-6 text-gray-900 border-b pb-2">Captive Portal - Drogaria Minas Brasil</h1>
       <p className="mb-6 text-gray-600">Documentação visual de arquitetura, segurança e integridade do sistema.</p>
