@@ -34,6 +34,10 @@ function Documentation() {
       <div className="mb-4 p-4 bg-purple-50 border border-purple-200 rounded-lg text-purple-800 text-sm">
         Prompt 53 — Refinamento Estrutural e Autenticação: Otimização de consultas, padronização de nomenclatura no banco e eliminação de redundâncias no fluxo de login.
       </div>
+      <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-800 text-sm">
+        Prompt 54 — Capability Pair Obrigatório: Implementada exigência server-side do par (attempt_id, resume_token) para todos os métodos de autenticação e criação de conta.
+      </div>
+
 
       <h1 className="text-3xl font-bold mb-6 text-gray-900 border-b pb-2">Captive Portal - Drogaria Minas Brasil</h1>
       <p className="mb-6 text-gray-600">Documentação visual de arquitetura, segurança e integridade do sistema.</p>
