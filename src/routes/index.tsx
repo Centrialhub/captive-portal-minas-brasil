@@ -52,6 +52,9 @@ function Documentation() {
       <div className="mb-4 p-4 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-800 text-sm">
         Prompt 12 — Resgate de Lease Expirada: Implementada verificação autoritativa read-only via <code>checkUnifiAuthorizationState</code> antes de qualquer tentativa de re-autorização, eliminando comandos duplicados e loops de conexão.
       </div>
+      <div className="mb-4 p-4 bg-indigo-50 border border-indigo-200 rounded-lg text-indigo-800 text-sm">
+        Prompt 13 — Replay Idempotente: Garantido que requisições repetidas para a mesma tentativa autorizada retornem o resultado persistido instantaneamente, sem revalidar dados ou chamar o controlador UniFi.
+      </div>
 
 
       <h1 className="text-3xl font-bold mb-6 text-gray-900 border-b pb-2">Captive Portal - Drogaria Minas Brasil</h1>
