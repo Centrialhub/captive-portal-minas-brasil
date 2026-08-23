@@ -2335,25 +2335,25 @@ async function getValidatedAuthContext(
   body: Record<string, unknown>,
   contextName: string
 ): Promise<{ ctx: AuthAuthorizeContext; attemptId: string | null; resumeToken: string | null; error?: Response }> {
-  let ctx = extractAuthContext(body);
+  const initialCtx = extractAuthContext(body);
   const attemptId = typeof body.attempt_id === "string" ? body.attempt_id : null;
   const resumeToken = typeof body.resume_token === "string" ? body.resume_token : null;
 
   if (attemptId || resumeToken) {
     if (!attemptId || !resumeToken) {
-      return { ctx, attemptId, resumeToken, error: jsonResponse({ error: "Contrato inválido: attempt_id e resume_token devem ser fornecidos em par.", code: "invalid_contract" }, 400) };
+      return { ctx: initialCtx, attemptId, resumeToken, error: jsonResponse({ error: "Contrato inválido: attempt_id e resume_token devem ser fornecidos em par.", code: "invalid_contract" }, 400) };
     }
     
     const val = await validateOAuthAttempt(db, attemptId, resumeToken);
     if (val.status === 'invalid') {
-      return { ctx, attemptId, resumeToken, error: jsonResponse({ error: val.error || "Tentativa inválida.", code: "invalid_attempt" }, 403) };
+      return { ctx: initialCtx, attemptId, resumeToken, error: jsonResponse({ error: val.error || "Tentativa inválida.", code: "invalid_attempt" }, 403) };
     }
     if (val.params) {
-      ctx = val.params;
-      console.log(`[${contextName}] using authoritative parameters for attempt=${attemptId} mac=${ctx.clientMac}`);
+      console.log(`[${contextName}] using authoritative parameters for attempt=${attemptId} mac=${val.params.clientMac}`);
+      return { ctx: val.params, attemptId, resumeToken };
     }
   }
-  return { ctx, attemptId, resumeToken };
+  return { ctx: initialCtx, attemptId, resumeToken };
 }
 
 
