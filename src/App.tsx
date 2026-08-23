@@ -9,6 +9,7 @@ import {
   Validators,
 } from "./lib/portal-utils";
 import { OAuthTracker } from "./lib/oauth-tracker";
+import { useOAuthCallback } from "./hooks/useOAuthCallback";
 import logoMinasBrasil from "./assets/logo-minas-brasil.png";
 import Footer from "./components/Footer";
 import { SuccessView } from "./components/SuccessView";
@@ -142,26 +143,75 @@ export default function App() {
     OAuthTracker.clearAll();
   }, []);
 
+  const isOAuthCallbackFlow = useMemo(() => {
+    return location.pathname === "/oauth/callback" || OAuthTracker.isValidOAuthFlow();
+  }, [location.pathname]);
 
+  const { status: oauthStatus } = useOAuthCallback({
+    enabled: isOAuthCallbackFlow,
+    onSuccess: (result) => {
+      handleAuthOutcome(result, "Wi-Fi liberado com sucesso!");
+    },
+    onError: (msg) => {
+      setError(msg);
+      setStep("login");
+    },
+    onNeedsCpf: (profile) => {
+      if (profile) setGoogleUser(profile);
+      setStep("cpf_prompt");
+    }
+  });
+
+  useEffect(() => {
+    if (oauthStatus === "processing") {
+      setStep("authorizing");
+    } else if (oauthStatus === "waiting") {
+      setStep("oauth_callback");
+    }
+  }, [oauthStatus]);
+
+  useEffect(() => {
+    // Force production domain for OAuth compatibility
+    const isLocal = window.location.hostname === "localhost" || window.location.hostname.includes("lovable.app");
+    const isCanonical = window.location.hostname === "minasbrasilwifi.com.br" && window.location.protocol === "https:";
+    
+    if (!isLocal && !isCanonical) {
+      console.log("[boot] non-canonical origin, redirecting to https://minasbrasilwifi.com.br");
+      window.location.href = "https://minasbrasilwifi.com.br" + window.location.pathname + window.location.search + window.location.hash;
+      return;
+    }
+
+    // Restore captive parameters if coming back from OAuth
+    OAuthTracker.restoreCaptiveParams();
+
+    // Non-blocking bootstrap (store name / consent text)
+    api.bootstrap().then(
+      (b) => {
+        if (b?.store && isMounted.current) setBoot({ store: b.store, consent: b.consent || FALLBACK_BOOT.consent });
+      },
+      () => { /* keep fallback */ },
+    );
+
+    // Initial session check for non-OAuth flow (silent login)
+    if (!isOAuthCallbackFlow && step === "loading") {
+      supabase.auth.getSession().then(({ data: { session } }) => {
+        if (!isMounted.current) return;
+        if (!session) {
+          setStep("login");
+        }
+      });
+    }
+  }, []);
 
   const completeAuthenticatedSession = async (session: any, source: "google" | "silent") => {
+    // Legacy helper kept for CPF submit flow, but most flows now use the hook
     if (authCompletedRef.current) return;
     if (processingAuthRef.current) return processingAuthRef.current;
-
-    console.log(`[auth] completeAuthenticatedSession starting. source: ${source}`);
     
     processingAuthRef.current = (async () => {
       try {
         setStep("authorizing");
         const params = getQueryParams();
-        
-        api.clientEvent({
-          event: `google_oauth_authorize_started`,
-          step: "auth",
-          status: "processing",
-          payload: { source, mac: params.client_mac }
-        });
-
         const tokens = OAuthTracker.getTokens();
         const result = await api.authorizeExisting({
           access_token: session.access_token,
@@ -178,48 +228,20 @@ export default function App() {
         if (result?.needs_cpf) {
           if (result.profile) setGoogleUser(result.profile);
           setStep("cpf_prompt");
-          authCompletedRef.current = false; // Allow re-authorization after CPF
-          return result;
-        }
-
-        if (result?.needs_login) {
-          await supabase.auth.signOut();
-          setError("Sessão inválida. Por favor, faça login novamente.");
-          setStep("login");
-          authCompletedRef.current = true;
           return result;
         }
 
         if (result?.authorized) {
-          api.clientEvent({
-            event: `google_oauth_authorize_succeeded`,
-            step: "auth",
-            status: "success",
-            payload: { source }
-          });
-          const outcomeHandled = handleAuthOutcome(result, "Wi-Fi liberado com sucesso!");
-          if (outcomeHandled && isMounted.current) {
-            // Success step set inside handleAuthOutcome
-          }
+          handleAuthOutcome(result, "Wi-Fi liberado com sucesso!");
           return result;
         }
 
-        api.clientEvent({
-          event: `google_oauth_authorize_failed`,
-          step: "auth",
-          status: "error",
-          payload: { source, reason: result?.fail_reason }
-        });
-        
         setError(result?.fail_reason || "Não foi possível liberar o acesso.");
         setStep("login");
-        authCompletedRef.current = true;
         return result;
       } catch (err) {
-        console.error("[auth] authorizeExisting failed:", err);
         setError("Erro ao processar liberação. Tente novamente.");
         setStep("login");
-        authCompletedRef.current = true;
         throw err;
       } finally {
         processingAuthRef.current = null;
@@ -228,86 +250,6 @@ export default function App() {
 
     return processingAuthRef.current;
   };
-
-  useEffect(() => {
-    // Force production domain for OAuth compatibility
-    const isLocal = window.location.hostname === "localhost" || window.location.hostname.includes("lovable.app");
-    const isCanonical = window.location.hostname === "minasbrasilwifi.com.br" && window.location.protocol === "https:";
-    
-    if (!isLocal && !isCanonical) {
-      console.log("[boot] non-canonical origin, redirecting to https://minasbrasilwifi.com.br");
-      window.location.href = "https://minasbrasilwifi.com.br" + window.location.pathname + window.location.search + window.location.hash;
-      return;
-    }
-
-    // Restore captive parameters if coming back from OAuth
-    OAuthTracker.restoreCaptiveParams();
-
-    // Check if we are on the explicit callback route
-    const isCallbackRoute = location.pathname === "/oauth/callback";
-    const isOAuthFlow = OAuthTracker.isValidOAuthFlow();
-
-    // Non-blocking bootstrap (store name / consent text)
-    api.bootstrap().then(
-      (b) => {
-        if (b?.store) setBoot({ store: b.store, consent: b.consent || FALLBACK_BOOT.consent });
-      },
-      () => { /* keep fallback */ },
-    );
-
-    let callbackTimeout: ReturnType<typeof setTimeout> | null = null;
-
-    if (isCallbackRoute || isOAuthFlow) {
-      setStep("oauth_callback");
-      api.clientEvent({ event: "google_oauth_session_received", step: "oauth" });
-      
-      // Safety timeout for OAuth session (10s)
-      callbackTimeout = setTimeout(() => {
-        if (stepRef.current === "oauth_callback" || stepRef.current === "loading") {
-          api.clientEvent({ event: "google_oauth_callback_timeout", step: "oauth", status: "error" });
-          setError("Não foi possível concluir o login do Google. Tempo esgotado.");
-          setStep("error");
-        }
-      }, 10000);
-    }
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      console.log(`[auth] onAuthStateChange event: ${event}`, session?.user?.id);
-      
-      if ((event === "SIGNED_IN" || event === "INITIAL_SESSION") && session?.access_token) {
-        if (authCompletedRef.current) return;
-        
-        const source = OAuthTracker.isValidOAuthFlow() ? "google" : "silent";
-        await completeAuthenticatedSession(session, source);
-        if (callbackTimeout) clearTimeout(callbackTimeout);
-      } else if (event === "SIGNED_OUT") {
-        // Only return to login if not in the middle of an OAuth restart flow
-        // or a callback redirection
-        if (stepRef.current !== "loading" && 
-            stepRef.current !== "oauth_redirecting" && 
-            stepRef.current !== "oauth_callback") {
-          setStep("login");
-        }
-        authCompletedRef.current = false;
-      }
-    });
-
-    // Fallback manual check
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session && !authCompletedRef.current) {
-        const source = OAuthTracker.isValidOAuthFlow() ? "google" : "silent";
-        completeAuthenticatedSession(session, source);
-        if (callbackTimeout) clearTimeout(callbackTimeout);
-      } else if (!session && !isCallbackRoute && !isOAuthFlow && step === "loading") {
-        setStep("login");
-      }
-    });
-
-    return () => {
-      if (callbackTimeout) clearTimeout(callbackTimeout);
-      subscription.unsubscribe();
-    };
-  }, [location.pathname, step]);
 
 
   const handleLogin = async (e: React.FormEvent) => {

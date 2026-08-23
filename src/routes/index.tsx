@@ -55,6 +55,9 @@ function Documentation() {
       <div className="mb-4 p-4 bg-indigo-50 border border-indigo-200 rounded-lg text-indigo-800 text-sm">
         Prompt 13 — Replay Idempotente: Garantido que requisições repetidas para a mesma tentativa autorizada retornem o resultado persistido instantaneamente, sem revalidar dados ou chamar o controlador UniFi.
       </div>
+      <div className="mb-4 p-4 bg-rose-50 border border-rose-200 rounded-lg text-rose-800 text-sm">
+        Prompt 14 — Lifecycle Callback Google: Reconstruído o lifecycle do callback OAuth com hook autoritativo, separando bootstrap de controlador, protegendo estados terminais e garantindo execução única por transação.
+      </div>
 
 
       <h1 className="text-3xl font-bold mb-6 text-gray-900 border-b pb-2">Captive Portal - Drogaria Minas Brasil</h1>
