@@ -61,6 +61,9 @@ function Documentation() {
       <div className="mb-4 p-4 bg-orange-50 border border-orange-200 rounded-lg text-orange-800 text-sm">
         Prompt 15 — Troca de Conta Google: Implementado cancelamento autoritativo da tentativa anterior e início imediato de novo OAuth com `select_account`, garantindo isolamento de transações e limpeza de URL sem reload.
       </div>
+      <div className="mb-4 p-4 bg-lime-50 border border-lime-200 rounded-lg text-lime-800 text-sm">
+        Prompt 16 — SuccessView One-Shot: Implementado controle rigoroso de execução única para `onComplete` e navegação automática, garantindo que cronômetros sejam limpos corretamente e que a ação manual permaneça funcional sem repetições.
+      </div>
 
 
       <h1 className="text-3xl font-bold mb-6 text-gray-900 border-b pb-2">Captive Portal - Drogaria Minas Brasil</h1>
