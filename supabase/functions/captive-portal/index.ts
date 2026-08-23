@@ -2592,7 +2592,7 @@ async function authorizeAuthenticatedUser(args: {
   }
 
   if (claim.result_status === 'completed') {
-    console.log(`[auth] Replay detected for attempt ${attemptId}. Reusing session ${claim.session_id}`);
+    Logger.info(`[auth] Replay detected for attempt ${attemptId}`);
     return {
       session_id: claim.session_id,
       authorized: claim.authorized,
