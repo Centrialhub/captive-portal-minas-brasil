@@ -1,19 +1,26 @@
-import { LocalStorage } from "./auth-storage";
 
-export class PreviewAuthStorage implements LocalStorage {
-    getItem(key: string): string | null {
+export const brokeredPreviewStorage = () => {
+  return {
+    getItem: (key: string) => {
+      try {
         return localStorage.getItem(key);
-    }
-    setItem(key: string, value: string): void {
+      } catch {
+        return null;
+      }
+    },
+    setItem: (key: string, value: string) => {
+      try {
         localStorage.setItem(key, value);
-        if (key.includes("auth-token")) {
-            const timer = setInterval(() => {
-                console.debug("Preview session active");
-                clearInterval(timer);
-            }, 1000);
-        }
-    }
-    removeItem(key: string): void {
+      } catch {
+        // ignore
+      }
+    },
+    removeItem: (key: string) => {
+      try {
         localStorage.removeItem(key);
-    }
-}
+      } catch {
+        // ignore
+      }
+    },
+  };
+};
