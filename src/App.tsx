@@ -30,7 +30,7 @@ type Step =
   | "error" 
   | "cpf_prompt";
 
-const CAPTIVE_PARAMS_STORAGE_KEY = "mb_captive_params_v2"; // Kept for legacy compat if needed
+// CAPTIVE_PARAMS_STORAGE_KEY was removed as it was unused.
 
 
 
@@ -109,11 +109,9 @@ export default function App() {
     passwordConfirm: "",
     consented: false
   });
-  const [countdown, setCountdown] = useState(2);
-  const redirectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Grouped logic for signup form to improve code quality
-  const isSignupValid = useMemo(() => {
+  const _isSignupValid = useMemo(() => {
     const { name, email, phone, password, passwordConfirm, consented } = signupFields;
     return (
       name.trim().split(/\s+/).length >= 2 &&
@@ -201,7 +199,7 @@ export default function App() {
         }
       });
     }
-  }, []);
+  }, [isOAuthCallbackFlow, step]);
 
   const completeAuthenticatedSession = async (session: any, source: "google" | "silent") => {
     // Legacy helper kept for CPF submit flow, but most flows now use the hook
