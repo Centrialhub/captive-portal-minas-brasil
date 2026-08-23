@@ -21,7 +21,7 @@ const UNIFI_RETRY_COUNT = 1;
 const MAC_REGEX = /^[0-9A-F]{12}$/;
 const MAX_NAME_LEN = 200;
 const MAX_EMAIL_LEN = 255;
-const MAX_PHONE_LEN = 30;
+// MAX_PHONE_LEN removed as it was unused
 const MAX_SLUG_LEN = 50;
 const DEDUP_WINDOW_SEC = 10;
 const VALID_BR_DDD = new Set([
@@ -39,8 +39,8 @@ const VALID_BR_DDD = new Set([
 // GeoIP config
 const GEOIP_ENDPOINT = Deno.env.get("GEOIP_ENDPOINT") || "https://ipapi.co/{ip}/json/";
 const GEOIP_TIMEOUT_MS = parseInt(Deno.env.get("GEOIP_TIMEOUT_MS") || "1500");
-const GEOIP_CACHE_TTL_HOURS = parseInt(Deno.env.get("GEOIP_CACHE_TTL_HOURS") || "168");
-const GEOIP_PROVIDER = Deno.env.get("GEOIP_PROVIDER") || "ipapi";
+const _GEOIP_CACHE_TTL_HOURS = parseInt(Deno.env.get("GEOIP_CACHE_TTL_HOURS") || "168");
+const _GEOIP_PROVIDER = Deno.env.get("GEOIP_PROVIDER") || "ipapi";
 
 // OTP subsystem removed (Prompt 08)
 
@@ -172,13 +172,8 @@ const Validators = {
 
 
 /** Normaliza telefone para E.164 brasileiro (ex: 5531999999999) */
-function toE164BR(phone: string): string {
-  let digits = (phone || "").replace(/\D/g, "");
-  digits = digits.replace(/^0+/, "");
-  if (digits.startsWith("55") && (digits.length === 12 || digits.length === 13)) return digits;
-  if (digits.length === 10 || digits.length === 11) return "55" + digits;
-  return digits;
-}
+/** Normaliza telefone para E.164 brasileiro (ex: 5531999999999) */
+// toE164BR was removed as it was unused (Prompt 24 removed WhatsApp residues)
 
 /**
  * Sync lead with external CRM API (ClubeMais).
@@ -483,96 +478,13 @@ async function detectStoreFromRequest(
 // Logs in to every active controller in parallel and queries /stat/sta. If
 // exactly one controller has the client MAC associated, that's the store.
 // On success, persists ap_mac -> store mapping for future O(1) detection.
-async function discoverStoreByClientMac(
-  db: ReturnType<typeof supabaseAdmin>,
-  clientMac: string,
-  apMacHint?: string | null,
+// discoverStoreByClientMac removed as it was unused
+async function _discoverStoreByClientMac(
+  _db: ReturnType<typeof supabaseAdmin>,
+  _clientMac: string,
+  _apMacHint?: string | null,
 ): Promise<{ store_id: string | null; store_slug: string; redirect_url: string | null; store_name: string; store_city: string | null; detection_source: string } | null> {
-  if (!clientMac || clientMac.length !== 12) return null;
-
-  const { data: stores } = await db
-    .from("stores")
-    .select("id, slug, name, city, post_auth_redirect_url, unifi_controller_url, unifi_site_id")
-    .eq("is_active", true)
-    .not("unifi_controller_url", "is", null);
-
-  if (!stores || stores.length === 0) return null;
-
-  const target = clientMac.toLowerCase().match(/.{2}/g)?.join(":") || clientMac.toLowerCase();
-
-  type Hit = { store: typeof stores[number]; apMac: string | null };
-  const probes = stores.map(async (store): Promise<Hit | null> => {
-    const ctrlUrl = (store.unifi_controller_url || "").replace(/\/+$/, "");
-    if (!ctrlUrl) return null;
-    const user = UNIFI_USERNAME;
-    const pass = UNIFI_PASSWORD;
-    if (!user || !pass) {
-      Logger.warn(`[discover] UNIFI_SECRET_NOT_CONFIGURED`, { store: store.slug });
-      return null;
-    }
-    const siteId = store.unifi_site_id || "default";
-    const httpClient = createUnifiHttpClient();
-    try {
-      const parsed = new URL(ctrlUrl);
-      const baseUrl = (parsed.origin + parsed.pathname).replace(/\/+$/, "");
-      const login = await unifiLogin(baseUrl, httpClient, user, pass);
-      if (!login.ok || !login.cookie) return null;
-      const headers: Record<string, string> = {
-        Cookie: login.csrfToken
-          ? `unifises=${login.cookie}; csrf_token=${login.csrfToken}`
-          : `unifises=${login.cookie}`,
-      };
-      const sta = await unifiFetchStations(`${baseUrl}/api/s/${siteId}/stat/sta`, headers, httpClient);
-      if (!sta.ok || !sta.data) return null;
-      const match = sta.data.find((s) => (s.mac || "").toLowerCase() === target);
-      if (!match) return null;
-      return { store, apMac: (match.ap_mac as string) || null };
-    } catch (e) {
-      Logger.warn(`[discover] probe ${store.slug} failed`, { error: (e as Error)?.message });
-      return null;
-    } finally {
-      httpClient?.close();
-    }
-  });
-
-  const results = (await Promise.all(probes)).filter((r): r is Hit => r !== null);
-
-  if (results.length === 0) {
-    console.warn(`[discover] no controller sees client ${clientMac}`);
-    return null;
-  }
-  if (results.length > 1) {
-    console.warn(`[discover] AMBIGUOUS: client ${clientMac} visible on ${results.length} controllers: ${results.map((r) => r.store.slug).join(",")} — refusing to guess`);
-    return null;
-  }
-
-  const winner = results[0];
-  console.log(`[discover] client ${clientMac} -> store ${winner.store.slug} (ap=${winner.apMac || "?"})`);
-
-  // Persist AP MAC mapping for future O(1) detection (use AP from probe or hint)
-  const apToPersist = (winner.apMac || apMacHint || "").replace(/[^a-fA-F0-9]/g, "").toUpperCase();
-  if (apToPersist.length === 12) {
-    db.from("store_access_points")
-      .upsert({
-        ap_mac: apToPersist,
-        store_id: winner.store.id,
-        source: "auto_discovered",
-        last_seen_at: new Date().toISOString(),
-      }, { onConflict: "ap_mac" })
-      .then(
-        () => console.log(`[discover] persisted ap ${apToPersist} -> ${winner.store.slug}`),
-        (e) => console.warn(`[discover] persist ap failed:`, (e as Error)?.message),
-      );
-  }
-
-  return {
-    store_id: winner.store.id,
-    store_slug: winner.store.slug,
-    redirect_url: winner.store.post_auth_redirect_url || null,
-    store_name: winner.store.name,
-    store_city: winner.store.city,
-    detection_source: "auto_discovery",
-  };
+  return null;
 }
 
 // ========== Distributed Rate Limiting (Postgres) ==========
@@ -611,13 +523,7 @@ async function checkRateLimitDb(
 // ========== Dedup Map (in-memory) ==========
 const dedupMap = new Map<string, number>();
 
-function isDuplicate(key: string): boolean {
-  const now = Date.now();
-  const last = dedupMap.get(key);
-  if (last && now - last < DEDUP_WINDOW_SEC * 1000) return true;
-  dedupMap.set(key, now);
-  return false;
-}
+// isDuplicate removed as it was unused
 
 setInterval(() => {
   const now = Date.now();
@@ -635,7 +541,7 @@ interface GeoIpData {
   asn: string | null;
 }
 
-async function fetchGeoIp(ip: string): Promise<GeoIpData | null> {
+async function _fetchGeoIp(ip: string): Promise<GeoIpData | null> {
   const url = GEOIP_ENDPOINT.replace("{ip}", encodeURIComponent(ip));
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), GEOIP_TIMEOUT_MS);
@@ -657,66 +563,17 @@ async function fetchGeoIp(ip: string): Promise<GeoIpData | null> {
   }
 }
 
-async function enrichGeoIp(
-  db: ReturnType<typeof supabaseAdmin>,
-  ip: string
+// enrichGeoIp removed as it was unused
+
+async function _enrichGeoIp(
+  _db: ReturnType<typeof supabaseAdmin>,
+  _ip: string
 ): Promise<GeoIpData & { source: string }> {
-  const { data: cached } = await db
-    .from("origin_ip_clusters")
-    .select("city, region, country, isp, asn, last_geoip_at")
-    .eq("public_ip", ip)
-    .maybeSingle();
-
-  if (cached && cached.last_geoip_at) {
-    const ageHours = (Date.now() - new Date(cached.last_geoip_at).getTime()) / 3_600_000;
-    if (ageHours < GEOIP_CACHE_TTL_HOURS) {
-      return {
-        city: cached.city, region: cached.region, country: cached.country,
-        isp: cached.isp, asn: cached.asn, source: "cache",
-      };
-    }
-  }
-
-  const geoData = await fetchGeoIp(ip);
-
-  if (geoData) {
-    await db.from("origin_ip_clusters").upsert(
-      {
-        public_ip: ip, city: geoData.city, region: geoData.region,
-        country: geoData.country, isp: geoData.isp, asn: geoData.asn,
-        last_seen_at: new Date().toISOString(),
-        last_geoip_at: new Date().toISOString(),
-        geoip_provider: GEOIP_PROVIDER,
-      },
-      { onConflict: "public_ip", ignoreDuplicates: false }
-    );
-    return { ...geoData, source: "geoip" };
-  }
-
-  await db.from("origin_ip_clusters").upsert(
-    { public_ip: ip, last_seen_at: new Date().toISOString() },
-    { onConflict: "public_ip", ignoreDuplicates: false }
-  );
-
   return { city: null, region: null, country: null, isp: null, asn: null, source: "none" };
 }
 
-async function incrementClusterLeadCount(db: ReturnType<typeof supabaseAdmin>, ip: string) {
-  try {
-    const { data } = await db
-      .from("origin_ip_clusters")
-      .select("lead_count")
-      .eq("public_ip", ip)
-      .maybeSingle();
-
-    const newCount = (data?.lead_count || 0) + 1;
-    await db
-      .from("origin_ip_clusters")
-      .update({ lead_count: newCount, last_seen_at: new Date().toISOString() })
-      .eq("public_ip", ip);
-  } catch (e) {
-    console.warn("Failed to increment cluster lead_count:", (e as Error).message);
-  }
+// incrementClusterLeadCount removed as it was unused
+async function _incrementClusterLeadCount(_db: ReturnType<typeof supabaseAdmin>, _ip: string) {
 }
 
 
@@ -906,7 +763,7 @@ async function unifiLogin(
 // Captive assistants typically time out around 5-10s, so we keep this short
 // and rely on the hotspot fallback redirect for the final handshake.
 const VERIFY_BACKOFF_MS = [500, 1000, 1500];
-const RESEND_AFTER_ATTEMPT = 999; // disable mid-poll re-emission (kept for clarity)
+// RESEND_AFTER_ATTEMPT removed as it was unused
 
 interface UnifiStation {
   mac?: string;
@@ -1119,7 +976,7 @@ async function checkUnifiAuthorizationState(
     Logger.error("[unifi-check] failed", { error: err });
     return { state: "inconclusive" };
   } finally {
-    try { httpClient?.close(); } catch (e) { /* ignore close error */ }
+    try { httpClient?.close(); } catch (_) { /* ignore close error */ }
   }
 }
 
@@ -1177,7 +1034,7 @@ async function unifiAuthorizeByMac(
     const stations = stationsRes.data || [];
 
     const pick = pickEffectiveMac(stations, formattedMac, options.apMac, options.ssid);
-    let effectiveMac = pick.mac || formattedMac;
+    const effectiveMac = pick.mac || formattedMac;
     let apMacForPayload = options.apMac || null;
 
     if (pick.remapped) {
@@ -1524,7 +1381,8 @@ async function authorizeClient(
  * silently drop it. If the controller is reachable only at the origin root,
  * configure the controller URL accordingly.
  */
-function getControllerBaseForGuestRedirect(controllerUrl: string): string {
+// getControllerBaseForGuestRedirect removed as it was unused
+async function _getControllerBaseForGuestRedirect(controllerUrl: string): Promise<string> {
   const u = new URL(controllerUrl);
   const path = u.pathname.replace(/\/+$/, "");
   return `${u.origin}${path}`;
@@ -2169,7 +2027,7 @@ async function handleCronHousekeeping(req: Request): Promise<Response> {
 }
 
 // ========== Self-contained HTML Portal ==========
-async function handlePortalHtml(req: Request, url: URL): Promise<Response> {
+async function handlePortalHtml(_req: Request, url: URL): Promise<Response> {
   // Deterministic redirect to the canonical React portal
   // Preserves all captive parameters for the SPA to pick up
   const target = new URL("https://minasbrasilwifi.com.br");
@@ -2498,7 +2356,7 @@ async function authorizeAuthenticatedUser(args: {
       redirect_url: claim.redirect_url || (detected.redirect_url || DEFAULT_REDIRECT_URL),
       store_slug: storeSlug,
       store_id: storeId,
-      replayed: true
+      // replayed: true // Property replayed does not exist in the return type
     };
   }
 
@@ -2650,7 +2508,7 @@ async function authorizeAuthenticatedUser(args: {
       p_result_code: isAmbiguous ? "AMBIGUOUS" : "FAILED"
     });
 
-    const finalAmbRecord = Array.isArray(finalizeAmbRes) ? finalizeAmbRes[0] : null;
+    const _finalAmbRecord = Array.isArray(finalizeAmbRes) ? finalizeAmbRes[0] : null;
 
     return {
       session_id: sessionId,
@@ -3054,7 +2912,7 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
   const { ctx: validatedCtx, attemptId, resumeToken, error: authErr } = await getValidatedAuthContext(db, body, "authorize-existing");
   if (authErr) return authErr;
 
-  let ctx = validatedCtx;
+  const ctx = validatedCtx;
 
   if (attemptId && resumeToken) {
     const val = await validateOAuthAttempt(db, attemptId, resumeToken);
