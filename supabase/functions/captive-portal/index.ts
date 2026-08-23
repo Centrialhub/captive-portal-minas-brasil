@@ -2508,7 +2508,7 @@ async function authorizeAuthenticatedUser(args: {
       if (check.state === 'authorized') {
         console.log(`[auth] Recovery successful: MAC ${macToCheck} is already authorized in UniFi.`);
         const finalRedirect = detected.redirect_url || DEFAULT_REDIRECT_URL;
-        await db.rpc("finalize_auth_attempt", {
+        const { data: finalizeRes } = await db.rpc("finalize_auth_attempt", {
           p_attempt_id: attemptId,
           p_lease_owner: leaseOwner,
           p_session_id: claim.session_id,
@@ -2517,13 +2517,14 @@ async function authorizeAuthenticatedUser(args: {
           p_fail_reason: null,
           p_result_code: "RECOVERED_ALREADY_AUTHORIZED"
         });
+
+        const isFinalized = Array.isArray(finalizeRes) && finalizeRes[0]?.finalized;
+
         return {
           session_id: claim.session_id,
-          authorized: true,
-          redirect_url: finalRedirect,
-          store_slug: storeSlug,
-          store_id: storeId,
-        };
+          authorized: isFinalized ? (finalizeRes[0]?.authorized ?? false) : false,
+          redirect_url: isFinalized ? (finalizeRes[0]?.redirect_url ?? finalRedirect) : finalRedirect,
+          fail_reason: isFinalized ? undefined : "FINALIZE_RECOVERY_FAILED",
       } else if (check.state === 'not_authorized') {
         console.log(`[auth] Recovery: MAC ${macToCheck} NOT authorized. Releasing for retry.`);
         await db.rpc("release_auth_retry", {
