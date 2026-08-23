@@ -564,23 +564,7 @@ async function _fetchGeoIp(ip: string): Promise<GeoIpData | null> {
 }
 
 // enrichGeoIp removed as it was unused
-  const { data: cached } = await db
-    .from("origin_ip_clusters")
-    .select("city, region, country, isp, asn, last_geoip_at")
-    .eq("public_ip", ip)
-    .maybeSingle();
 
-  if (cached && cached.last_geoip_at) {
-    const ageHours = (Date.now() - new Date(cached.last_geoip_at).getTime()) / 3_600_000;
-    if (ageHours < GEOIP_CACHE_TTL_HOURS) {
-      return {
-        city: cached.city, region: cached.region, country: cached.country,
-        isp: cached.isp, asn: cached.asn, source: "cache",
-      };
-    }
-  }
-
-// enrichGeoIp removed as it was unused
 async function _enrichGeoIp(
   _db: ReturnType<typeof supabaseAdmin>,
   _ip: string
@@ -2372,7 +2356,7 @@ async function authorizeAuthenticatedUser(args: {
       redirect_url: claim.redirect_url || (detected.redirect_url || DEFAULT_REDIRECT_URL),
       store_slug: storeSlug,
       store_id: storeId,
-      replayed: true
+      // replayed: true // Property replayed does not exist in the return type
     };
   }
 
