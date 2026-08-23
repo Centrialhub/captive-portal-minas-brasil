@@ -62,12 +62,12 @@ echo "Dockerfile presence verified."
 
 # 12. nginx -t
 echo "--- [12/17] Verifying Nginx config ---"
-# In local we can't run nginx -t without nginx installed, but we check the config file exists
-if [ ! -f nginx.conf ]; then
-  echo "ERROR: nginx.conf missing"
+# Nginx config is generated inside Dockerfile, so we verify Dockerfile logic
+if ! grep -q "RUN nginx -t" Dockerfile; then
+  echo "ERROR: Dockerfile missing Nginx validation"
   exit 1
 fi
-echo "Nginx config presence verified."
+echo "Nginx config verification logic verified."
 
 # 13. smoke test
 echo "--- [13/17] Running smoke test ---"
