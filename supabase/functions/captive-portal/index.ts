@@ -1159,7 +1159,7 @@ async function unifiAuthorizeByMac(
     const stations = stationsRes.data || [];
 
     const pick = pickEffectiveMac(stations, formattedMac, options.apMac, options.ssid);
-    let effectiveMac = pick.mac || formattedMac;
+    const effectiveMac = pick.mac || formattedMac;
     let apMacForPayload = options.apMac || null;
 
     if (pick.remapped) {
