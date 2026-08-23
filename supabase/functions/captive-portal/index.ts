@@ -1661,9 +1661,6 @@ async function handleAdminSettings(req: Request): Promise<Response> {
     return errorResponse("Settings update disabled", 403);
   }
 
-    return jsonResponse({ ok: true, message: "Configurações atualizadas." });
-  }
-
   return errorResponse("Method not allowed", 405);
 }
 
