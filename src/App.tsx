@@ -743,7 +743,7 @@ export default function App() {
             </div>
 
             <div>
-              <label className="portal-label">WhatsApp / Celular *</label>
+              <label className="portal-label">Celular *</label>
               <input
                 type="tel" value={signupFields.phone}
                 onChange={(e) => setSignupFields(prev => ({ ...prev, phone: formatPhoneBR(e.target.value) }))}
