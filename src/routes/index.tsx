@@ -29,7 +29,7 @@ function Documentation() {
         Prompt 50 — Imutabilidade do Contexto: Eliminada reatribuição de constante ctx via extração segura e retorno determinístico no helper de contexto.
       </div>
       <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg text-blue-800 text-sm">
-        Prompt 48 — Qualidade e Polimento de UI: Refinamento visual de cards, botões e inputs; otimização de estado do formulário de cadastro; e validações robustas centralizadas.
+        Prompt 51 — Typecheck Autoritativo: Integrado deno check ao pipeline de build para garantir a integridade das Edge Functions em tempo de compilação.
       </div>
       <h1 className="text-3xl font-bold mb-6 text-gray-900 border-b pb-2">Captive Portal - Drogaria Minas Brasil</h1>
       <p className="mb-6 text-gray-600">Documentação visual de arquitetura, segurança e integridade do sistema.</p>
