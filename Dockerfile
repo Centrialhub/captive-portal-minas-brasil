@@ -34,7 +34,7 @@ COPY . .
 RUN npm run check
 
 # Stage 2: Production server (Nginx)
-FROM nginx:1.27-alpine@sha256:4ff37a47b85e0513e4b3c0628e378c3a10526017a54a014283c847ec0537fd97
+FROM nginx:1.30.4-alpine@sha256:97d490c12ba55b4946b01546d1c3ed324e8d41ab1c9fcb2a616aa470620e5b46
 
 # Install curl for HEALTHCHECK
 RUN apk add --no-cache curl
@@ -54,6 +54,16 @@ RUN printf 'server {\n\
     index index.html;\n\
     absolute_redirect off;\n\
     port_in_redirect off;\n\
+    server_tokens off;\n\
+\n\
+    # Browser hardening. HSTS is ignored on local HTTP smoke tests and takes\n\
+    # effect only when this response is delivered through the HTTPS ingress.\n\
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;\n\
+    add_header Content-Security-Policy "default-src '\''self'\''; base-uri '\''self'\''; connect-src '\''self'\'' https://fqamejlyytrhovawgtwg.supabase.co; font-src '\''self'\'' data:; form-action '\''self'\''; frame-ancestors '\''none'\''; img-src '\''self'\'' data:; object-src '\''none'\''; script-src '\''self'\''; style-src '\''self'\'' '\''unsafe-inline'\''; upgrade-insecure-requests" always;\n\
+    add_header X-Content-Type-Options "nosniff" always;\n\
+    add_header X-Frame-Options "DENY" always;\n\
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;\n\
+    add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()" always;\n\
 \n\
     # Health: Is Nginx running?\n\
     location = /health {\n\
@@ -74,6 +84,12 @@ RUN printf 'server {\n\
     # Build Info with cache-control: no-store\n\
     location = /build-info.json {\n\
         add_header Cache-Control "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0";\n\
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;\n\
+        add_header Content-Security-Policy "default-src '\''none'\''; frame-ancestors '\''none'\''" always;\n\
+        add_header X-Content-Type-Options "nosniff" always;\n\
+        add_header X-Frame-Options "DENY" always;\n\
+        add_header Referrer-Policy "no-referrer" always;\n\
+        add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()" always;\n\
     }\n\
 \n\
     # Proxy for Supabase Edge Functions\n\

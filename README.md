@@ -23,13 +23,25 @@ de produção. O único lockfile aceito é `package-lock.json`.
 As migrations são forward-only. Antes de publicar, aplique a migration mais
 recente em homologação e execute o teste de concorrência com um usuário, MAC e
 tentativa exclusivos do ambiente de teste. A migration
-`20260824170000_captive_auth_invariants.sql` consolida:
+`20260824200345_captive_auth_invariants.sql` consolida:
 
 - estados válidos da tentativa, incluindo `authorizing`;
 - validação do hash do `resume_token`;
 - ownership da lease, replay e recuperação;
 - tentativas/sessões 1:1;
 - execução segura de `has_role` nas policies RLS.
+
+A migration `20260824200934_consolidate_read_policies.sql` combina as regras
+de proprietário e administrador, evitando avaliações RLS duplicadas sem expor
+sessões anônimas a usuários autenticados.
+
+As migrations `20260824211705_admin_configuration_contract.sql` e
+`20260824215556_admin_operations_and_user_controls.sql` completam o contrato
+operacional do painel: configuração de duração, datas de aquisição dos leads,
+bloqueio imediato de usuários, estados de supressão/anônimização para marketing
+e índices para auditoria. `user_blocks` não possui acesso direto pelo browser;
+somente a Edge Function com `service_role` administra esses registros após
+revalidar o JWT e o papel `admin`.
 
 ## Gate de release
 
@@ -43,6 +55,8 @@ variáveis abaixo:
 - `CONCURRENCY_TEST_PAYLOAD`
 - `SUPABASE_URL`
 - `SUPABASE_SERVICE_ROLE_KEY`
+- `SUPABASE_LEAKED_PASSWORD_PROTECTION_ENABLED=true`
+- `UNIFI_CREDENTIALS_ROTATED=true`
 
 O payload de concorrência deve ser JSON para
 `/api/captive-portal/?route=%2Fauthorize-existing` e conter
@@ -55,8 +69,40 @@ O payload de concorrência deve ser JSON para
 19 respostas processing ou replay
 ```
 
-Depois ele constrói a imagem com o SHA informado, executa `nginx -t` durante
-o build e testa `/health`, `/ready`, a SPA e `/build-info.json`.
+O gate também exige um checkout Git limpo e que `COMMIT_SHA` corresponda
+exatamente ao `HEAD`. Depois ele constrói a imagem com o SHA informado, executa
+`nginx -t` durante o build e testa `/health`, `/ready`, a SPA,
+`/build-info.json` e os headers de segurança.
+
+Antes de definir `SUPABASE_LEAKED_PASSWORD_PROTECTION_ENABLED=true`, habilite
+Auth → Attack Protection → Leaked Password Protection no Dashboard e confirme
+que o advisor de segurança deixou de emitir esse aviso.
+
+A migration `20260824211347_production_release_contract.sql` publica um
+marcador consultável somente pela `service_role`. O teste de concorrência
+valida esse marcador antes de consumir a tentativa, comprovando que a cadeia
+forward-only de migrations chegou à versão exigida.
+
+## Verificação após o deploy
+
+Depois de publicar a imagem aprovada, execute:
+
+```bash
+EXPECTED_COMMIT_SHA=<sha-completo-exato> npm run verify:production
+```
+
+O comando reprova a publicação se o SHA servido não for o esperado, se
+`/ready` ou `/build-info.json` caírem no fallback da SPA, se os headers de
+segurança estiverem ausentes, se a Edge Function/bootstrap falharem ou se o
+TLS/health do proxy UniFi não estiver válido. Uma release só está aprovada
+quando `release:gate` e `verify:production` passam nessa ordem.
+
+## Proxy UniFi
+
+O container separado para a VPS está em `unifi-proxy/Dockerfile`. Ele preserva
+o conjunto completo de cookies, executa sem privilégios e carrega as rotas por
+um arquivo somente leitura mantido pela aplicação externa. As instruções de
+build, execução e integração TLS estão em `unifi-proxy/README.md`.
 
 ## Configuração externa obrigatória
 
@@ -64,6 +110,11 @@ Cadastre exatamente `https://minasbrasilwifi.com.br/oauth/callback` em
 Supabase Authentication → URL Configuration → Redirect URLs. Credenciais
 UniFi, service role, CRM e cron pertencem apenas aos secrets do runtime da Edge
 Function; nunca ao frontend ou à imagem final.
+
+No ingress HTTPS do portal, preserve os headers emitidos pelo container e não
+reescreva `/ready` nem `/build-info.json` para `index.html`. O ingress UniFi
+deve usar o virtual host e o certificado do hostname exato, conforme
+`unifi-proxy/ingress/nginx.conf.example`.
 
 O histórico recebido continha uma credencial UniFi em texto puro numa migration
 antiga. O literal foi removido do repositório, mas a senha correspondente deve
