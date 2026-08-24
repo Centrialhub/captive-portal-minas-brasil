@@ -7,5 +7,5 @@ export default function IndexRoute() {
     // The main entry point is defined in main.tsx.
   }, []);
 
-  return <App />;
+  return <> <App /></>;
 }
