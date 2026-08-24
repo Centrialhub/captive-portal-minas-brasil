@@ -23,6 +23,7 @@ RUN if ! echo "$VITE_SUPABASE_URL" | grep -q "^https://"; then \
 ENV VITE_SUPABASE_URL=$VITE_SUPABASE_URL
 ENV VITE_SUPABASE_PUBLISHABLE_KEY=$VITE_SUPABASE_PUBLISHABLE_KEY
 ENV COMMIT_SHA=$COMMIT_SHA
+ENV DENO_DIR=/tmp/deno-cache
 
 COPY package*.json ./
 RUN npm ci
@@ -31,7 +32,6 @@ COPY . .
 
 # Run validation and build
 RUN npm run check
-RUN npm run build
 
 # Stage 2: Production server (Nginx)
 FROM nginx:1.27-alpine@sha256:4ff37a47b85e0513e4b3c0628e378c3a10526017a54a014283c847ec0537fd97
@@ -62,18 +62,12 @@ RUN printf 'server {\n\
         return 200 "ok";\n\
     }\n\
 \n\
-    # Readiness: Comprehensive check for real bundle integrity\n\
+    # Readiness: verify immutable build artifacts copied into this image.\n\
     location = /ready {\n\
         access_log off;\n\
         default_type text/plain;\n\
-        # 1. Check index.html\n\
         if (!-f $document_root/index.html) { return 503 "missing-index"; }\n\
-        # 2. Check build-info.json\n\
         if (!-f $document_root/build-info.json) { return 503 "missing-build-info"; }\n\
-        # 3. Assets JS/CSS presence check (ensures build succeeded and assets exist)\n\
-        # We use a pattern match to verify at least one hashed asset exists in /assets/\n\
-        # Note: Nginx if does not support complex shell-like wildcard checks easily,\n\
-        # so we rely on build-info.json as the authoritative source that build finished.\n\
         return 200 "ready";\n\
     }\n\
 \n\
@@ -97,10 +91,13 @@ RUN printf 'server {\n\
         proxy_read_timeout 60s;\n\
         proxy_buffering off;\n\
         client_max_body_size 1m;\n\
-        add_header Access-Control-Allow-Origin "*" always;\n\
-        add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;\n\
-        add_header Access-Control-Allow-Headers "authorization, x-client-info, apikey, content-type" always;\n\
         if ($request_method = OPTIONS) { return 204; }\n\
+    }\n\
+\n\
+    # Preserve UniFi parameters while moving legacy guest paths to the\n\
+    # canonical HTTPS origin. TLS termination remains outside this container.\n\
+    location ~ ^/guest/s/ {\n\
+        return 302 https://minasbrasilwifi.com.br/$is_args$args;\n\
     }\n\
 \n\
     # CNA Probes\n\
