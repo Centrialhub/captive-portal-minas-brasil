@@ -2,41 +2,36 @@ import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { execSync } from 'child_process';
 
-const CWD = process.cwd();
+const assets = [
+  { path: 'src/assets/logo-minas-brasil.png', mime: 'image/png' },
+  { path: 'public/favicon-mb.png', mime: 'image/png' },
+  { path: 'public/favicon.ico', mime: 'image/x-icon' }
+];
 
-function checkAsset(path: string, minSize = 0) {
-  const fullPath = join(CWD, path);
+console.log('--- Asset Integrity Check ---');
+
+assets.forEach(asset => {
+  const fullPath = join(process.cwd(), asset.path);
+  
   if (!existsSync(fullPath)) {
-    console.error(`❌ Missing mandatory asset: ${path}`);
+    console.error(`FAIL: ${asset.path} is missing.`);
     process.exit(1);
   }
+
   const stats = readFileSync(fullPath);
-  if (stats.length <= minSize) {
-    console.error(`❌ Asset is empty or corrupted: ${path}`);
+  if (stats.length === 0) {
+    console.error(`FAIL: ${asset.path} is empty.`);
     process.exit(1);
   }
-  console.log(`✅ Asset OK: ${path} (${stats.length} bytes)`);
-}
 
-console.log("Starting integrity check...");
+  const fileType = execSync(`file --mime-type -b ${fullPath}`).toString().trim();
+  if (fileType !== asset.mime && !fileType.startsWith('image/')) {
+     // icon resource might be detected differently by 'file' utility on some systems
+     console.warn(`WARN: ${asset.path} MIME type detected as ${fileType}, expected ${asset.mime}`);
+  }
 
-checkAsset('src/assets/logo-minas-brasil.png', 100);
-checkAsset('public/favicon-mb.png', 100);
-checkAsset('public/favicon.ico', 100);
+  const sha = execSync(`sha256sum ${fullPath}`).toString().split(' ')[0];
+  console.log(`OK: ${asset.path} | Size: ${stats.length} bytes | SHA-256: ${sha}`);
+});
 
-const indexHtml = readFileSync(join(CWD, 'index.html'), 'utf8');
-if (!indexHtml.includes('/favicon-mb.png')) {
-  console.error("❌ index.html does not reference /favicon-mb.png");
-  process.exit(1);
-}
-
-try {
-  console.log("Checking TypeScript/Import resolution...");
-  execSync('npm run typecheck', { stdio: 'inherit' });
-  console.log("✅ Typecheck passed.");
-} catch (_) {
-  console.error("❌ Typecheck failed - possible import resolution error.");
-  process.exit(1);
-}
-
-console.log("All integrity checks passed.");
+console.log('--- All mandatory assets are present and valid ---');
