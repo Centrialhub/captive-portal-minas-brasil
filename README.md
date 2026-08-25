@@ -88,19 +88,24 @@ forward-only de migrations chegou à versão exigida.
 Depois de publicar a imagem aprovada, execute:
 
 ```bash
+PRODUCTION_UNIFI_STORES=matriz npm run verify:unifi-proxy
 EXPECTED_COMMIT_SHA=<sha-completo-exato> npm run verify:production
 ```
 
-O comando reprova a publicação se o SHA servido não for o esperado, se
+Antes de migrar todas as lojas, execute `npm run verify:unifi-proxy` sem limitar
+`PRODUCTION_UNIFI_STORES`; isso valida as 12 rotas cadastradas. O comando de
+produção reprova a publicação se o SHA servido não for o esperado, se
 `/ready` ou `/build-info.json` caírem no fallback da SPA, se os headers de
-segurança estiverem ausentes, se a Edge Function/bootstrap falharem ou se o
-TLS/health do proxy UniFi não estiver válido. Uma release só está aprovada
+segurança estiverem ausentes, se o bundle Google OAuth for antigo, se a Edge
+Function/bootstrap falharem ou se o TLS/health do proxy UniFi não estiver
+válido. Uma release só está aprovada
 quando `release:gate` e `verify:production` passam nessa ordem.
 
 ## Proxy UniFi
 
 O container separado para a VPS está em `unifi-proxy/Dockerfile`. Ele preserva
-o conjunto completo de cookies, executa sem privilégios e carrega as rotas por
+o conjunto completo de cookies, usa master Nginx padrão com workers sem
+privilégios e carrega as rotas por
 um arquivo somente leitura mantido pela aplicação externa. As instruções de
 build, execução e integração TLS estão em `unifi-proxy/README.md`.
 
@@ -116,12 +121,14 @@ reescreva `/ready` nem `/build-info.json` para `index.html`. O ingress UniFi
 deve usar o virtual host e o certificado do hostname exato, conforme
 `unifi-proxy/ingress/nginx.conf.example`.
 
-O endpoint persistido para a loja `matriz` deve ser
-`https://unifiproxy.minasbrasilwifi.com.br/matriz`. Esse hostname termina TLS
-no EasyPanel da VPS do portal e encaminha, pelo container `unifi-proxy`, para o
-gateway legado fixo `http://177.85.235.28:8083/matriz/`. A migration
-`20260825170953_route_unifi_through_local_proxy.sql` substitui os endpoints
-legados pelo proxy HTTPS; URLs armazenadas continuam obrigadas a usar HTTPS.
+Os endpoints persistidos devem seguir
+`https://unifiproxy.minasbrasilwifi.com.br/<slug-da-loja>`. Esse hostname
+termina TLS no EasyPanel da VPS do portal e encaminha, pelo container
+`unifi-proxy`, para o gateway legado fixo `http://177.85.235.28:8083`.
+As migrations `20260825170953_route_unifi_through_local_proxy.sql` e
+`20260825200944_route_all_unifi_stores_through_tls_proxy.sql` fazem a transição
+em duas etapas; URLs armazenadas continuam obrigadas a usar HTTPS. Consulte
+`DEPLOY.md` para a ordem segura da publicação.
 
 O histórico recebido continha uma credencial UniFi em texto puro numa migration
 antiga. O literal foi removido do repositório, mas a senha correspondente deve

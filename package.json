@@ -20,7 +20,8 @@
     "check:security": "node scripts/check-security.ts",
     "check": "npm run check:assets && npm run check:claims && npm run check:migrations && npm run check:security && npm run lint && npm run typecheck && npm run typecheck:edge && npm run test && npm run build",
     "release:gate": "bash scripts/release-gate.sh",
-    "verify:production": "node scripts/verify-production.mjs"
+    "verify:production": "node scripts/verify-production.mjs",
+    "verify:unifi-proxy": "node scripts/verify-unifi-proxy.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.99.0",
