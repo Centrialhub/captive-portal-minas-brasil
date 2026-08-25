@@ -116,6 +116,13 @@ reescreva `/ready` nem `/build-info.json` para `index.html`. O ingress UniFi
 deve usar o virtual host e o certificado do hostname exato, conforme
 `unifi-proxy/ingress/nginx.conf.example`.
 
+O endpoint persistido para a loja `matriz` deve ser
+`https://unifiproxy.minasbrasilwifi.com.br/matriz`. Esse hostname termina TLS
+no EasyPanel da VPS do portal e encaminha, pelo container `unifi-proxy`, para o
+gateway legado fixo `http://177.85.235.28:8083/matriz/`. A migration
+`20260825170953_route_unifi_through_local_proxy.sql` substitui os endpoints
+legados pelo proxy HTTPS; URLs armazenadas continuam obrigadas a usar HTTPS.
+
 O histórico recebido continha uma credencial UniFi em texto puro numa migration
 antiga. O literal foi removido do repositório, mas a senha correspondente deve
 ser considerada comprometida e rotacionada na controladora e nos secrets do
