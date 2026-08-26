@@ -11,6 +11,13 @@ FROM denoland/deno:bin-2.9.5@sha256:0d1262facd139e815217c001945eb822c7a78584cf66
 FROM node:24-bookworm-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df AS build
 WORKDIR /app
 
+# Backward compatibility for repository revisions whose asset validator still
+# calls `file --mime-type`. The current validator is self-contained, but this
+# keeps partially uploaded GitHub commits deployable as well.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends file \
+    && rm -rf /var/lib/apt/lists/*
+
 # The official bin image is the supported way to add Deno to another base.
 COPY --from=deno /deno /usr/local/bin/deno
 RUN deno --version
@@ -64,7 +71,7 @@ ARG GIT_SHA
 ARG COMMIT_SHA
 LABEL org.opencontainers.image.revision=$GIT_SHA
 LABEL io.easypanel.git-sha=$GIT_SHA
-LABEL org.opencontainers.image.source="https://github.com/drogariaminasbrasil/captive-portal"
+LABEL org.opencontainers.image.source="https://github.com/Centrialhub/captive-portal-minas-brasil"
 
 COPY --from=build /app/dist /usr/share/nginx/html
 
