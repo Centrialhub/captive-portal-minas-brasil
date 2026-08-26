@@ -50,7 +50,12 @@ valores configurados no EasyPanel:
 
 - `VITE_SUPABASE_URL=https://fqamejlyytrhovawgtwg.supabase.co`
 - `VITE_SUPABASE_PUBLISHABLE_KEY=<chave publicável atual>`
-- `COMMIT_SHA=<SHA completo da versão publicada>`
+- `GIT_SHA=<SHA completo da versão publicada>` — o EasyPanel injeta este
+  argumento automaticamente quando a origem é Git/GitHub. Em deploy por
+  upload, defina-o manualmente com 40 ou 64 caracteres hexadecimais.
+
+O `Dockerfile` também aceita `COMMIT_SHA` para builds manuais e para o gate de
+release local.
 
 Destino do domínio `minasbrasilwifi.com.br`: protocolo `HTTP`, porta interna
 `80`, caminho `/`, HTTPS/Let's Encrypt habilitado.

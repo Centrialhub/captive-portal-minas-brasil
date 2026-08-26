@@ -1,6 +1,7 @@
 # Build arguments (required for frontend compilation)
 ARG VITE_SUPABASE_URL
 ARG VITE_SUPABASE_PUBLISHABLE_KEY
+ARG GIT_SHA
 ARG COMMIT_SHA
 
 # Stage 1: Build frontend
@@ -10,11 +11,13 @@ WORKDIR /app
 # Re-declare ARGs to make them available to Vite/Node
 ARG VITE_SUPABASE_URL
 ARG VITE_SUPABASE_PUBLISHABLE_KEY
+ARG GIT_SHA
 ARG COMMIT_SHA
 
 # Fail before build if required variables are missing or invalid
-RUN if [ -z "$VITE_SUPABASE_URL" ] || [ -z "$VITE_SUPABASE_PUBLISHABLE_KEY" ] || [ -z "$COMMIT_SHA" ] || [ "$COMMIT_SHA" = "unknown" ]; then \
-      echo "ERROR: VITE_SUPABASE_URL, VITE_SUPABASE_PUBLISHABLE_KEY and COMMIT_SHA (non-placeholder) are required" && exit 1; \
+RUN resolved_sha="${COMMIT_SHA:-$GIT_SHA}"; \
+    if [ -z "$VITE_SUPABASE_URL" ] || [ -z "$VITE_SUPABASE_PUBLISHABLE_KEY" ] || [ -z "$resolved_sha" ] || [ "$resolved_sha" = "unknown" ]; then \
+      echo "ERROR: VITE_SUPABASE_URL, VITE_SUPABASE_PUBLISHABLE_KEY and COMMIT_SHA or GIT_SHA (non-placeholder) are required" && exit 1; \
     fi
 RUN if ! echo "$VITE_SUPABASE_URL" | grep -q "^https://"; then \
       echo "ERROR: VITE_SUPABASE_URL must use HTTPS" && exit 1; \
@@ -23,6 +26,7 @@ RUN if ! echo "$VITE_SUPABASE_URL" | grep -q "^https://"; then \
 ENV VITE_SUPABASE_URL=$VITE_SUPABASE_URL
 ENV VITE_SUPABASE_PUBLISHABLE_KEY=$VITE_SUPABASE_PUBLISHABLE_KEY
 ENV COMMIT_SHA=$COMMIT_SHA
+ENV GIT_SHA=$GIT_SHA
 ENV DENO_DIR=/tmp/deno-cache
 
 COPY package*.json ./
@@ -40,8 +44,10 @@ FROM nginx:1.30.4-alpine@sha256:97d490c12ba55b4946b01546d1c3ed324e8d41ab1c9fcb2a
 RUN apk add --no-cache curl
 
 # Re-declare COMMIT_SHA for labels
+ARG GIT_SHA
 ARG COMMIT_SHA
 LABEL org.opencontainers.image.revision=$COMMIT_SHA
+LABEL io.easypanel.git-sha=$GIT_SHA
 LABEL org.opencontainers.image.source="https://github.com/drogariaminasbrasil/captive-portal"
 
 COPY --from=build /app/dist /usr/share/nginx/html
