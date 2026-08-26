@@ -1,0 +1,15 @@
+# Temporary HTTP-only virtual host used solely to issue the first certificate.
+# Replace it with nginx.conf.example immediately after Certbot succeeds.
+server {
+    listen 80;
+    listen [::]:80;
+    server_name unifiproxy.minasbrasilwifi.com.br;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        return 404;
+    }
+}

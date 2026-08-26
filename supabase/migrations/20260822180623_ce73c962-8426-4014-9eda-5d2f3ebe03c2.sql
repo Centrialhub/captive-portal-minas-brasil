@@ -1,4 +1,4 @@
--- PROMPT 08: Enforce server-authoritative CPF gate
+-- Enforce a server-authoritative CPF gate.
 
 -- Ensure profiles table exists with needed structure
 DO $$ 

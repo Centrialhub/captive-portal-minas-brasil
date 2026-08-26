@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "../integrations/supabase/client";
 import { OAuthTracker } from "../lib/oauth-tracker";
-import { api } from "../lib/api";
+import { api, ApiError } from "../lib/api";
 import { Session } from "@supabase/supabase-js";
+import { getAuthFailureMessage, isRecoverableAuthResult } from "../lib/auth-outcome";
 
 export type OAuthCallbackStatus = "idle" | "waiting" | "processing" | "needs_cpf" | "authorized" | "error" | "expired";
 
@@ -71,16 +72,23 @@ export function useOAuthCallback({ onSuccess, onError, onNeedsCpf, enabled }: Us
             return result;
           }
 
+          const recoverable = isRecoverableAuthResult(result);
           terminalReachedRef.current = true;
           setStatus("error");
-          onError(result?.fail_reason || "Não foi possível liberar o acesso.");
+          if (!recoverable) OAuthTracker.clearAll();
+          onError(getAuthFailureMessage(result));
           return result;
-        } catch (err: any) {
+        } catch (error) {
           if (isCancelled) return;
           terminalReachedRef.current = true;
           setStatus("error");
-          onError("Erro ao processar liberação. Tente novamente.");
-          throw err;
+          if (error instanceof ApiError && error.kind === "http" && [400, 401, 403].includes(error.status || 0)) {
+            OAuthTracker.clearAll();
+            onError(error.message);
+            return undefined;
+          }
+          onError(getAuthFailureMessage({ processing: true }));
+          return undefined;
         } finally {
           processingRef.current = null;
         }

@@ -1,4 +1,4 @@
--- PROMPT 05: Segurança Avançada
+-- Restrict execution of security-definer functions.
 -- 1. Restringir execução de funções SECURITY DEFINER
 REVOKE EXECUTE ON FUNCTION public.has_role(uuid, app_role) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION public.has_role(uuid, app_role) FROM anon;

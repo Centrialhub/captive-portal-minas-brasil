@@ -1,27 +1,40 @@
 -- Invariante de Banco de Dados: Garantir que cada tentativa de autenticação gere no máximo uma sessão captive.
 
--- 1. Preflight: Identificar e limpar duplicatas que violam a regra de negócio.
-DO $$
-DECLARE
-    dups_count INTEGER;
-BEGIN
-    SELECT count(*) INTO dups_count
-    FROM (
-        SELECT attempt_id 
-        FROM public.captive_sessions 
-        WHERE attempt_id IS NOT NULL 
-        GROUP BY attempt_id 
-        HAVING count(*) > 1
-    ) s;
+-- 1. Preflight: preserve historical rows and detach duplicate associations.
+-- Prefer the session already referenced by the attempt. Otherwise keep the
+-- newest session, with id as a deterministic tie-breaker. Deleting sessions
+-- here would discard audit history and can fail when another table references
+-- the row.
+CREATE TEMP TABLE captive_attempt_session_winners ON COMMIT DROP AS
+SELECT attempt_id, id AS session_id
+FROM (
+    SELECT
+        s.attempt_id,
+        s.id,
+        row_number() OVER (
+            PARTITION BY s.attempt_id
+            ORDER BY
+                (a.captive_session_id = s.id) DESC,
+                s.started_at DESC,
+                s.id DESC
+        ) AS position
+    FROM public.captive_sessions AS s
+    LEFT JOIN public.captive_auth_attempts AS a ON a.id = s.attempt_id
+    WHERE s.attempt_id IS NOT NULL
+) ranked
+WHERE position = 1;
 
-    IF dups_count > 0 THEN
-        DELETE FROM public.captive_sessions a
-        USING public.captive_sessions b
-        WHERE a.attempt_id = b.attempt_id 
-          AND a.created_at < b.created_at
-          AND a.attempt_id IS NOT NULL;
-    END IF;
-END $$;
+UPDATE public.captive_auth_attempts AS a
+SET captive_session_id = w.session_id
+FROM captive_attempt_session_winners AS w
+WHERE a.id = w.attempt_id
+  AND a.captive_session_id IS DISTINCT FROM w.session_id;
+
+UPDATE public.captive_sessions AS s
+SET attempt_id = NULL
+FROM captive_attempt_session_winners AS w
+WHERE s.attempt_id = w.attempt_id
+  AND s.id <> w.session_id;
 
 -- 2. Aplicar Invariante: Unique Constraint Parcial
 DROP INDEX IF EXISTS idx_captive_sessions_attempt_id_unique;

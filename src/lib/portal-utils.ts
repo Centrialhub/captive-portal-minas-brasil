@@ -5,10 +5,23 @@
 /**
  * Public HTTPS base URL for the captive portal.
  *
- * The controllers now serve valid public certificates, so we can safely stay
- * on HTTPS end-to-end. HTTPS is also required for Google/Apple OAuth.
+ * The public portal and the dedicated controller proxy serve certificates for
+ * their exact hostnames, so browser-facing traffic stays on HTTPS end-to-end.
+ * HTTPS is also required for Google/Apple OAuth.
  */
 export const PUBLIC_CAPTIVE_BASE_URL = "https://minasbrasilwifi.com.br";
+
+const VALID_BR_DDD = new Set([
+  11, 12, 13, 14, 15, 16, 17, 18, 19,
+  21, 22, 24, 27, 28,
+  31, 32, 33, 34, 35, 37, 38,
+  41, 42, 43, 44, 45, 46, 47, 48, 49,
+  51, 53, 54, 55,
+  61, 62, 63, 64, 65, 66, 67, 68, 69,
+  71, 73, 74, 75, 77, 79,
+  81, 82, 83, 84, 85, 86, 87, 88, 89,
+  91, 92, 93, 94, 95, 96, 97, 98, 99,
+]);
 
 
 
@@ -71,6 +84,7 @@ export function isSafeRedirect(url: string): boolean {
       "31.97.170.23",
       "187.77.48.59",
       "rwificontroller",
+      "unifiproxy",
     ];
     if (blockedHosts.some(bh => h.includes(bh))) return false;
     
@@ -227,8 +241,14 @@ export const Validators = {
   },
   
   phone(phone: string): boolean {
-    const digits = (phone || "").replace(/\D/g, "");
-    return digits.length === 10 || digits.length === 11;
+    let digits = (phone || "").replace(/\D/g, "");
+    if (digits.startsWith("55") && (digits.length === 12 || digits.length === 13)) {
+      digits = digits.slice(2);
+    }
+    if (digits.length !== 10 && digits.length !== 11) return false;
+    if (!VALID_BR_DDD.has(Number(digits.slice(0, 2)))) return false;
+    if (digits.length === 11) return digits[2] === "9";
+    return /^[2-5]/.test(digits[2]);
   },
 
   /**

@@ -418,6 +418,7 @@ export type Database = {
       }
       leads: {
         Row: {
+          anonymized_at: string | null
           client_mac: string | null
           consent_text_hash: string | null
           consent_version: string
@@ -425,8 +426,14 @@ export type Database = {
           cpf: string | null
           created_at: string
           email: string | null
+          first_seen_at: string
           id: string
+          last_seen_at: string
           last_seen_store_id: string | null
+          marketing_status: string
+          marketing_status_reason: string | null
+          marketing_updated_at: string
+          marketing_updated_by: string | null
           name: string
           origin_asn: string | null
           origin_city: string | null
@@ -443,6 +450,7 @@ export type Database = {
           user_id: string | null
         }
         Insert: {
+          anonymized_at?: string | null
           client_mac?: string | null
           consent_text_hash?: string | null
           consent_version: string
@@ -450,8 +458,14 @@ export type Database = {
           cpf?: string | null
           created_at?: string
           email?: string | null
+          first_seen_at?: string
           id?: string
+          last_seen_at?: string
           last_seen_store_id?: string | null
+          marketing_status?: string
+          marketing_status_reason?: string | null
+          marketing_updated_at?: string
+          marketing_updated_by?: string | null
           name: string
           origin_asn?: string | null
           origin_city?: string | null
@@ -468,6 +482,7 @@ export type Database = {
           user_id?: string | null
         }
         Update: {
+          anonymized_at?: string | null
           client_mac?: string | null
           consent_text_hash?: string | null
           consent_version?: string
@@ -475,8 +490,14 @@ export type Database = {
           cpf?: string | null
           created_at?: string
           email?: string | null
+          first_seen_at?: string
           id?: string
+          last_seen_at?: string
           last_seen_store_id?: string | null
+          marketing_status?: string
+          marketing_status_reason?: string | null
+          marketing_updated_at?: string
+          marketing_updated_by?: string | null
           name?: string
           origin_asn?: string | null
           origin_city?: string | null
@@ -809,6 +830,33 @@ export type Database = {
           unifi_controller_url?: string | null
           unifi_site_id?: string | null
           updated_at?: string
+        }
+        Relationships: []
+      }
+      user_blocks: {
+        Row: {
+          blocked_at: string
+          blocked_by: string | null
+          expires_at: string | null
+          reason: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          blocked_at?: string
+          blocked_by?: string | null
+          expires_at?: string | null
+          reason: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          blocked_at?: string
+          blocked_by?: string | null
+          expires_at?: string | null
+          reason?: string
+          updated_at?: string
+          user_id?: string
         }
         Relationships: []
       }

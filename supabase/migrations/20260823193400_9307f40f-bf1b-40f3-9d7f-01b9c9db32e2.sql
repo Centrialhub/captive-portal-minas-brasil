@@ -14,7 +14,7 @@ RETURNS TABLE (
 )
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
     v_attempt RECORD;
@@ -31,8 +31,9 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 3. Validar resume_token se fornecido (Capability Pair)
-    IF p_resume_token IS NOT NULL AND v_attempt.resume_token <> p_resume_token THEN
+    -- 3. Validate the capability against the stored SHA-256 hash.
+    IF p_resume_token IS NULL OR p_resume_token = '' OR
+       v_attempt.resume_token_hash IS DISTINCT FROM encode(digest(p_resume_token, 'sha256'), 'hex') THEN
         RETURN QUERY SELECT 'failed'::TEXT, NULL::UUID, NULL::TEXT, 'INVALID_RESUME_TOKEN'::TEXT, FALSE;
         RETURN;
     END IF;

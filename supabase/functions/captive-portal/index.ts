@@ -1,6 +1,12 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.4";
-import { encode } from "https://deno.land/std@0.177.0/encoding/hex.ts";
 import { crypto } from "https://deno.land/std@0.177.0/crypto/mod.ts";
+import {
+  extractCsrfFromToken,
+  isLikelyExpiredSessionResponse,
+  mergeResponseCookies,
+  serializeCookieJar,
+  type UnifiCookieJar,
+} from "../_shared/unifi-cookie.ts";
 
 
 // ========== Constants ==========
@@ -9,6 +15,7 @@ const corsHeaders = {
   "Access-Control-Allow-Headers":
     "authorization, x-client-info, apikey, content-type, x-trace-id, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
   "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+  "Access-Control-Expose-Headers": "Content-Disposition, X-Export-Limit, X-Export-Count",
 };
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -18,6 +25,10 @@ const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") || Deno.env.get("SUP
 const DEFAULT_REDIRECT_URL = Deno.env.get("POST_AUTH_REDIRECT_URL") || "https://www.drogariaminasbrasil.com.br/";
 const UNIFI_TIMEOUT_MS = 10_000;
 const UNIFI_RETRY_COUNT = 1;
+const unifiAuthModeValue = (Deno.env.get("UNIFI_AUTH_MODE") || "legacy").toLowerCase();
+const UNIFI_AUTH_MODE = unifiAuthModeValue === "auto" || unifiAuthModeValue === "unifi-os"
+  ? unifiAuthModeValue
+  : "legacy";
 const MAC_REGEX = /^[0-9A-F]{12}$/;
 const MAX_NAME_LEN = 200;
 const MAX_EMAIL_LEN = 255;
@@ -42,7 +53,7 @@ const GEOIP_TIMEOUT_MS = parseInt(Deno.env.get("GEOIP_TIMEOUT_MS") || "1500");
 const _GEOIP_CACHE_TTL_HOURS = parseInt(Deno.env.get("GEOIP_CACHE_TTL_HOURS") || "168");
 const _GEOIP_PROVIDER = Deno.env.get("GEOIP_PROVIDER") || "ipapi";
 
-// OTP subsystem removed (Prompt 08)
+// Legacy OTP subsystem removed.
 
 
 // Cron secret for scheduled housekeeping
@@ -53,14 +64,18 @@ const CLUBEMAIS_API_URL = "https://painelzoombox.drogariaminasbrasil.com.br:510/
 const CLUBEMAIS_API_TOKEN = Deno.env.get("CLUBEMAIS_API_TOKEN") || "";
 
 
-/** Structured logger with allowlist (Prompt 22) */
+/** Structured logger with redaction for common secret-bearing fields. */
 const Logger = {
   redact(s: string): string {
     return s
       .replace(/([Cc]ookie|[Ss]et-[Cc]ookie|[Aa]uthorization):\s*[^\r\n,;]+/gi, "$1: [REDACTED]")
       .replace(/(password|token|secret|resume_token|access_token|refresh_token|csrf_token)=[^&\r\n,;\s]+/gi, "$1=[REDACTED]")
       .replace(/"(password|token|secret|resume_token|access_token|refresh_token|csrf_token)":\s*"[^"]+"/gi, "\"$1\": \"[REDACTED]\"")
-      .replace(/Bearer\s+[a-zA-Z0-9\-\._~\+/]+=*/gi, "Bearer [REDACTED]");
+      .replace(/Bearer\s+[a-zA-Z0-9\-\._~\+/]+=*/gi, "Bearer [REDACTED]")
+      .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[REDACTED_EMAIL]")
+      .replace(/\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b/g, "[REDACTED_CPF]")
+      .replace(/\b(?:[0-9A-F]{2}[:-]){5}[0-9A-F]{2}\b|\b[0-9A-F]{12}\b/gi, "[REDACTED_MAC]")
+      .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, "[REDACTED_IP]");
   },
   info(msg: string, meta?: any) {
     const payload = meta ? ` | ${JSON.stringify(meta)}` : "";
@@ -96,6 +111,11 @@ function jsonResponse(data: unknown, status = 200) {
 
 function errorResponse(message: string, status = 400) {
   return jsonResponse({ error: message }, status);
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 // ========== Sanitization & Validation ==========
@@ -171,9 +191,7 @@ const Validators = {
 };
 
 
-/** Normaliza telefone para E.164 brasileiro (ex: 5531999999999) */
-/** Normaliza telefone para E.164 brasileiro (ex: 5531999999999) */
-// toE164BR was removed as it was unused (Prompt 24 removed WhatsApp residues)
+// Phone normalization is performed at validation boundaries.
 
 /**
  * Sync lead with external CRM API (ClubeMais).
@@ -187,7 +205,7 @@ async function syncWithClubeMais(lead: {
   store_id?: string | null;
 }, db: any, traceId?: string | null): Promise<{ ok: boolean; message?: string; error?: string; sync_status?: number }> {
   if (!CLUBEMAIS_API_TOKEN) {
-    console.warn("[clubemais] Sync skipped: CLUBEMAIS_API_TOKEN not set");
+    Logger.warn("[clubemais] sync skipped: token not configured");
     return { ok: false, error: "TOKEN_MISSING" };
   }
 
@@ -222,19 +240,19 @@ async function syncWithClubeMais(lead: {
     });
 
     const status = res.status;
-    const bodyText = await res.text();
+    await res.arrayBuffer();
     const duration = Date.now() - t0;
 
-    console.log(`[clubemais] Sync trace=${traceId} status=${status} latency=${duration}ms`);
+    Logger.info("[clubemais] sync completed", { trace_id: traceId, status, latency_ms: duration });
 
     if (res.ok) {
       return { ok: true, sync_status: status };
     }
     
-    console.error(`[clubemais] Sync error trace=${traceId} status=${status} body=${bodyText.slice(0, 200)}`);
+    Logger.error("[clubemais] sync rejected", { trace_id: traceId, status });
     return { ok: false, sync_status: status, error: "API_ERROR" };
   } catch (err: any) {
-    console.error(`[clubemais] Sync exception trace=${traceId}: ${err.message}`);
+    Logger.error("[clubemais] sync exception", { trace_id: traceId, error: err.message });
     return { ok: false, error: "NETWORK_ERROR" };
   }
 }
@@ -337,7 +355,7 @@ function logEvent(db: ReturnType<typeof supabaseAdmin>, args: LogEventArgs): voi
   };
   db.from("portal_events").insert(row).then(
     () => {},
-    (e) => console.warn("[logEvent] insert failed:", (e as Error)?.message),
+    (e) => Logger.warn("[logEvent] insert failed", { error: (e as Error)?.message }),
   );
 
   if (args.session_id) {
@@ -358,8 +376,8 @@ function logEvent(db: ReturnType<typeof supabaseAdmin>, args: LogEventArgs): voi
 }
 
 // ========== Detect Store ==========
-// Priority order (physical truth first — nginx/UniFi may inject ?store=matriz
-// as a global fallback, but the AP MAC reflects the real physical location):
+// Priority order (physical truth first — nginx/UniFi may inject a generic
+// store query fallback, but the AP MAC reflects the real physical location):
 //   1. AP MAC -> store_access_points    (deterministic per physical AP — TRUTH)
 //   2. ?store=slug query param          (deterministic only if URL is per-store)
 //   3. Public IP -> store_public_ips    (fragile: ISP/NAT shared)
@@ -369,6 +387,7 @@ async function detectStoreFromRequest(
   db: ReturnType<typeof supabaseAdmin>,
   req: Request,
   apMac?: string | null,
+  persistedStoreHint?: string | null,
 ): Promise<{ store_id: string | null; store_slug: string; redirect_url: string | null; store_name: string; store_city: string | null; detection_source: string }> {
 
   const fallback = {
@@ -402,20 +421,22 @@ async function detectStoreFromRequest(
 
     const store = (apMapping as { stores?: { id: string; slug: string; name: string; city: string | null; is_active: boolean; post_auth_redirect_url: string | null } } | null)?.stores;
     if (store?.is_active) {
-      console.log(`Store detected via AP MAC mapping: ${store.slug} (AP: ${normApMac})`);
+      Logger.info("Store detected via AP mapping", { store_slug: store.slug });
       // Fire-and-forget: refresh last_seen_at
       db.from("store_access_points")
         .update({ last_seen_at: new Date().toISOString() })
         .eq("ap_mac", normApMac)
-        .then(() => {}, (e) => console.warn("[ap-mac] last_seen update failed:", (e as any)?.message));
+        .then(() => {}, (e) => Logger.warn("[ap-mac] last_seen update failed", { error: (e as any)?.message }));
       return storeResult(store, "ap_mac");
     }
   }
 
-  // 2) Check ?store=slug query param (passed by UniFi redirect URL)
+  // 2) Use the store captured in the server-side attempt, falling back to the
+  // current query parameter. The attempt survives OAuth redirects and cannot
+  // be silently replaced by a frontend default.
   try {
     const url = new URL(req.url);
-    const storeSlug = url.searchParams.get("store");
+    const storeSlug = persistedStoreHint || url.searchParams.get("store");
     if (storeSlug && isValidSlug(storeSlug)) {
       const { data: store } = await db
         .from("stores")
@@ -425,10 +446,10 @@ async function detectStoreFromRequest(
         .maybeSingle();
 
       if (store) {
-        console.log(`Store detected via ?store= param: ${store.slug}`);
-        return storeResult(store, "url_param");
+        Logger.info("Store detected via store hint", { store_slug: store.slug });
+        return storeResult(store, persistedStoreHint ? "attempt_store_hint" : "url_param");
       }
-      console.warn(`Store slug "${storeSlug}" from URL not found or inactive`);
+      Logger.warn("Store hint not found or inactive");
     }
   } catch { /* ignore URL parse errors */ }
 
@@ -450,7 +471,7 @@ async function detectStoreFromRequest(
         .maybeSingle();
 
       if (store?.is_active) {
-        console.log(`Store detected via IP mapping: ${store.slug} (IP: ${ip})`);
+        Logger.info("Store detected via network mapping", { store_slug: store.slug });
         return storeResult(store, "public_ip");
       }
     }
@@ -465,11 +486,11 @@ async function detectStoreFromRequest(
 
   if (activeStores && activeStores.length === 1) {
     const store = activeStores[0];
-    console.log(`Store detected via single-active fallback: ${store.slug}`);
+    Logger.info("Store detected via single-active fallback", { store_slug: store.slug });
     return storeResult(store, "single_active");
   }
 
-  console.warn(`No store detected (apMac: ${normApMac || "none"}, IP: ${ip || "unknown"}, active stores: ${activeStores?.length || 0})`);
+  Logger.warn("No store detected", { active_store_count: activeStores?.length || 0 });
   return fallback;
 }
 
@@ -504,7 +525,7 @@ async function checkRateLimitDb(
     });
 
     if (error) {
-      console.warn("Rate limit RPC error:", error.message);
+      Logger.warn("Rate limit RPC error", { error: error.message });
       return { allowed: true, remaining: maxHits, blocked_until: null };
     }
 
@@ -515,7 +536,7 @@ async function checkRateLimitDb(
       blocked_until: result.blocked_until || null,
     };
   } catch (e) {
-    console.warn("Rate limit check failed:", (e as Error).message);
+    Logger.warn("Rate limit check failed", { error: (e as Error).message });
     return { allowed: true, remaining: maxHits, blocked_until: null };
   }
 }
@@ -621,7 +642,7 @@ function createUnifiHttpClient(): Deno.HttpClient | null {
 async function unifiTryLogin(
   loginUrl: string, httpClient: Deno.HttpClient | null,
   username?: string, password?: string
-): Promise<{ ok: boolean; cookie?: string; csrfToken?: string; token?: string; error?: string; isUnifiOs?: boolean }> {
+): Promise<{ ok: boolean; cookies?: UnifiCookieJar; csrfToken?: string; error?: string; isUnifiOs?: boolean }> {
    const effectiveUser = username || UNIFI_USERNAME;
    const effectivePass = password || UNIFI_PASSWORD;
    
@@ -629,7 +650,7 @@ async function unifiTryLogin(
      throw new Error("UNIFI_SECRET_NOT_CONFIGURED");
    }
   const ac = new AbortController();
-  const timeout = setTimeout(() => ac.abort(), UNIFI_TIMEOUT_MS);
+  let timeout: ReturnType<typeof setTimeout> | undefined;
 
   // Derive base URL (strip /api/login or /api/auth/login) for warm-up GET + Referer
   const baseUrl = loginUrl.replace(/\/api\/(auth\/)?login$/, "");
@@ -644,11 +665,12 @@ async function unifiTryLogin(
 
   try {
     // ---- Warm-up GET to capture initial session cookies (JSESSIONID/csrf_token) ----
-    let warmupCookies = "";
+    let cookieJar: UnifiCookieJar = {};
     let warmupCsrf = "";
+    let warmTimer: ReturnType<typeof setTimeout> | undefined;
     try {
       const warmAc = new AbortController();
-      const warmTimer = setTimeout(() => warmAc.abort(), UNIFI_TIMEOUT_MS);
+      warmTimer = setTimeout(() => warmAc.abort(), UNIFI_TIMEOUT_MS);
       const warmOpts: Record<string, unknown> = {
         method: "GET",
         headers: { "User-Agent": baseHeaders["User-Agent"], "Accept": "*/*" },
@@ -657,23 +679,19 @@ async function unifiTryLogin(
       };
       if (httpClient) warmOpts.client = httpClient;
       const warmRes = await fetch(`${baseUrl}/`, warmOpts as RequestInit);
-      clearTimeout(warmTimer);
-      const warmSetCookie = warmRes.headers.get("set-cookie") || "";
       warmupCsrf = warmRes.headers.get("x-csrf-token") || "";
-      // Extract cookie name=value pairs (drop attributes like Path, HttpOnly)
-      warmupCookies = warmSetCookie
-        .split(/,(?=[^;]+=)/)
-        .map(c => c.split(";")[0].trim())
-        .filter(Boolean)
-        .join("; ");
+      cookieJar = mergeResponseCookies(cookieJar, warmRes.headers);
       await warmRes.body?.cancel().catch(() => {});
       Logger.info(`[UniFi] Warmup GET ${baseUrl}/: HTTP ${warmRes.status}`);
     } catch (e) {
       Logger.info(`[UniFi] Warmup GET failed (non-fatal): ${(e as Error).message}`);
+    } finally {
+      if (warmTimer !== undefined) clearTimeout(warmTimer);
     }
 
     // ---- POST login ----
     const headers: Record<string, string> = { ...baseHeaders };
+    const warmupCookies = serializeCookieJar(cookieJar);
     if (warmupCookies) headers["Cookie"] = warmupCookies;
     if (warmupCsrf) headers["X-CSRF-Token"] = warmupCsrf;
 
@@ -685,6 +703,7 @@ async function unifiTryLogin(
     };
 
     Logger.info(`[UniFi] Login attempt: ${loginUrl} (custom client: ${!!httpClient}, warm cookies: ${warmupCookies ? "yes" : "no"})`);
+    timeout = setTimeout(() => ac.abort(), UNIFI_TIMEOUT_MS);
     const fetchOpts: Record<string, unknown> = {
       method: "POST",
       headers,
@@ -695,39 +714,46 @@ async function unifiTryLogin(
     if (httpClient) fetchOpts.client = httpClient;
     const res = await fetch(loginUrl, fetchOpts as RequestInit);
     clearTimeout(timeout);
+    timeout = undefined;
 
-    const respSetCookie = res.headers.get("set-cookie") || "";
     const respCsrf = res.headers.get("x-csrf-token") || "";
     const respServer = res.headers.get("server") || "";
+    cookieJar = mergeResponseCookies(cookieJar, res.headers);
     Logger.info(`[UniFi] Login response ${loginUrl}: HTTP ${res.status} | server="${respServer}"`);
 
     // UniFi controllers often return 302/303 after successful login — treat 2xx and 3xx as potential success
     if (res.status >= 400) {
-      const text = await res.text().catch(() => "");
+      await res.body?.cancel().catch(() => {});
       Logger.info(`[UniFi] Login failed (HTTP ${res.status})`);
-      return { ok: false, error: `Login HTTP ${res.status}: ${text.slice(0, 200)}` };
+      return { ok: false, error: `Login HTTP ${res.status}` };
     }
 
-    // UniFi OS returns a TOKEN cookie; legacy returns unifises (+ csrf_token)
-    const tokenMatch = respSetCookie.match(/TOKEN=([^;]+)/);
-    if (tokenMatch) {
-      return { ok: true, token: tokenMatch[1], isUnifiOs: true };
+    // UniFi OS returns TOKEN; legacy returns unifises (+ csrf_token). Keep the
+    // routing cookie emitted by the external proxy alongside auth cookies.
+    const token = cookieJar.TOKEN;
+    if (token) {
+      await res.body?.cancel().catch(() => {});
+      return {
+        ok: true,
+        cookies: cookieJar,
+        csrfToken: respCsrf || cookieJar.csrf_token || extractCsrfFromToken(token) || undefined,
+        isUnifiOs: true,
+      };
     }
-    const legacyMatch = respSetCookie.match(/unifises=([^;]+)/);
-    if (legacyMatch) {
-      // Legacy controllers also issue csrf_token alongside unifises — capture it for subsequent requests
-      const csrfMatch = respSetCookie.match(/csrf_token=([^;]+)/);
-      return { ok: true, cookie: legacyMatch[1], csrfToken: csrfMatch?.[1], isUnifiOs: false };
+    if (cookieJar.unifises) {
+      await res.body?.cancel().catch(() => {});
+      return {
+        ok: true,
+        cookies: cookieJar,
+        csrfToken: respCsrf || cookieJar.csrf_token || undefined,
+        isUnifiOs: false,
+      };
     }
 
-    // Some UniFi OS versions return x-csrf-token header instead
-    if (respCsrf) {
-      return { ok: true, token: respCsrf, isUnifiOs: true };
-    }
-
+    await res.body?.cancel().catch(() => {});
     return { ok: false, error: "Login succeeded but no auth cookie/token returned" };
   } catch (err) {
-    clearTimeout(timeout);
+    if (timeout !== undefined) clearTimeout(timeout);
     const msg = (err as Error).name === "AbortError"
       ? `Login timeout after ${UNIFI_TIMEOUT_MS}ms`
       : (err as Error).message;
@@ -741,22 +767,47 @@ async function unifiTryLogin(
 async function unifiLogin(
   baseUrl: string, httpClient: Deno.HttpClient | null,
   username?: string, password?: string
-): Promise<{ ok: boolean; cookie?: string; csrfToken?: string; token?: string; isUnifiOs?: boolean; error?: string }> {
-  // Try UniFi OS first: {baseUrl}/api/auth/login
+): Promise<{ ok: boolean; cookies?: UnifiCookieJar; csrfToken?: string; isUnifiOs?: boolean; error?: string }> {
+  if (UNIFI_AUTH_MODE === "legacy") {
+    const result = await unifiTryLogin(`${baseUrl}/api/login`, httpClient, username, password);
+    if (result.ok) Logger.info("UniFi login succeeded via legacy endpoint");
+    return result;
+  }
+
+  if (UNIFI_AUTH_MODE === "unifi-os") {
+    const result = await unifiTryLogin(`${baseUrl}/api/auth/login`, httpClient, username, password);
+    if (result.ok) Logger.info("UniFi login succeeded via UniFi OS endpoint");
+    return result;
+  }
+
+  // Auto mode is intended only for migrations between controller families.
   const osResult = await unifiTryLogin(`${baseUrl}/api/auth/login`, httpClient, username, password);
   if (osResult.ok) {
-    console.log("UniFi login succeeded via UniFi OS endpoint");
+    Logger.info("UniFi login succeeded via UniFi OS endpoint");
     return osResult;
   }
 
   // Always try legacy /api/login as fallback
-  console.log(`UniFi OS endpoint failed (${osResult.error?.slice(0, 100)}), trying legacy ${baseUrl}/api/login...`);
+  Logger.info("UniFi OS endpoint failed; trying legacy login", { error: osResult.error?.slice(0, 100) });
   const legacyResult = await unifiTryLogin(`${baseUrl}/api/login`, httpClient, username, password);
   if (legacyResult.ok) {
-    console.log("UniFi login succeeded via legacy endpoint (/api/login)");
+    Logger.info("UniFi login succeeded via legacy endpoint");
     return legacyResult;
   }
   return { ok: false, error: `OS: ${osResult.error} | Legacy: ${legacyResult.error}` };
+}
+
+function buildUnifiHeaders(
+  login: Awaited<ReturnType<typeof unifiLogin>>,
+): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "Accept": "application/json",
+  };
+  const cookies = serializeCookieJar(login.cookies || {});
+  if (cookies) headers.Cookie = cookies;
+  if (login.csrfToken) headers["X-CSRF-Token"] = login.csrfToken;
+  return headers;
 }
 
 // Polling backoff for /stat/sta confirmation (~3s total across 3 attempts).
@@ -817,16 +868,21 @@ async function unifiFetchStations(
   try {
     const res = await fetch(staUrl, {
       method: "GET",
-      headers: { Cookie: headers["Cookie"] || "" },
+      headers,
       signal: ac.signal,
       ...(httpClient ? { client: httpClient } : {}),
     } as RequestInit);
     clearTimeout(t);
+    const jsonResponse = isJsonContentType(res);
     if (!res.ok) {
       await res.text().catch(() => "");
-      return { ok: false, error: `/stat/sta HTTP ${res.status}` };
+      return {
+        ok: false,
+        sessionExpired: isLikelyExpiredSessionResponse(res.status, jsonResponse),
+        error: `/stat/sta HTTP ${res.status}`,
+      };
     }
-    if (!isJsonContentType(res)) {
+    if (!jsonResponse) {
       await res.text().catch(() => "");
       return { ok: false, sessionExpired: true, error: "/stat/sta returned non-JSON (cookie likely expired)" };
     }
@@ -898,11 +954,18 @@ async function unifiSendAuthorizeCmd(
     const res = await fetch(url, fetchOpts as RequestInit);
     clearTimeout(timeout);
     const text = await res.text();
+    const jsonResponse = isJsonContentType(res);
 
     if (!res.ok) {
-      return { ok: false, status: res.status, error: `HTTP ${res.status}: ${text.slice(0, 200)}`, raw: text };
+      return {
+        ok: false,
+        status: res.status,
+        sessionExpired: isLikelyExpiredSessionResponse(res.status, jsonResponse),
+        error: `HTTP ${res.status}: ${text.slice(0, 200)}`,
+        raw: text,
+      };
     }
-    if (!isJsonContentType(res)) {
+    if (!jsonResponse) {
       return { ok: false, status: res.status, sessionExpired: true, error: "non-JSON response (cookie likely expired)", raw: text };
     }
     let parsed: { meta?: { rc?: string; msg?: string } } | null = null;
@@ -923,7 +986,7 @@ async function unifiSendAuthorizeCmd(
 /**
  * Authorize a guest MAC via UniFi controller with all 5 mitigations:
  *  - (1) MAC remapping for randomized clients
- *  - (7) Long polling with backoff + command re-emission
+ *  - (7) Bounded polling with backoff; accepted commands are never re-emitted
  *  - (9) Explicit minutes parameter with fallback
  *  - (11) Session-expired detection with re-login
  *  - (12) ap_mac in payload (auto-discovered if missing)
@@ -943,10 +1006,7 @@ async function checkUnifiAuthorizationState(
     const login = await unifiLogin(baseUrl, httpClient, username, password);
     if (!login.ok) return { state: "inconclusive" };
     
-    const headers = {
-      "Content-Type": "application/json",
-      "Cookie": login.isUnifiOs && login.token ? `TOKEN=${login.token}` : (login.cookie ? `unifises=${login.cookie}` : "")
-    };
+    const headers = buildUnifiHeaders(login);
     
     const staUrl = login.isUnifiOs 
       ? `${parsed.origin}/proxy/network/api/s/${siteId}/stat/sta`
@@ -992,21 +1052,6 @@ async function unifiAuthorizeByMac(
 
   const desiredMinutes = Math.max(5, Math.min(1440, options.minutes ?? 1440));
 
-  // Helper: build auth headers from a login result
-  const buildHeaders = (login: Awaited<ReturnType<typeof unifiLogin>>): Record<string, string> => {
-    const h: Record<string, string> = { "Content-Type": "application/json" };
-    if (login.isUnifiOs && login.token) {
-      h["Cookie"] = `TOKEN=${login.token}`;
-      h["X-CSRF-Token"] = login.token;
-    } else if (login.cookie) {
-      h["Cookie"] = login.csrfToken
-        ? `unifises=${login.cookie}; csrf_token=${login.csrfToken}`
-        : `unifises=${login.cookie}`;
-      if (login.csrfToken) h["X-Csrf-Token"] = login.csrfToken;
-    }
-    return h;
-  };
-
   let closed = false;
   const closeClient = () => { if (!closed) { closed = true; try { httpClient?.close(); } catch { /* ignore */ } } };
 
@@ -1014,7 +1059,7 @@ async function unifiAuthorizeByMac(
     // Step 1: Fresh login
     let login = await unifiLogin(baseUrl, httpClient, username, password);
     if (!login.ok) { closeClient(); return { ok: false, reason: "UNIFI_LOGIN_FAILED", error: `UniFi login failed: ${login.error}` }; }
-    let headers = buildHeaders(login);
+    let headers = buildUnifiHeaders(login);
 
     const origin = parsed.origin;
     const stamgrUrls = login.isUnifiOs
@@ -1029,7 +1074,7 @@ async function unifiAuthorizeByMac(
     if (stationsRes.sessionExpired) {
       Logger.warn("[unifi-auth] reason=UNIFI_SESSION_EXPIRED phase=pre-stations action=re-login");
       login = await unifiLogin(baseUrl, httpClient, username, password);
-      if (login.ok) { headers = buildHeaders(login); stationsRes = await unifiFetchStations(staUrl0, headers, httpClient); }
+      if (login.ok) { headers = buildUnifiHeaders(login); stationsRes = await unifiFetchStations(staUrl0, headers, httpClient); }
     }
     const stations = stationsRes.data || [];
 
@@ -1041,7 +1086,7 @@ async function unifiAuthorizeByMac(
       Logger.info(`[unifi-auth] reason=MAC_REMAPPED_OK portal=${formattedMac} controller=${effectiveMac} ap=${apMacForPayload || "?"}`);
     } else if (!pick.mac) {
       if (pick.candidateCount > 1) {
-        console.warn(`[unifi-auth] reason=MAC_RANDOMIZATION_AMBIGUOUS candidates=${pick.candidateCount} ap=${apMacForPayload || "?"}`);
+        Logger.warn("[unifi-auth] reason=MAC_RANDOMIZATION_AMBIGUOUS", { candidates: pick.candidateCount, ap_mac: apMacForPayload });
         closeClient();
         return {
           ok: false,
@@ -1082,7 +1127,7 @@ async function unifiAuthorizeByMac(
         if (cmd.sessionExpired) {
           Logger.warn("[unifi-auth] reason=UNIFI_SESSION_EXPIRED phase=cmd action=re-login");
           login = await unifiLogin(baseUrl, httpClient, username, password);
-          if (login.ok) { headers = buildHeaders(login); cmd = await unifiSendAuthorizeCmd(url, headers, httpClient, buildPayload(mins)); }
+          if (login.ok) { headers = buildUnifiHeaders(login); cmd = await unifiSendAuthorizeCmd(url, headers, httpClient, buildPayload(mins)); }
         }
         if (cmd.ok && cmd.rcOk) {
           activeUrl = url;
@@ -1106,7 +1151,7 @@ async function unifiAuthorizeByMac(
 
     let accepted = await sendOnce(usedMinutes);
     if (!accepted && /msg=/i.test(lastError) && !policyOverride) {
-      console.warn(`[unifi-auth] reason=SITE_POLICY_OVERRIDE retrying with minutes=15 (was ${usedMinutes}, error=${lastError})`);
+      Logger.warn("[unifi-auth] reason=SITE_POLICY_OVERRIDE", { retry_minutes: 15, previous_minutes: usedMinutes, error: lastError });
       policyOverride = true;
       usedMinutes = 15;
       accepted = await sendOnce(usedMinutes);
@@ -1130,7 +1175,7 @@ async function unifiAuthorizeByMac(
           if (staRes.sessionExpired) {
             Logger.warn(`[unifi-auth] reason=UNIFI_SESSION_EXPIRED phase=poll`, { attempt });
             login = await unifiLogin(baseUrl, httpClient, username, password);
-            if (login.ok) { headers = buildHeaders(login); staRes = await unifiFetchStations(staUrl, headers, httpClient); }
+            if (login.ok) { headers = buildUnifiHeaders(login); staRes = await unifiFetchStations(staUrl, headers, httpClient); }
           }
           if (staRes.ok && staRes.data) {
             const found = staRes.data.find((s) => (s.mac || "").toLowerCase() === effectiveMac);
@@ -1172,7 +1217,7 @@ async function unifiAuthorizeByMac(
             verifyError = staRes.error;
             lastVerifySnapshot = { mac: effectiveMac, found: false, sta_error: staRes.error, attempt };
           }
-          console.warn(`[unifi-auth] poll attempt=${attempt}/${VERIFY_BACKOFF_MS.length}: ${verifyError}`);
+          Logger.warn("[unifi-auth] poll not confirmed", { attempt, total_attempts: VERIFY_BACKOFF_MS.length, error: verifyError });
 
           if (attempt < VERIFY_BACKOFF_MS.length) {
             await new Promise((r) => setTimeout(r, VERIFY_BACKOFF_MS[attempt - 1]));
@@ -1224,6 +1269,10 @@ async function unifiAuthorizeWithRetry(
   for (let attempt = 0; attempt <= UNIFI_RETRY_COUNT; attempt++) {
     last = await unifiAuthorizeByMac(controllerUrl, siteId, mac, username, password, options);
     if (last.ok) return { ...last, attempts: attempt + 1 };
+    // rc=ok means the controller has already accepted the state-changing
+    // command. Never send it again merely because read-after-write polling was
+    // inconclusive; the attempt recovery path will perform a read-only check.
+    if (last.cmd_accepted_at) return { ...last, pending_confirmation: true, attempts: attempt + 1 };
     // Don't retry user-actionable errors (e.g., randomization ambiguity)
     if (last.reason === "MAC_RANDOMIZATION_AMBIGUOUS") return { ...last, attempts: attempt + 1 };
     if (attempt < UNIFI_RETRY_COUNT) await new Promise((r) => setTimeout(r, 1000));
@@ -1269,7 +1318,7 @@ async function authorizeClient(
     return { ok: false, reason: "INVALID_MAC_ADDRESS" };
   }
 
-  // Prompt 07: Server-side idempotency lock (15s)
+  // Secondary MAC-level idempotency lock (15s).
   // Prevents multiple concurrent UniFi commands for the same MAC
   const lock = await db.rpc("rate_limit_hit", {
     p_key: `unifi_auth:mac:${clientMac.toUpperCase()}`,
@@ -1279,7 +1328,7 @@ async function authorizeClient(
   });
 
   if (lock.data?.allowed === false) {
-    console.warn(`[authorize] duplicate concurrent request for mac=${clientMac}`);
+    Logger.warn("[authorize] duplicate concurrent request suppressed", { session_id: sessionId });
     // If there's a very recent successful auth (last 30s), just return success
     const { data: recentAuth } = await db
       .from("captive_sessions")
@@ -1290,7 +1339,7 @@ async function authorizeClient(
       .maybeSingle();
 
     if (recentAuth) {
-      console.log(`[authorize] reusing recent authorization for mac=${clientMac}`);
+      Logger.info("[authorize] recent authorization reused", { session_id: sessionId });
       return { ok: true, cmd_accepted_at: recentAuth.unifi_cmd_accepted_at };
     }
 
@@ -1346,6 +1395,32 @@ async function authorizeClient(
       last_verify_result: result.last_verify_result || null,
       pending_confirmation: !!result.pending_confirmation,
       confirm: result.confirm,
+    };
+  } else if (result.pending_confirmation && result.cmd_accepted_at) {
+    Object.assign(auditUpdate, {
+      status: "submitted",
+      fail_reason: "UNIFI_CONFIRMATION_PENDING",
+      auth_latency_ms: result.latency_ms ?? null,
+    });
+    await db.from("captive_sessions").update(auditUpdate).eq("id", sessionId);
+    await db.from("audit_logs").insert({
+      store_id: storeId, entity: "session", entity_id: sessionId,
+      action: "authorize_pending",
+      meta: {
+        reason: result.reason,
+        mac: result.effective_mac || clientMac,
+        ap_mac: result.ap_mac_used || context.apMac || null,
+        store_slug: storeSlug,
+        attempts: result.attempts,
+        latency_ms: result.latency_ms,
+      },
+    });
+    return {
+      ok: false,
+      reason: "PROCESSING_IN_PROGRESS",
+      cmd_accepted_at: result.cmd_accepted_at,
+      last_verify_result: result.last_verify_result || null,
+      pending_confirmation: true,
     };
   } else {
     const failReason = (result.reason || result.error || "UNKNOWN").slice(0, 500);
@@ -1471,7 +1546,95 @@ async function internalHousekeeping(db: ReturnType<typeof supabaseAdmin>): Promi
 
 // ========== Admin Endpoints ==========
 
-async function requireAdmin(req: Request): Promise<{ db: ReturnType<typeof supabaseAdmin>; userId: string } | Response> {
+function escapeCsvCell(value: unknown): string {
+  let text = value == null ? "" : String(value);
+  if (/^[=+\-@]/.test(text)) text = `'${text}`;
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function sanitizeHttpUrl(value: unknown, options: { httpsOnly?: boolean } = {}): string | null {
+  const sanitized = sanitizeString(value, 500);
+  if (!sanitized) return null;
+  try {
+    const parsed = new URL(sanitized);
+    if (parsed.username || parsed.password) return null;
+    if (options.httpsOnly && parsed.protocol !== "https:") return null;
+    if (!options.httpsOnly && parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+async function getActiveUserBlock(
+  db: ReturnType<typeof supabaseAdmin>,
+  userId: string,
+): Promise<{ reason: string; blocked_at: string; expires_at: string | null } | null> {
+  const now = new Date().toISOString();
+  const { data, error } = await db
+    .from("user_blocks")
+    .select("reason, blocked_at, expires_at")
+    .eq("user_id", userId)
+    .or(`expires_at.is.null,expires_at.gt.${now}`)
+    .maybeSingle();
+
+  if (error) {
+    Logger.error("Failed to check user block", { user_id: userId, error: error.message });
+    throw new Error("USER_BLOCK_CHECK_FAILED");
+  }
+  return data || null;
+}
+
+async function getActiveBlockedUserIds(
+  db: ReturnType<typeof supabaseAdmin>,
+  userIds: string[],
+): Promise<Set<string>> {
+  const uniqueIds = [...new Set(userIds.filter((id) => isValidUUID(id)))];
+  if (uniqueIds.length === 0) return new Set();
+  const { data, error } = await db
+    .from("user_blocks")
+    .select("user_id, expires_at")
+    .in("user_id", uniqueIds);
+  if (error) {
+    Logger.error("Failed to load user blocks", { error: error.message });
+    throw new Error("USER_BLOCK_LIST_FAILED");
+  }
+  const now = Date.now();
+  return new Set((data || [])
+    .filter((row: { expires_at: string | null }) => !row.expires_at || new Date(row.expires_at).getTime() > now)
+    .map((row: { user_id: string }) => row.user_id));
+}
+
+async function writeAdminAudit(
+  db: ReturnType<typeof supabaseAdmin>,
+  req: Request,
+  actorUserId: string,
+  entity: string,
+  action: string,
+  options: {
+    entityId?: string | null;
+    storeId?: string | null;
+    meta?: Record<string, unknown>;
+  } = {},
+): Promise<void> {
+  const forwardedFor = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || null;
+  const { error } = await db.from("audit_logs").insert({
+    store_id: options.storeId || null,
+    entity,
+    entity_id: options.entityId || null,
+    action,
+    meta: {
+      actor_user_id: actorUserId,
+      actor_ip: forwardedFor,
+      user_agent: sanitizeString(req.headers.get("user-agent"), 300),
+      ...(options.meta || {}),
+    },
+  });
+
+  if (error) Logger.error("Failed to persist admin audit", { entity, action, error: error.message });
+}
+
+async function requireAdmin(req: Request): Promise<{ db: ReturnType<typeof supabaseAdmin>; userId: string; userEmail: string | null } | Response> {
   const authHeader = req.headers.get("Authorization");
   if (!authHeader?.startsWith("Bearer ")) return errorResponse("Unauthorized", 401);
 
@@ -1484,39 +1647,248 @@ async function requireAdmin(req: Request): Promise<{ db: ReturnType<typeof supab
   const userId = userData.user.id;
   const db = supabaseAdmin();
 
-  const { data: roleData } = await db
-    .from("user_roles")
-    .select("role")
-    .eq("user_id", userId)
-    .eq("role", "admin")
-    .maybeSingle();
+  const [{ data: roleData }, activeBlock] = await Promise.all([
+    db.from("user_roles")
+      .select("role")
+      .eq("user_id", userId)
+      .eq("role", "admin")
+      .maybeSingle(),
+    getActiveUserBlock(db, userId),
+  ]);
 
+  if (activeBlock) return errorResponse("Forbidden: user is blocked", 403);
   if (!roleData) return errorResponse("Forbidden: admin role required", 403);
-  return { db, userId };
+  return { db, userId, userEmail: userData.user.email || null };
+}
+
+// ========== Admin: Current Operator ==========
+async function handleAdminMe(req: Request): Promise<Response> {
+  const auth = await requireAdmin(req);
+  if (auth instanceof Response) return auth;
+  if (req.method !== "GET") return errorResponse("Method not allowed", 405);
+
+  await writeAdminAudit(auth.db, req, auth.userId, "admin_session", "login");
+  return jsonResponse({ id: auth.userId, email: auth.userEmail, role: "admin" });
+}
+
+// ========== Admin: Users, Roles and Blocking ==========
+async function handleAdminUsers(req: Request, url: URL): Promise<Response> {
+  const auth = await requireAdmin(req);
+  if (auth instanceof Response) return auth;
+  const { db, userId: actorUserId } = auth;
+
+  if (req.method === "GET") {
+    const page = Math.max(1, parseInt(url.searchParams.get("page") || "1") || 1);
+    const limit = Math.min(Math.max(1, parseInt(url.searchParams.get("limit") || "50") || 50), 100);
+    const search = (sanitizeString(url.searchParams.get("q"), 120) || "").toLocaleLowerCase("pt-BR");
+    const status = url.searchParams.get("status") || "all";
+
+    const { data: authUsersData, error: usersError } = await db.auth.admin.listUsers({ page: 1, perPage: 1000 });
+    if (usersError) return errorResponse(usersError.message, 500);
+
+    const authUsers = authUsersData.users || [];
+    const userIds = authUsers.map((user) => user.id);
+    const [rolesResult, profilesResult, blocksResult] = userIds.length
+      ? await Promise.all([
+          db.from("user_roles").select("user_id, role").in("user_id", userIds),
+          db.from("profiles").select("id, full_name, email, phone_digits, cpf_digits").in("id", userIds),
+          db.from("user_blocks").select("user_id, reason, blocked_at, expires_at").in("user_id", userIds),
+        ])
+      : [{ data: [] }, { data: [] }, { data: [] }];
+
+    const roleByUser = new Map((rolesResult.data || []).map((row: { user_id: string; role: string }) => [row.user_id, row.role]));
+    const profileByUser = new Map((profilesResult.data || []).map((row: { id: string }) => [row.id, row]));
+    const blockByUser = new Map((blocksResult.data || []).map((row: { user_id: string }) => [row.user_id, row]));
+    const now = Date.now();
+
+    const normalized = authUsers.map((user) => {
+      const profile = profileByUser.get(user.id) as { full_name?: string; email?: string; phone_digits?: string | null; cpf_digits?: string | null } | undefined;
+      const block = blockByUser.get(user.id) as { reason?: string; blocked_at?: string; expires_at?: string | null } | undefined;
+      const blocked = !!block && (!block.expires_at || new Date(block.expires_at).getTime() > now);
+      const role = roleByUser.get(user.id) || null;
+      return {
+        id: user.id,
+        email: user.email || profile?.email || null,
+        phone: user.phone || profile?.phone_digits || null,
+        name: profile?.full_name || null,
+        cpf: profile?.cpf_digits || null,
+        role,
+        blocked,
+        block_reason: blocked ? block?.reason || null : null,
+        blocked_at: blocked ? block?.blocked_at || null : null,
+        created_at: user.created_at,
+        last_sign_in_at: user.last_sign_in_at || null,
+        email_confirmed_at: user.email_confirmed_at || null,
+      };
+    }).filter((user) => {
+      if (status === "blocked" && !user.blocked) return false;
+      if (status === "admin" && user.role !== "admin") return false;
+      if (status === "active" && user.blocked) return false;
+      if (!search) return true;
+      return [user.name, user.email, user.phone, user.cpf]
+        .some((value) => value?.toLocaleLowerCase("pt-BR").includes(search));
+    });
+
+    const offset = (page - 1) * limit;
+    return jsonResponse({
+      data: normalized.slice(offset, offset + limit),
+      total: normalized.length,
+      page,
+      limit,
+      truncated: authUsers.length >= 1000,
+    });
+  }
+
+  const body = await safeParseJson(req);
+  if (!body) return errorResponse("JSON inválido");
+
+  if (req.method === "POST" && body.action === "invite_admin") {
+    const email = sanitizeString(body.email, MAX_EMAIL_LEN)?.toLowerCase();
+    if (!email || !isValidEmail(email)) return errorResponse("E-mail inválido");
+
+    const { data, error } = await db.auth.admin.inviteUserByEmail(email);
+    if (error || !data.user) return errorResponse(error?.message || "Não foi possível convidar o usuário", 500);
+
+    const { error: roleError } = await db.from("user_roles")
+      .upsert({ user_id: data.user.id, role: "admin" }, { onConflict: "user_id,role" });
+    if (roleError) {
+      await db.auth.admin.deleteUser(data.user.id);
+      return errorResponse(roleError.message, 500);
+    }
+
+    await writeAdminAudit(db, req, actorUserId, "user", "invite_admin", {
+      entityId: data.user.id,
+      meta: { invited_email: email },
+    });
+    return jsonResponse({ id: data.user.id, email, role: "admin" }, 201);
+  }
+
+  if (req.method !== "PUT") return errorResponse("Method not allowed", 405);
+  if (!isValidUUID(body.user_id)) return errorResponse("user_id inválido");
+  const targetUserId = body.user_id as string;
+  const action = sanitizeString(body.action, 40);
+
+  if ((action === "block" || action === "revoke_admin") && targetUserId === actorUserId) {
+    return errorResponse("Você não pode bloquear ou remover o próprio acesso administrativo", 409);
+  }
+
+  if (action === "block") {
+    const reason = sanitizeString(body.reason, 500);
+    if (!reason || reason.trim().length < 3) return errorResponse("Informe o motivo do bloqueio");
+
+    const { error: banError } = await db.auth.admin.updateUserById(targetUserId, { ban_duration: "876000h" });
+    if (banError) return errorResponse(banError.message, 500);
+
+    const { error: blockError } = await db.from("user_blocks").upsert({
+      user_id: targetUserId,
+      reason,
+      blocked_by: actorUserId,
+      blocked_at: new Date().toISOString(),
+      expires_at: null,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "user_id" });
+    if (blockError) {
+      await db.auth.admin.updateUserById(targetUserId, { ban_duration: "none" });
+      return errorResponse(blockError.message, 500);
+    }
+
+    await db.from("leads").update({
+      marketing_status: "blocked",
+      marketing_status_reason: reason,
+      marketing_updated_at: new Date().toISOString(),
+      marketing_updated_by: actorUserId,
+    }).eq("user_id", targetUserId).neq("marketing_status", "anonymized");
+
+    await writeAdminAudit(db, req, actorUserId, "user", "block", {
+      entityId: targetUserId,
+      meta: { reason },
+    });
+    return jsonResponse({ ok: true, blocked: true });
+  }
+
+  if (action === "unblock") {
+    const { error: unbanError } = await db.auth.admin.updateUserById(targetUserId, { ban_duration: "none" });
+    if (unbanError) return errorResponse(unbanError.message, 500);
+    const { error: deleteError } = await db.from("user_blocks").delete().eq("user_id", targetUserId);
+    if (deleteError) return errorResponse(deleteError.message, 500);
+
+    await writeAdminAudit(db, req, actorUserId, "user", "unblock", { entityId: targetUserId });
+    return jsonResponse({ ok: true, blocked: false });
+  }
+
+  if (action === "grant_admin") {
+    const { error } = await db.from("user_roles")
+      .upsert({ user_id: targetUserId, role: "admin" }, { onConflict: "user_id,role" });
+    if (error) return errorResponse(error.message, 500);
+    await writeAdminAudit(db, req, actorUserId, "user", "grant_admin", { entityId: targetUserId });
+    return jsonResponse({ ok: true, role: "admin" });
+  }
+
+  if (action === "revoke_admin") {
+    const { count } = await db.from("user_roles")
+      .select("id", { count: "exact", head: true })
+      .eq("role", "admin");
+    if ((count || 0) <= 1) return errorResponse("Não é permitido remover o último administrador", 409);
+
+    const { error } = await db.from("user_roles")
+      .delete()
+      .eq("user_id", targetUserId)
+      .eq("role", "admin");
+    if (error) return errorResponse(error.message, 500);
+    await writeAdminAudit(db, req, actorUserId, "user", "revoke_admin", { entityId: targetUserId });
+    return jsonResponse({ ok: true, role: null });
+  }
+
+  return errorResponse("Ação de usuário inválida");
 }
 
 // ========== Admin: Global Settings ==========
 async function handleAdminSettings(req: Request): Promise<Response> {
   const auth = await requireAdmin(req);
   if (auth instanceof Response) return auth;
-  const { db } = auth;
+  const { db, userId } = auth;
 
   if (req.method === "GET") {
     const { data, error } = await db
       .from("global_settings")
-      .select("updated_at")
+      .select("session_duration_minutes, updated_at")
       .eq("id", 1)
       .maybeSingle();
 
     if (error) return errorResponse(error.message, 500);
 
     return jsonResponse({
+      session_duration_minutes: data?.session_duration_minutes ?? 1440,
       updated_at: data?.updated_at || null,
     });
   }
 
   if (req.method === "PUT") {
-    return errorResponse("Settings update disabled", 403);
+    const body = await safeParseJson(req);
+    if (!body) return errorResponse("JSON inválido");
+
+    const duration = Number(body.session_duration_minutes);
+    if (!Number.isInteger(duration) || duration < 1 || duration > 43200) {
+      return errorResponse("session_duration_minutes deve ser um número inteiro entre 1 e 43200");
+    }
+
+    const { data, error } = await db
+      .from("global_settings")
+      .update({ session_duration_minutes: duration })
+      .eq("id", 1)
+      .select("session_duration_minutes, updated_at")
+      .single();
+
+    if (error) return errorResponse(error.message, 500);
+
+    await writeAdminAudit(db, req, userId, "global_settings", "update", {
+      meta: {
+        fields: ["session_duration_minutes"],
+        session_duration_minutes: duration,
+      },
+    });
+
+    return jsonResponse(data);
   }
 
   return errorResponse("Method not allowed", 405);
@@ -1546,15 +1918,28 @@ async function handleAdminStores(req: Request): Promise<Response> {
     if (!slug || !isValidSlug(slug)) return errorResponse("Slug inválido");
     if (!name) return errorResponse("Nome obrigatório");
 
+    const controllerUrl = body.unifi_controller_url
+      ? sanitizeHttpUrl(body.unifi_controller_url, { httpsOnly: true })
+      : null;
+    const redirectUrl = body.post_auth_redirect_url ? sanitizeHttpUrl(body.post_auth_redirect_url, { httpsOnly: true }) : null;
+    if (body.unifi_controller_url && !controllerUrl) return errorResponse("URL da controladora deve usar HTTPS válido");
+    if (body.post_auth_redirect_url && !redirectUrl) return errorResponse("Redirecionamento deve usar uma URL HTTPS válida");
+
     const { data, error } = await db.from("stores").insert({
       slug, name,
       city: sanitizeString(body.city, 100) || null,
       is_active: body.is_active === false ? false : true,
-      post_auth_redirect_url: sanitizeString(body.post_auth_redirect_url, 500) || null,
+      post_auth_redirect_url: redirectUrl,
       unifi_site_id: sanitizeString(body.unifi_site_id, 100) || null,
-      unifi_controller_url: sanitizeString(body.unifi_controller_url, 500) || null,
+      unifi_controller_url: controllerUrl,
     }).select("id, slug, name").single();
-    if (error) return errorResponse(error.message, 500);
+    if (error) return errorResponse(error.code === "23505" ? "Já existe uma loja com este slug" : error.message, error.code === "23505" ? 409 : 500);
+
+    await writeAdminAudit(db, req, auth.userId, "store", "create", {
+      entityId: data.id,
+      storeId: data.id,
+      meta: { slug: data.slug },
+    });
     return jsonResponse(data, 201);
   }
 
@@ -1567,38 +1952,39 @@ async function handleAdminStores(req: Request): Promise<Response> {
     if (body.name !== undefined) { const n = sanitizeString(body.name, MAX_NAME_LEN); if (n) updateData.name = n; }
     if (body.city !== undefined) updateData.city = sanitizeString(body.city, 100);
     if (body.is_active !== undefined) updateData.is_active = !!body.is_active;
-    if (body.post_auth_redirect_url !== undefined) updateData.post_auth_redirect_url = sanitizeString(body.post_auth_redirect_url, 500);
+    if (body.post_auth_redirect_url !== undefined) {
+      if (body.post_auth_redirect_url === "" || body.post_auth_redirect_url === null) updateData.post_auth_redirect_url = null;
+      else {
+        const redirectUrl = sanitizeHttpUrl(body.post_auth_redirect_url, { httpsOnly: true });
+        if (!redirectUrl) return errorResponse("Redirecionamento deve usar uma URL HTTPS válida");
+        updateData.post_auth_redirect_url = redirectUrl;
+      }
+    }
     if (body.unifi_site_id !== undefined) updateData.unifi_site_id = sanitizeString(body.unifi_site_id, 100);
-    if (body.unifi_controller_url !== undefined) updateData.unifi_controller_url = sanitizeString(body.unifi_controller_url, 500);
-    // Allow updating controller params
-    if (body.unifi_site_id !== undefined) updateData.unifi_site_id = sanitizeString(body.unifi_site_id, 100);
-    if (body.unifi_controller_url !== undefined) updateData.unifi_controller_url = sanitizeString(body.unifi_controller_url, 500);
-
+    if (body.unifi_controller_url !== undefined) {
+      if (body.unifi_controller_url === "" || body.unifi_controller_url === null) updateData.unifi_controller_url = null;
+      else {
+        const controllerUrl = sanitizeHttpUrl(body.unifi_controller_url, { httpsOnly: true });
+        if (!controllerUrl) return errorResponse("URL da controladora deve usar HTTPS válido");
+        updateData.unifi_controller_url = controllerUrl;
+      }
+    }
     if (Object.keys(updateData).length === 0) return errorResponse("Nenhum campo para atualizar");
 
     const { data, error } = await db.from("stores").update(updateData).eq("id", body.id as string).select("id, slug, name").single();
     if (error) return errorResponse(error.message, 500);
 
-    await db.from("audit_logs").insert({
-      store_id: body.id as string, entity: "store", entity_id: body.id as string,
-      action: "update", meta: { updated_by: auth.userId, fields: Object.keys(updateData) },
+    await writeAdminAudit(db, req, auth.userId, "store", "update", {
+      storeId: body.id as string,
+      entityId: body.id as string,
+      meta: { fields: Object.keys(updateData) },
     });
 
     return jsonResponse(data);
   }
 
   if (req.method === "DELETE") {
-    const body = await safeParseJson(req);
-    if (!body || !isValidUUID(body.id)) return errorResponse("Missing or invalid store id");
-
-    const { error } = await db.from("stores").delete().eq("id", body.id as string);
-    if (error) return errorResponse(error.message, 500);
-
-    await db.from("audit_logs").insert({
-      store_id: body.id as string, entity: "store", entity_id: body.id as string,
-      action: "delete", meta: { deleted_by: auth.userId },
-    });
-    return jsonResponse({ ok: true });
+    return errorResponse("Exclusão definitiva de loja desabilitada. Desative a loja para preservar leads e histórico.", 405);
   }
 
   return errorResponse("Method not allowed", 405);
@@ -1607,48 +1993,80 @@ async function handleAdminStores(req: Request): Promise<Response> {
 async function handleAdminLeads(req: Request, url: URL): Promise<Response> {
   const auth = await requireAdmin(req);
   if (auth instanceof Response) return auth;
-  const { db } = auth;
+  const { db, userId } = auth;
+  if (req.method !== "GET") return errorResponse("Method not allowed", 405);
 
   const storeId = url.searchParams.get("store_id");
   const from = url.searchParams.get("from");
   const to = url.searchParams.get("to");
+  const search = (sanitizeString(url.searchParams.get("q"), 120) || "").replace(/[,%().]/g, " ").trim();
+  const marketingStatus = url.searchParams.get("marketing_status");
   const page = Math.max(1, parseInt(url.searchParams.get("page") || "1") || 1);
   const limit = Math.min(Math.max(1, parseInt(url.searchParams.get("limit") || "50") || 50), 200);
   const offset = (page - 1) * limit;
   const format = url.searchParams.get("format");
+  const audience = url.searchParams.get("audience");
 
   let query = db
     .from("leads")
-    .select("id, store_id, session_id, name, email, phone, cpf, client_mac, created_at, consented_at, consent_version, source, origin_ip, origin_city, origin_region, stores(slug, name)", { count: "exact" })
-    .order("created_at", { ascending: false });
+    .select("id, user_id, store_id, session_id, name, email, phone, cpf, client_mac, created_at, first_seen_at, last_seen_at, consented_at, consent_version, source, origin_ip, origin_city, origin_region, marketing_status, marketing_status_reason, marketing_updated_at, anonymized_at, stores(slug, name, city)", { count: "exact" })
+    .order("last_seen_at", { ascending: false });
 
   if (storeId && isValidUUID(storeId)) query = query.eq("store_id", storeId);
-  if (from) query = query.gte("created_at", from.length === 10 ? `${from}T00:00:00.000Z` : from);
-  if (to) query = query.lte("created_at", to.length === 10 ? `${to}T23:59:59.999Z` : to);
+  if (from) query = query.gte("last_seen_at", from.length === 10 ? `${from}T00:00:00.000Z` : from);
+  if (to) query = query.lte("last_seen_at", to.length === 10 ? `${to}T23:59:59.999Z` : to);
+  if (search) query = query.or(`name.ilike.%${search}%,email.ilike.%${search}%,phone.ilike.%${search}%,cpf.ilike.%${search}%`);
+  if (marketingStatus && ["eligible", "opted_out", "blocked", "anonymized"].includes(marketingStatus)) {
+    query = query.eq("marketing_status", marketingStatus);
+  }
 
   if (format === "csv") {
+    const marketingExport = audience === "marketing";
+    if (marketingExport) query = query.eq("marketing_status", "eligible");
     query = query.limit(10000);
     const { data, error } = await query;
     if (error) return errorResponse(error.message, 500);
 
-    const headers = ["id", "store_slug", "name", "cpf", "email", "phone", "client_mac", "origin_ip", "origin_city", "origin_region", "created_at", "consent_version"];
-    const csvRows = [headers.join(",")];
-    for (const lead of data || []) {
-      const storeInfo = lead.stores as unknown as { slug: string; name: string } | null;
-      csvRows.push([
-        lead.id, storeInfo?.slug || "",
-        `"${(lead.name || "").replace(/"/g, '""')}"`,
-        (lead as any).cpf || "", lead.email || "", lead.phone || "", lead.client_mac || "",
-        (lead as any).origin_ip || "", (lead as any).origin_city || "", (lead as any).origin_region || "",
-        lead.created_at, lead.consent_version,
-      ].join(","));
+    const blockedUserIds = marketingExport
+      ? await getActiveBlockedUserIds(db, (data || []).map((lead) => lead.user_id).filter(Boolean) as string[])
+      : new Set<string>();
+    const exportRows = (data || []).filter((lead) => !marketingExport || !lead.user_id || !blockedUserIds.has(lead.user_id));
+    const headers = marketingExport
+      ? ["nome", "email", "telefone", "loja", "codigo_loja", "cidade_loja", "primeiro_cadastro_em", "ultima_atividade_em", "consentimento_em", "versao_consentimento"]
+      : ["id", "store_slug", "name", "cpf", "email", "phone", "client_mac", "origin_ip", "origin_city", "origin_region", "created_at", "last_seen_at", "consent_version"];
+    const csvRows = [headers.map(escapeCsvCell).join(",")];
+    for (const lead of exportRows) {
+      const storeInfo = lead.stores as unknown as { slug: string; name: string; city: string | null } | null;
+      const row = marketingExport
+        ? [
+            lead.name || "", lead.email || "", lead.phone || "",
+            storeInfo?.name || "", storeInfo?.slug || "", storeInfo?.city || "",
+            lead.first_seen_at || lead.created_at, lead.last_seen_at || lead.created_at,
+            lead.consented_at, lead.consent_version,
+          ]
+        : [
+            lead.id, storeInfo?.slug || "", lead.name || "",
+            (lead as any).cpf || "", lead.email || "", lead.phone || "", lead.client_mac || "",
+            (lead as any).origin_ip || "", (lead as any).origin_city || "", (lead as any).origin_region || "",
+            lead.created_at, lead.last_seen_at || lead.created_at, lead.consent_version,
+          ];
+      csvRows.push(row.map(escapeCsvCell).join(","));
     }
 
-    return new Response(csvRows.join("\n"), {
+    await writeAdminAudit(db, req, userId, "lead", "export_csv", {
+      storeId: storeId && isValidUUID(storeId) ? storeId : null,
+      meta: { audience: marketingExport ? "marketing" : "technical", from, to, count: exportRows.length, search: search || null },
+    });
+
+    const filenamePrefix = marketingExport ? "leads_marketing" : "leads";
+
+    return new Response(`\uFEFF${csvRows.join("\r\n")}`, {
       headers: {
         ...corsHeaders,
         "Content-Type": "text/csv; charset=utf-8",
-        "Content-Disposition": `attachment; filename="leads_${new Date().toISOString().slice(0, 10)}.csv"`,
+        "Content-Disposition": `attachment; filename="${filenamePrefix}_${new Date().toISOString().slice(0, 10)}.csv"`,
+        "X-Export-Limit": "10000",
+        "X-Export-Count": String(exportRows.length),
       },
     });
   }
@@ -1656,13 +2074,91 @@ async function handleAdminLeads(req: Request, url: URL): Promise<Response> {
   query = query.range(offset, offset + limit - 1);
   const { data, count, error } = await query;
   if (error) return errorResponse(error.message, 500);
-  return jsonResponse({ data, total: count, page, limit });
+  const blockedUserIds = await getActiveBlockedUserIds(db, (data || []).map((lead) => lead.user_id).filter(Boolean) as string[]);
+  return jsonResponse({
+    data: (data || []).map((lead) => ({
+      ...lead,
+      user_blocked: !!lead.user_id && blockedUserIds.has(lead.user_id),
+    })),
+    total: count,
+    page,
+    limit,
+  });
+}
+
+async function handleAdminLeadActions(req: Request): Promise<Response> {
+  const auth = await requireAdmin(req);
+  if (auth instanceof Response) return auth;
+  if (req.method !== "PUT") return errorResponse("Method not allowed", 405);
+  const { db, userId } = auth;
+
+  const body = await safeParseJson(req);
+  if (!body || !isValidUUID(body.lead_id)) return errorResponse("lead_id inválido");
+  const leadId = body.lead_id as string;
+  const action = sanitizeString(body.action, 40);
+  const reason = sanitizeString(body.reason, 500);
+  const { data: lead, error: leadError } = await db.from("leads")
+    .select("id, user_id, marketing_status")
+    .eq("id", leadId)
+    .maybeSingle();
+  if (leadError) return errorResponse(leadError.message, 500);
+  if (!lead) return errorResponse("Lead não encontrado", 404);
+
+  const now = new Date().toISOString();
+  if (action === "allow_marketing" || action === "opt_out" || action === "block_marketing") {
+    if (lead.marketing_status === "anonymized") return errorResponse("Um lead anonimizado não pode ser reativado", 409);
+    const status = action === "allow_marketing" ? "eligible" : action === "opt_out" ? "opted_out" : "blocked";
+    if (status !== "eligible" && (!reason || reason.length < 3)) return errorResponse("Informe o motivo da alteração");
+    const { error } = await db.from("leads").update({
+      marketing_status: status,
+      marketing_status_reason: status === "eligible" ? null : reason,
+      marketing_updated_at: now,
+      marketing_updated_by: userId,
+    }).eq("id", leadId).neq("marketing_status", "anonymized");
+    if (error) return errorResponse(error.message, 500);
+    await writeAdminAudit(db, req, userId, "lead", action, {
+      entityId: leadId,
+      meta: { reason: status === "eligible" ? null : reason },
+    });
+    return jsonResponse({ ok: true, marketing_status: status });
+  }
+
+  if (action === "anonymize") {
+    if (!reason || reason.length < 3) return errorResponse("Informe o motivo da anonimização");
+    const { error } = await db.from("leads").update({
+      name: "Anonimizado",
+      email: null,
+      phone: null,
+      cpf: null,
+      client_mac: null,
+      origin_ip: null,
+      origin_city: null,
+      origin_region: null,
+      origin_country: null,
+      origin_isp: null,
+      origin_asn: null,
+      marketing_status: "anonymized",
+      marketing_status_reason: reason,
+      marketing_updated_at: now,
+      marketing_updated_by: userId,
+      anonymized_at: now,
+    }).eq("id", leadId);
+    if (error) return errorResponse(error.message, 500);
+
+    await writeAdminAudit(db, req, userId, "lead", "anonymize", {
+      entityId: leadId,
+      meta: { reason, auth_account_preserved: !!lead.user_id },
+    });
+    return jsonResponse({ ok: true, marketing_status: "anonymized" });
+  }
+
+  return errorResponse("Ação de lead inválida");
 }
 
 async function handleAdminConsent(req: Request): Promise<Response> {
   const auth = await requireAdmin(req);
   if (auth instanceof Response) return auth;
-  const { db } = auth;
+  const { db, userId } = auth;
 
   if (req.method === "GET") {
     const { data, error } = await db.from("consent_versions")
@@ -1680,15 +2176,34 @@ async function handleAdminConsent(req: Request): Promise<Response> {
     if (!version) return errorResponse("version é obrigatória");
     if (!text) return errorResponse("text é obrigatório");
 
-    if (body.deactivate_previous !== false) {
-      await db.from("consent_versions").update({ is_active: false }).eq("is_active", true);
-    }
-
     const { data, error } = await db.from("consent_versions")
-      .insert({ version, text, is_active: true })
+      .insert({ version, text, is_active: false })
       .select("id, version, is_active, created_at").single();
     if (error) return errorResponse(error.message, 500);
-    return jsonResponse(data, 201);
+
+    if (body.deactivate_previous !== false) {
+      const { error: deactivateError } = await db.from("consent_versions")
+        .update({ is_active: false })
+        .eq("is_active", true)
+        .neq("id", data.id);
+      if (deactivateError) {
+        await db.from("consent_versions").delete().eq("id", data.id);
+        return errorResponse(deactivateError.message, 500);
+      }
+    }
+
+    const { data: activated, error: activateError } = await db.from("consent_versions")
+      .update({ is_active: true })
+      .eq("id", data.id)
+      .select("id, version, is_active, created_at")
+      .single();
+    if (activateError) return errorResponse(activateError.message, 500);
+
+    await writeAdminAudit(db, req, userId, "consent_version", "publish", {
+      entityId: data.id,
+      meta: { version },
+    });
+    return jsonResponse(activated, 201);
   }
 
   return errorResponse("Method not allowed", 405);
@@ -1698,29 +2213,199 @@ async function handleAdminSessions(req: Request, url: URL): Promise<Response> {
   const auth = await requireAdmin(req);
   if (auth instanceof Response) return auth;
   const { db } = auth;
+  if (req.method !== "GET") return errorResponse("Method not allowed", 405);
 
   const storeId = url.searchParams.get("store_id");
+  const status = sanitizeString(url.searchParams.get("status"), 30);
+  const from = url.searchParams.get("from");
+  const to = url.searchParams.get("to");
+  const search = (sanitizeString(url.searchParams.get("q"), 120) || "").replace(/[,%().]/g, " ").trim();
   const page = Math.max(1, parseInt(url.searchParams.get("page") || "1") || 1);
   const limit = Math.min(Math.max(1, parseInt(url.searchParams.get("limit") || "50") || 50), 200);
   const offset = (page - 1) * limit;
 
   let query = db
     .from("captive_sessions")
-    .select("id, store_id, client_mac, client_ip, ssid, status, started_at, submitted_at, authorized_at, fail_reason, stores(slug, name)", { count: "exact" })
+    .select("id, store_id, user_id, client_mac, client_ip, ap_mac, ssid, status, started_at, submitted_at, authorized_at, fail_reason, trace_id, last_step, unifi_authorize_called_at, unifi_cmd_accepted_at, unifi_confirmed_at, unifi_last_verify_result, stores(slug, name)", { count: "exact" })
     .order("started_at", { ascending: false })
     .range(offset, offset + limit - 1);
 
   if (storeId && isValidUUID(storeId)) query = query.eq("store_id", storeId);
+  if (status) query = query.eq("status", status);
+  if (from) query = query.gte("started_at", from.length === 10 ? `${from}T00:00:00.000Z` : from);
+  if (to) query = query.lte("started_at", to.length === 10 ? `${to}T23:59:59.999Z` : to);
+  if (search) query = query.or(`client_mac.ilike.%${search}%,client_ip.ilike.%${search}%,trace_id.ilike.%${search}%`);
 
   const { data, count, error } = await query;
   if (error) return errorResponse(error.message, 500);
   return jsonResponse({ data, total: count, page, limit });
 }
 
+async function handleAdminAudit(req: Request, url: URL): Promise<Response> {
+  const auth = await requireAdmin(req);
+  if (auth instanceof Response) return auth;
+  if (req.method !== "GET") return errorResponse("Method not allowed", 405);
+  const { db } = auth;
+
+  const page = Math.max(1, parseInt(url.searchParams.get("page") || "1") || 1);
+  const limit = Math.min(Math.max(1, parseInt(url.searchParams.get("limit") || "50") || 50), 200);
+  const offset = (page - 1) * limit;
+  const entity = sanitizeString(url.searchParams.get("entity"), 80);
+  const action = sanitizeString(url.searchParams.get("action"), 80);
+  const from = url.searchParams.get("from");
+  const to = url.searchParams.get("to");
+
+  let query = db.from("audit_logs")
+    .select("id, store_id, entity, entity_id, action, meta, created_at", { count: "exact" })
+    .order("created_at", { ascending: false });
+  if (entity) query = query.eq("entity", entity);
+  if (action) query = query.eq("action", action);
+  if (from) query = query.gte("created_at", from.length === 10 ? `${from}T00:00:00.000Z` : from);
+  if (to) query = query.lte("created_at", to.length === 10 ? `${to}T23:59:59.999Z` : to);
+
+  const { data, count, error } = await query.range(offset, offset + limit - 1);
+  if (error) return errorResponse(error.message, 500);
+  return jsonResponse({ data, total: count, page, limit });
+}
+
+async function handleAdminDiagnostics(req: Request, url: URL): Promise<Response> {
+  const auth = await requireAdmin(req);
+  if (auth instanceof Response) return auth;
+  if (req.method !== "GET") return errorResponse("Method not allowed", 405);
+  const { db, userId } = auth;
+
+  const storeId = url.searchParams.get("store_id");
+  const traceId = sanitizeString(url.searchParams.get("trace_id"), 120);
+  const probe = url.searchParams.get("probe") === "true";
+  if (storeId && !isValidUUID(storeId)) return errorResponse("store_id inválido");
+
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  let sessionQuery = db.from("captive_sessions")
+    .select("id, status, fail_reason, trace_id, client_mac, client_ip, started_at, authorized_at, stores(slug, name)")
+    .gte("started_at", since)
+    .order("started_at", { ascending: false })
+    .limit(500);
+  if (storeId) sessionQuery = sessionQuery.eq("store_id", storeId);
+
+  const [storesResult, settingsResult, consentResult, sessionsResult] = await Promise.all([
+    db.from("stores")
+      .select("id, slug, name, city, is_active, unifi_controller_url, unifi_site_id, post_auth_redirect_url")
+      .order("name"),
+    db.from("global_settings").select("session_duration_minutes, updated_at").eq("id", 1).maybeSingle(),
+    db.from("consent_versions").select("id, version, created_at").eq("is_active", true).maybeSingle(),
+    sessionQuery,
+  ]);
+
+  if (storesResult.error) return errorResponse(storesResult.error.message, 500);
+  if (settingsResult.error) return errorResponse(settingsResult.error.message, 500);
+  if (consentResult.error) return errorResponse(consentResult.error.message, 500);
+  if (sessionsResult.error) return errorResponse(sessionsResult.error.message, 500);
+
+  const sessions = sessionsResult.data || [];
+  const statusCounts = sessions.reduce((acc: Record<string, number>, session: { status: string }) => {
+    acc[session.status] = (acc[session.status] || 0) + 1;
+    return acc;
+  }, {});
+  const failCounts = sessions.reduce((acc: Record<string, number>, session: { status: string; fail_reason: string | null }) => {
+    if (session.status !== "authorized") {
+      const reason = session.fail_reason || "sem_motivo_registrado";
+      acc[reason] = (acc[reason] || 0) + 1;
+    }
+    return acc;
+  }, {});
+
+  const stores = storesResult.data || [];
+  const selectedStore = storeId ? stores.find((store: { id: string }) => store.id === storeId) || null : null;
+  const activeStores = stores.filter((store: { is_active: boolean }) => store.is_active);
+  const incompleteStores = activeStores.filter((store: { unifi_controller_url: string | null; unifi_site_id: string | null }) => !store.unifi_controller_url || !store.unifi_site_id);
+
+  let controllerProbe: Record<string, unknown> | null = null;
+  if (probe) {
+    if (!selectedStore) return errorResponse("Selecione uma loja para testar a controladora");
+    if (!selectedStore.unifi_controller_url) {
+      controllerProbe = { ok: false, code: "CONTROLLER_URL_MISSING", message: "URL da controladora não configurada" };
+    } else if (!UNIFI_USERNAME || !UNIFI_PASSWORD) {
+      controllerProbe = { ok: false, code: "UNIFI_SECRET_NOT_CONFIGURED", message: "Credenciais UniFi ausentes no ambiente" };
+    } else {
+      const startedAt = Date.now();
+      const httpClient = createUnifiHttpClient();
+      try {
+        const parsed = new URL(selectedStore.unifi_controller_url);
+        const baseUrl = (parsed.origin + parsed.pathname).replace(/\/+$/, "");
+        const login = await unifiLogin(baseUrl, httpClient, UNIFI_USERNAME, UNIFI_PASSWORD);
+        if (!login.ok) {
+          controllerProbe = { ok: false, code: "UNIFI_LOGIN_FAILED", message: login.error || "Falha no login", latency_ms: Date.now() - startedAt };
+        } else {
+          const headers = buildUnifiHeaders(login);
+          const siteId = selectedStore.unifi_site_id || "default";
+          const options: Record<string, unknown> = { method: "GET", headers, redirect: "manual" };
+          if (httpClient) options.client = httpClient;
+          const response = await fetch(`${baseUrl}/api/s/${siteId}/stat/device`, options as RequestInit);
+          const payload = await response.json().catch(() => null);
+          const devices = Array.isArray(payload?.data) ? payload.data : [];
+          controllerProbe = {
+            ok: response.ok,
+            code: response.ok ? "OK" : "UNIFI_DEVICE_QUERY_FAILED",
+            http_status: response.status,
+            access_points: devices.filter((device: Record<string, unknown>) => device.type === "uap").length,
+            latency_ms: Date.now() - startedAt,
+          };
+        }
+      } catch (error) {
+        controllerProbe = { ok: false, code: "UNIFI_PROBE_FAILED", message: (error as Error).message, latency_ms: Date.now() - startedAt };
+      } finally {
+        httpClient?.close();
+      }
+
+    }
+
+    await writeAdminAudit(db, req, userId, "store", "diagnostic_probe", {
+      entityId: selectedStore.id,
+      storeId: selectedStore.id,
+      meta: { ok: controllerProbe?.ok === true, code: controllerProbe?.code || null },
+    });
+  }
+
+  let traceEvents: unknown[] = [];
+  if (traceId) {
+    const { data, error } = await db.from("portal_events")
+      .select("id, session_id, trace_id, event_type, step, status, error_code, error_message, payload, created_at")
+      .eq("trace_id", traceId)
+      .order("created_at", { ascending: true })
+      .limit(200);
+    if (error) return errorResponse(error.message, 500);
+    traceEvents = data || [];
+  }
+
+  return jsonResponse({
+    generated_at: new Date().toISOString(),
+    database: { ok: true },
+    settings: settingsResult.data || null,
+    active_consent: consentResult.data || null,
+    stores: {
+      total: stores.length,
+      active: activeStores.length,
+      incomplete: incompleteStores.map((store: { id: string; slug: string; name: string }) => ({ id: store.id, slug: store.slug, name: store.name })),
+    },
+    selected_store: selectedStore,
+    controller_probe: controllerProbe,
+    sessions_24h: {
+      total: sessions.length,
+      status_counts: statusCounts,
+      top_failures: Object.entries(failCounts)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 10)
+        .map(([reason, count]) => ({ reason, count })),
+      recent_failures: sessions.filter((session: { status: string }) => session.status !== "authorized").slice(0, 25),
+    },
+    trace_events: traceEvents,
+  });
+}
+
 async function handleAdminClusters(req: Request, url: URL): Promise<Response> {
   const auth = await requireAdmin(req);
   if (auth instanceof Response) return auth;
-  const { db } = auth;
+  const { db, userId } = auth;
 
   const city = url.searchParams.get("city");
   const from = url.searchParams.get("from");
@@ -1744,10 +2429,13 @@ async function handleAdminClusters(req: Request, url: URL): Promise<Response> {
     if (error) return errorResponse(error.message, 500);
 
     const headers = ["public_ip", "city", "region", "country", "isp", "asn", "lead_count", "first_seen_at", "last_seen_at"];
-    const csvRows = [headers.join(",")];
+    const csvRows = [headers.map(escapeCsvCell).join(",")];
     for (const c of data || []) {
-      csvRows.push([c.public_ip, c.city || "", c.region || "", c.country || "", c.isp || "", c.asn || "", c.lead_count, c.first_seen_at, c.last_seen_at].join(","));
+      csvRows.push([c.public_ip, c.city || "", c.region || "", c.country || "", c.isp || "", c.asn || "", c.lead_count, c.first_seen_at, c.last_seen_at].map(escapeCsvCell).join(","));
     }
+    await writeAdminAudit(db, req, userId, "origin_ip_cluster", "export_csv", {
+      meta: { city, from, to, count: data?.length || 0 },
+    });
     return new Response(csvRows.join("\n"), {
       headers: { ...corsHeaders, "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="clusters_${new Date().toISOString().slice(0, 10)}.csv"` },
     });
@@ -1762,7 +2450,7 @@ async function handleAdminClusters(req: Request, url: URL): Promise<Response> {
 async function handleAdminStoreIps(req: Request, url: URL): Promise<Response> {
   const auth = await requireAdmin(req);
   if (auth instanceof Response) return auth;
-  const { db } = auth;
+  const { db, userId } = auth;
 
   if (req.method === "GET") {
     const storeId = url.searchParams.get("store_id");
@@ -1780,21 +2468,35 @@ async function handleAdminStoreIps(req: Request, url: URL): Promise<Response> {
     if (!body) return errorResponse("Invalid JSON");
     if (!isValidUUID(body.store_id)) return errorResponse("store_id inválido");
     const ip = sanitizeString(body.public_ip, 45);
-    if (!ip) return errorResponse("public_ip obrigatório");
+    if (!ip || !Validators.ip(ip)) return errorResponse("public_ip inválido");
 
     const { data, error } = await db.from("store_public_ips")
       .insert({ store_id: body.store_id as string, public_ip: ip, is_active: body.is_active !== false })
       .select("id, store_id, public_ip, is_active")
       .single();
     if (error) return errorResponse(error.message, 500);
+    await writeAdminAudit(db, req, userId, "store_public_ip", "create", {
+      entityId: data.id,
+      storeId: data.store_id,
+      meta: { public_ip: data.public_ip },
+    });
     return jsonResponse(data, 201);
   }
 
   if (req.method === "DELETE") {
     const body = await safeParseJson(req);
     if (!body || !isValidUUID(body.id)) return errorResponse("Missing or invalid id");
+    const { data: existing } = await db.from("store_public_ips")
+      .select("id, store_id, public_ip")
+      .eq("id", body.id as string)
+      .maybeSingle();
     const { error } = await db.from("store_public_ips").delete().eq("id", body.id as string);
     if (error) return errorResponse(error.message, 500);
+    await writeAdminAudit(db, req, userId, "store_public_ip", "delete", {
+      entityId: body.id as string,
+      storeId: existing?.store_id || null,
+      meta: { public_ip: existing?.public_ip || null },
+    });
     return jsonResponse({ ok: true });
   }
 
@@ -1805,7 +2507,7 @@ async function handleAdminStoreIps(req: Request, url: URL): Promise<Response> {
 async function handleAdminAccessPoints(req: Request, url: URL): Promise<Response> {
   const auth = await requireAdmin(req);
   if (auth instanceof Response) return auth;
-  const { db } = auth;
+  const { db, userId } = auth;
 
   // GET /admin/access-points[?store_id=uuid]  -> list mappings
   if (req.method === "GET") {
@@ -1840,7 +2542,7 @@ async function handleAdminAccessPoints(req: Request, url: URL): Promise<Response
       const pass = UNIFI_PASSWORD;
       
       if (!user || !pass) {
-        console.error(`[admin-aps] UNIFI_SECRET_NOT_CONFIGURED for store ${store.slug}`);
+        Logger.error("[admin-aps] UNIFI_SECRET_NOT_CONFIGURED", { store_slug: store.slug });
         return errorResponse("Configuração de credenciais UniFi ausente ou incompleta", 500);
       }
       
@@ -1850,12 +2552,10 @@ async function handleAdminAccessPoints(req: Request, url: URL): Promise<Response
         const parsed = new URL(ctrlUrl);
         const baseUrl = (parsed.origin + parsed.pathname).replace(/\/+$/, "");
         const login = await unifiLogin(baseUrl, httpClient, user, pass);
-        if (!login.ok || !login.cookie) return errorResponse(`Falha no login UniFi: ${login.error || "unknown"}`, 502);
-        const headers: Record<string, string> = {
-          Cookie: login.csrfToken
-            ? `unifises=${login.cookie}; csrf_token=${login.csrfToken}`
-            : `unifises=${login.cookie}`,
-        };
+        if (!login.ok || !serializeCookieJar(login.cookies || {})) {
+          return errorResponse(`Falha no login UniFi: ${login.error || "unknown"}`, 502);
+        }
+        const headers = buildUnifiHeaders(login);
         const opts: Record<string, unknown> = { method: "GET", headers, redirect: "manual" };
         if (httpClient) opts.client = httpClient;
         const rDev = await fetch(`${baseUrl}/api/s/${siteId}/stat/device`, opts as RequestInit);
@@ -1879,7 +2579,12 @@ async function handleAdminAccessPoints(req: Request, url: URL): Promise<Response
           .select("ap_mac");
         if (upErr) return errorResponse(upErr.message, 500);
 
-        return jsonResponse({ imported: upData?.length || rows.length, store_slug: store.slug });
+        const imported = upData?.length || rows.length;
+        await writeAdminAudit(db, req, userId, "store_access_point", "import", {
+          storeId: store.id,
+          meta: { imported, store_slug: store.slug },
+        });
+        return jsonResponse({ imported, store_slug: store.slug });
       } catch (err) {
         return errorResponse((err as Error).message, 502);
       } finally {
@@ -1890,11 +2595,12 @@ async function handleAdminAccessPoints(req: Request, url: URL): Promise<Response
     // Manual single upsert
     if (!isValidUUID(body.store_id)) return errorResponse("store_id inválido");
     const macRaw = sanitizeString(body.ap_mac, 32);
-    if (!macRaw) return errorResponse("ap_mac obrigatório");
+    const normalizedMac = normalizeMac(macRaw);
+    if (!normalizedMac) return errorResponse("ap_mac inválido");
 
     const { data, error } = await db.from("store_access_points")
       .upsert({
-        ap_mac: macRaw, // trigger normalizes
+        ap_mac: normalizedMac,
         store_id: body.store_id as string,
         source: "manual",
         name: sanitizeString(body.name, 100),
@@ -1902,6 +2608,10 @@ async function handleAdminAccessPoints(req: Request, url: URL): Promise<Response
       .select("ap_mac, store_id, source, name")
       .single();
     if (error) return errorResponse(error.message, 500);
+    await writeAdminAudit(db, req, userId, "store_access_point", "upsert", {
+      storeId: body.store_id as string,
+      meta: { ap_mac: normalizedMac, source: "manual" },
+    });
     return jsonResponse(data, 201);
   }
 
@@ -1912,8 +2622,16 @@ async function handleAdminAccessPoints(req: Request, url: URL): Promise<Response
     if (!macRaw) return errorResponse("ap_mac obrigatório");
     const apMac = macRaw.replace(/[^a-fA-F0-9]/g, "").toUpperCase();
     if (apMac.length !== 12) return errorResponse("ap_mac inválido");
+    const { data: existing } = await db.from("store_access_points")
+      .select("ap_mac, store_id")
+      .eq("ap_mac", apMac)
+      .maybeSingle();
     const { error } = await db.from("store_access_points").delete().eq("ap_mac", apMac);
     if (error) return errorResponse(error.message, 500);
+    await writeAdminAudit(db, req, userId, "store_access_point", "delete", {
+      storeId: existing?.store_id || null,
+      meta: { ap_mac: apMac },
+    });
     return jsonResponse({ ok: true });
   }
 
@@ -1932,7 +2650,7 @@ function escapeXml(s: string): string {
 async function handleAdminLeadsXml(req: Request, url: URL): Promise<Response> {
   const auth = await requireAdmin(req);
   if (auth instanceof Response) return auth;
-  const { db } = auth;
+  const { db, userId } = auth;
 
   const storeSlug = url.searchParams.get("store_slug");
   const scope = storeSlug ? "store" : (url.searchParams.get("scope") || "all");
@@ -1989,9 +2707,9 @@ async function handleAdminLeadsXml(req: Request, url: URL): Promise<Response> {
   xml += `</leads_export>`;
   const filename = storeSlug ? `leads_${storeSlug}_${dateStamp}.xml` : `leads_all_${dateStamp}.xml`;
 
-  await db.from("audit_logs").insert({
-    store_id: resolvedStoreId, entity: "lead", entity_id: null,
-    action: "export_xml", meta: { scope, store_slug: storeSlug, from, to, count: rows.length },
+  await writeAdminAudit(db, req, userId, "lead", "export_xml", {
+    storeId: resolvedStoreId,
+    meta: { scope, store_slug: storeSlug, from, to, count: rows.length },
   });
 
   return new Response(xml, {
@@ -2000,12 +2718,52 @@ async function handleAdminLeadsXml(req: Request, url: URL): Promise<Response> {
 }
 
 // ========== Housekeeping (Admin manual) ==========
+async function previewHousekeeping(db: ReturnType<typeof supabaseAdmin>): Promise<Record<string, number>> {
+  const now = new Date();
+  const verifCutoff = new Date(now.getTime() - 30 * 86400000).toISOString();
+  const rateLimitCutoff = new Date(now.getTime() - 86400000).toISOString();
+  const sessionCutoff180 = new Date(now.getTime() - 180 * 86400000).toISOString();
+  const sessionCutoff365 = new Date(now.getTime() - 365 * 86400000).toISOString();
+  const auditCutoff = new Date(now.getTime() - 180 * 86400000).toISOString();
+
+  const [verifications, rateLimits, oldSessions, authorizedSessions, auditLogs] = await Promise.all([
+    db.from("captive_verifications").select("id", { count: "exact", head: true }).lt("expires_at", verifCutoff).in("status", ["pending", "expired", "locked"]),
+    db.from("rate_limits").select("key", { count: "exact", head: true }).lt("updated_at", rateLimitCutoff),
+    db.from("captive_sessions").select("id", { count: "exact", head: true }).lt("started_at", sessionCutoff180).in("status", ["started", "submitted", "failed"]),
+    db.from("captive_sessions").select("id", { count: "exact", head: true }).lt("started_at", sessionCutoff365).eq("status", "authorized"),
+    db.from("audit_logs").select("id", { count: "exact", head: true }).lt("created_at", auditCutoff),
+  ]);
+
+  const firstError = [verifications, rateLimits, oldSessions, authorizedSessions, auditLogs].find((result) => result.error)?.error;
+  if (firstError) throw new Error(firstError.message);
+  return {
+    expired_verifications: verifications.count || 0,
+    old_rate_limits: rateLimits.count || 0,
+    old_sessions: (oldSessions.count || 0) + (authorizedSessions.count || 0),
+    old_audit_logs: auditLogs.count || 0,
+  };
+}
+
 async function handleHousekeeping(req: Request): Promise<Response> {
   const auth = await requireAdmin(req);
   if (auth instanceof Response) return auth;
-  const { db } = auth;
+  const { db, userId } = auth;
+
+  const body = await safeParseJson(req);
+  if (!body) return errorResponse("JSON inválido");
+  if (body.dry_run !== false) {
+    const wouldRemove = await previewHousekeeping(db);
+    return jsonResponse({ ok: true, dry_run: true, would_remove: wouldRemove });
+  }
+
+  if (body.confirmation !== "EXCLUIR DADOS EXPIRADOS") {
+    return errorResponse("Confirmação inválida. Faça a simulação antes de executar.", 409);
+  }
 
   const cleaned = await internalHousekeeping(db);
+  await writeAdminAudit(db, req, userId, "system", "housekeeping", {
+    meta: { cleaned },
+  });
   return jsonResponse({ ok: true, cleaned });
 }
 
@@ -2022,7 +2780,7 @@ async function handleCronHousekeeping(req: Request): Promise<Response> {
   const db = supabaseAdmin();
   const cleaned = await internalHousekeeping(db);
 
-  console.log("Cron housekeeping completed");
+  Logger.info("Cron housekeeping completed");
   return jsonResponse({ ok: true, cleaned });
 }
 
@@ -2032,7 +2790,7 @@ async function handlePortalHtml(_req: Request, url: URL): Promise<Response> {
   // Preserves all captive parameters for the SPA to pick up
   const target = new URL("https://minasbrasilwifi.com.br");
   url.searchParams.forEach((value, key) => {
-    target.searchParams.set(key, value);
+    if (key !== "attempt_id" && key !== "resume_token") target.searchParams.set(key, value);
   });
   
   return Response.redirect(target.toString(), 302);
@@ -2044,10 +2802,12 @@ async function handlePortalHtml(_req: Request, url: URL): Promise<Response> {
  */
 async function handleOAuthCallback(req: Request): Promise<Response> {
   const url = new URL(req.url);
-  const target = new URL("https://minasbrasilwifi.com.br");
+  const target = new URL("https://minasbrasilwifi.com.br/oauth/callback");
+  const allowed = new Set(["code", "error", "error_code", "error_description"]);
   
-  // Pass through any tokens or codes in the URL (Supabase uses fragments or query params)
-  url.searchParams.forEach((v, k) => target.searchParams.set(k, v));
+  url.searchParams.forEach((value, key) => {
+    if (allowed.has(key)) target.searchParams.set(key, value);
+  });
   
   // The React app will detect the hash/params and complete the sign-in
   return Response.redirect(target.toString(), 302);
@@ -2114,6 +2874,7 @@ function extractAuthContext(body: Record<string, unknown>): AuthAuthorizeContext
     ssid: Validators.string(body.ssid, 64),
     redirectUrl: Validators.string(body.redirect_url, 500),
     captiveTimestamp: Validators.string(body.captive_timestamp, 32),
+    storeHint: Validators.string(body.store_hint ?? body.store, 64),
   };
 }
 
@@ -2164,7 +2925,7 @@ async function getValidatedAuthContext(
   }
   
   if (val.params) {
-    console.log(`[${contextName}] auth context validated for attempt=${attemptId}`);
+    Logger.info(`[${contextName}] auth context validated`, { attempt_id: attemptId });
     return { ctx: val.params, attemptId, resumeToken };
   }
   
@@ -2204,25 +2965,27 @@ async function authorizeAuthenticatedUser(args: {
   authorized: boolean;
   redirect_url: string;
   fail_reason?: string;
+  replay?: boolean;
+  processing?: boolean;
   store_slug: string;
   store_id: string | null;
 }> {
   const { db, userId, profile, ctx, req, authMethod, traceId, clientIp, userAgent, attemptId, resumeToken } = args;
 
 
-  const detected = await detectStoreFromRequest(db, req, ctx.apMac);
+  const detected = await detectStoreFromRequest(db, req, ctx.apMac, ctx.storeHint);
   const storeSlug = detected.store_slug;
   const storeId = detected.store_id;
   const nowIso = new Date().toISOString();
-  const leaseOwner = `worker-${traceId || crypto.randomUUID()}`;
+  // A trace id is shared by retries and concurrent requests, so it must never
+  // be used as lease ownership. Every invocation gets an unguessable owner.
+  const leaseOwner = `worker-${crypto.randomUUID()}`;
 
   // TRANSACTIONAL CLAIM
   // Implements server-authoritative transactional claim to prevent concurrent authorizations.
   if (!attemptId) {
-    // Legacy support or direct signup/login path without attempt_id should ideally have one,
-    // but we allow it for now if not explicitly blocked.
     // Valid attempt_id and resume_token are required for everything that releases Wi-Fi.
-    console.error(`[auth] AttemptId or ResumeToken missing in authorizeAuthenticatedUser. Method: ${authMethod}`);
+    Logger.error("[auth] attempt capability missing", { auth_method: authMethod });
     if (!attemptId || !resumeToken) {
       return {
         session_id: null,
@@ -2251,7 +3014,7 @@ async function authorizeAuthenticatedUser(args: {
   });
 
   if (claimErr || !claimRes || claimRes.length === 0) {
-    console.error("[auth] Claim RPC failed:", claimErr?.message);
+    Logger.error("[auth] claim RPC failed", { code: claimErr?.code || "CLAIM_FAILED" });
     return {
       session_id: null,
       authorized: false,
@@ -2266,7 +3029,7 @@ async function authorizeAuthenticatedUser(args: {
 
   // RECOVERY LOGIC
   if (claim.result_status === 'recovery_required') {
-    console.warn(`[auth] Recovery required for attempt ${attemptId}. Checking UniFi state...`);
+    Logger.warn("[auth] Recovery required; checking UniFi state", { attempt_id: attemptId });
     
     const { data: store } = await db.from("stores").select("unifi_controller_url, unifi_site_id").eq("id", storeId).maybeSingle();
     
@@ -2287,7 +3050,7 @@ async function authorizeAuthenticatedUser(args: {
       );
 
       if (check.state === 'authorized') {
-        console.log(`[auth] Recovery successful: MAC ${macToCheck} is already authorized in UniFi.`);
+        Logger.info("[auth] recovery confirmed an existing controller authorization", { attempt_id: attemptId });
         const finalRedirect = detected.redirect_url || DEFAULT_REDIRECT_URL;
         const { data: finalizeRes } = await db.rpc("finalize_auth_attempt", {
           p_attempt_id: attemptId,
@@ -2310,7 +3073,7 @@ async function authorizeAuthenticatedUser(args: {
           store_id: storeId,
         };
       } else if (check.state === 'not_authorized') {
-        console.log(`[auth] Recovery: MAC ${macToCheck} NOT authorized. Releasing for retry.`);
+        Logger.info("[auth] recovery found no controller authorization; retry released", { attempt_id: attemptId });
         await db.rpc("release_auth_retry", {
           p_attempt_id: attemptId,
           p_lease_owner: leaseOwner
@@ -2356,7 +3119,7 @@ async function authorizeAuthenticatedUser(args: {
       redirect_url: claim.redirect_url || (detected.redirect_url || DEFAULT_REDIRECT_URL),
       store_slug: storeSlug,
       store_id: storeId,
-      // replayed: true // Property replayed does not exist in the return type
+      replay: true,
     };
   }
 
@@ -2367,6 +3130,7 @@ async function authorizeAuthenticatedUser(args: {
       authorized: false,
       redirect_url: detected.redirect_url || DEFAULT_REDIRECT_URL,
       fail_reason: "PROCESSING_IN_PROGRESS",
+      processing: true,
       store_slug: storeSlug,
       store_id: storeId,
     };
@@ -2447,10 +3211,15 @@ async function authorizeAuthenticatedUser(args: {
     if (existingLead?.id) {
       await db.from("leads").update(leadPayload).eq("id", existingLead.id);
     } else {
-      await db.from("leads").insert({ ...leadPayload, first_seen_at: nowIso, consent_version: "1.0" });
+      await db.from("leads").insert({
+        ...leadPayload,
+        first_seen_at: nowIso,
+        consented_at: nowIso,
+        consent_version: "1.0",
+      });
     }
   } catch (e) {
-    console.warn("[auth] lead upsert failed:", (e as Error).message);
+    Logger.warn("[auth] lead upsert failed", { error: (e as Error).message });
   }
 
   logEvent(db, {
@@ -2491,37 +3260,61 @@ async function authorizeAuthenticatedUser(args: {
       user_agent: userAgent,
     });
 
-    // We do NOT finalize as failed yet if it's an ambiguous exception (like timeout/network)
-    // to allow for manual or automated recovery. 
-    // However, if the lease is held, we must release it or mark as ambigous.
-    // Prompt 11 requirement: "resultado ambíguo após possível envio; exceção interna antes da chamada"
-    
-    // Mark as ambiguous if it could have been sent
-    const isAmbiguous = errorMsg.includes("fetch") || errorMsg.includes("timeout") || errorMsg.includes("Network");
-    
-    const { data: finalizeAmbRes } = await db.rpc("finalize_auth_attempt", {
-      p_attempt_id: attemptId,
-      p_lease_owner: leaseOwner,
-      p_session_id: sessionId,
-      p_authorized: false,
-      p_fail_reason: isAmbiguous ? "AUTHORIZE_AMBIGUOUS_ERROR" : "AUTHORIZE_INTERNAL_ERROR",
-      p_result_code: isAmbiguous ? "AMBIGUOUS" : "FAILED"
-    });
+    // A network/timeout exception can happen after the controller accepted the
+    // command. Keep the attempt in authorizing until its lease expires so the
+    // recovery path performs a read-only UniFi check. Marking it failed here
+    // would make a successful controller command unrecoverable.
+    const normalizedError = errorMsg.toLowerCase();
+    const isAmbiguous = normalizedError.includes("fetch") ||
+      normalizedError.includes("timeout") ||
+      normalizedError.includes("network") ||
+      normalizedError.includes("connection");
 
-    const _finalAmbRecord = Array.isArray(finalizeAmbRes) ? finalizeAmbRes[0] : null;
+    if (!isAmbiguous) {
+      const { data: finalizeFailure, error: finalizeFailureError } = await db.rpc("finalize_auth_attempt", {
+        p_attempt_id: attemptId,
+        p_lease_owner: leaseOwner,
+        p_session_id: sessionId,
+        p_authorized: false,
+        p_fail_reason: "AUTHORIZE_INTERNAL_ERROR",
+        p_result_code: "FAILED"
+      });
+      const failureRecord = Array.isArray(finalizeFailure) ? finalizeFailure[0] : null;
+      if (finalizeFailureError || !failureRecord?.finalized) {
+        Logger.error("[auth] failed to persist internal authorization error", {
+          code: finalizeFailureError?.code || failureRecord?.status_final || "FINALIZE_FAILED"
+        });
+      }
+    }
 
     return {
       session_id: sessionId,
       authorized: false,
       redirect_url: detected.redirect_url || DEFAULT_REDIRECT_URL,
-      fail_reason: isAmbiguous ? "CONNECTION_AMBIGUOUS" : "INTERNAL_ERROR",
+      fail_reason: isAmbiguous ? "PROCESSING_IN_PROGRESS" : "INTERNAL_ERROR",
       store_slug: storeSlug,
       store_id: storeId,
     };
   }
 
-  // FINALIZATION (PROMPT 10)
+  // Persist the controller result before returning success.
   const finalRedirect = detected.redirect_url || DEFAULT_REDIRECT_URL;
+
+  // The controller accepted the command, but the station endpoint did not yet
+  // reflect it. Keep the attempt under its existing lease so recovery performs
+  // a read-only confirmation instead of sending a second authorization command.
+  if (authResult.pending_confirmation && authResult.cmd_accepted_at) {
+    return {
+      session_id: sessionId,
+      authorized: false,
+      redirect_url: finalRedirect,
+      fail_reason: "PROCESSING_IN_PROGRESS",
+      processing: true,
+      store_slug: storeSlug,
+      store_id: storeId,
+    };
+  }
+
   const { data: finalizeRes, error: finalizeErr } = await db.rpc("finalize_auth_attempt", {
     p_attempt_id: attemptId,
     p_lease_owner: leaseOwner,
@@ -2537,7 +3330,7 @@ async function authorizeAuthenticatedUser(args: {
   const isActuallyAuthorized = isActuallyFinalized && !!finalRecord?.authorized;
 
   if (finalizeErr || !isActuallyFinalized) {
-    console.error(`[auth] Finalization failed for attempt ${attemptId}:`, finalizeErr?.message || finalRecord?.status_final);
+    Logger.error("[auth] Finalization failed", { attempt_id: attemptId, error: finalizeErr?.message || finalRecord?.status_final });
   }
 
   return {
@@ -2558,18 +3351,17 @@ function validatePasswordStrength(pw: unknown): { ok: boolean; reason?: string }
   return { ok: true };
 }
 
-/** Compute site base URL for building password-reset redirect */
-function getSiteBaseUrl(req: Request): string {
-  const origin = req.headers.get("origin") || req.headers.get("referer");
-  if (origin) {
-    try { const u = new URL(origin); return `${u.protocol}//${u.host}`; } catch { /* ignore */ }
-  }
+function getPasswordResetRedirect(): string {
+  const configured = Deno.env.get("PASSWORD_RESET_REDIRECT_URL") ||
+    "https://minasbrasilwifi.com.br/reset-password";
   try {
-    const u = new URL(DEFAULT_REDIRECT_URL);
-    // Prefer the wifi captive host if configured; otherwise use whatever's in the secret
-    return `${u.protocol}//${u.host}`;
-  } catch { /* ignore */ }
-  return "https://minasbrasilwifi.com.br";
+    const url = new URL(configured);
+    if (url.protocol === "https:" ||
+        (url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname))) {
+      return url.toString();
+    }
+  } catch { /* fall through to the canonical URL */ }
+  return "https://minasbrasilwifi.com.br/reset-password";
 }
 
 async function handleRequestPasswordReset(req: Request): Promise<Response> {
@@ -2585,18 +3377,18 @@ async function handleRequestPasswordReset(req: Request): Promise<Response> {
     return jsonResponse({ error: "E-mail inválido.", code: "invalid_email" }, 400);
   }
 
-  const rl = await checkRateLimitDb(db, `pwreset:ip:${clientIp || "unknown"}:${email}`, 900, 3, 1800);
+  const emailHash = await sha256Hex(email);
+  const rl = await checkRateLimitDb(db, `pwreset:ip:${clientIp || "unknown"}:${emailHash}`, 900, 3, 1800);
   if (!rl.allowed) {
     // Still respond with generic OK to avoid enumeration; log the throttle.
     logEvent(db, {
       trace_id: traceId, event_type: "password_reset_rate_limited", step: "form", status: "warning",
-      payload: { email_masked: maskEmail(email) }, client_ip: clientIp, user_agent: ua,
+      payload: null, client_ip: clientIp, user_agent: ua,
     });
     return jsonResponse({ ok: true });
   }
 
-  const siteBase = getSiteBaseUrl(req);
-  const redirectTo = `${siteBase}/reset-password`;
+  const redirectTo = getPasswordResetRedirect();
 
   const anonClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
   const { error: resetErr } = await anonClient.auth.resetPasswordForEmail(email, { redirectTo });
@@ -2606,23 +3398,13 @@ async function handleRequestPasswordReset(req: Request): Promise<Response> {
     event_type: resetErr ? "password_reset_failed" : "password_reset_requested",
     step: "form",
     status: resetErr ? "error" : "info",
-    error_message: resetErr?.message,
-    payload: { email_masked: maskEmail(email), redirect_to: redirectTo },
+    payload: { redirect_to: redirectTo },
     client_ip: clientIp,
     user_agent: ua,
   });
 
   // Always respond OK to prevent account enumeration
   return jsonResponse({ ok: true });
-}
-
-function maskEmail(email: string): string {
-  const at = email.indexOf("@");
-  if (at < 1) return "***";
-  const local = email.slice(0, at);
-  const domain = email.slice(at + 1);
-  const shown = local.slice(0, Math.min(2, local.length));
-  return `${shown}${"*".repeat(Math.max(1, local.length - shown.length))}@${domain}`;
 }
 
 async function handleSignup(req: Request): Promise<Response> {
@@ -2670,7 +3452,7 @@ async function handleSignup(req: Request): Promise<Response> {
 
   logEvent(db, {
     trace_id: traceId, event_type: "signup_started", step: "form", status: "info",
-    payload: { email }, client_ip: clientIp, user_agent: ua,
+    payload: null, client_ip: clientIp, user_agent: ua,
   });
 
   // Pre-check: CPF already registered? (only when CPF was provided)
@@ -2680,7 +3462,7 @@ async function handleSignup(req: Request): Promise<Response> {
     if (cpfExists?.id) {
       logEvent(db, {
         trace_id: traceId, event_type: "signup_failed", step: "form", status: "error",
-        error_code: "cpf_already_registered", payload: { email }, client_ip: clientIp,
+        error_code: "cpf_already_registered", payload: null, client_ip: clientIp,
       });
       return jsonResponse({
         error: "Este CPF já possui conta. Entre com o e-mail cadastrado ou recupere a senha.",
@@ -2719,7 +3501,7 @@ async function handleSignup(req: Request): Promise<Response> {
     }
     logEvent(db, {
       trace_id: traceId, event_type: "signup_failed", step: "form", status: "error",
-      error_code: code, error_message: createErr?.message, payload: { email }, client_ip: clientIp,
+      error_code: code, payload: null, client_ip: clientIp,
     });
     return jsonResponse({ error: userMsg, code }, httpStatus);
   }
@@ -2736,7 +3518,7 @@ async function handleSignup(req: Request): Promise<Response> {
   });
 
   if (profErr) {
-    console.error("[signup] profile insert failed:", profErr.message);
+    Logger.error("[signup] profile insert failed", { code: profErr.code || "PROFILE_INSERT_FAILED" });
     // Roll back the auth user so retry works
     try { await db.auth.admin.deleteUser(userId); } catch { /* ignore */ }
     // Postgres unique_violation on profiles_cpf_digits_key → race with another signup
@@ -2784,7 +3566,7 @@ async function handleSignup(req: Request): Promise<Response> {
 
   logEvent(db, {
     session_id: result.session_id, trace_id: traceId, event_type: "signup_success",
-    step: "form", status: "success", payload: { email, store_slug: result.store_slug }, client_ip: clientIp,
+    step: "form", status: "success", payload: { store_slug: result.store_slug }, client_ip: clientIp,
   });
 
   return jsonResponse({
@@ -2820,24 +3602,32 @@ async function handleLogin(req: Request): Promise<Response> {
   if (!rlIp.allowed) {
     return jsonResponse({ error: "Muitas tentativas. Aguarde alguns minutos.", code: "rate_limited" }, 429);
   }
-  const rlEmail = await checkRateLimitDb(db, `login:email:${email}`, 300, 5, 900);
+  const emailHash = await sha256Hex(email);
+  const rlEmail = await checkRateLimitDb(db, `login:email:${emailHash}`, 300, 5, 900);
   if (!rlEmail.allowed) {
     return jsonResponse({ error: "Muitas tentativas para este e-mail. Aguarde.", code: "rate_limited" }, 429);
   }
 
-  logEvent(db, { trace_id: traceId, event_type: "login_started", step: "form", status: "info", payload: { email }, client_ip: clientIp, user_agent: ua });
+  logEvent(db, { trace_id: traceId, event_type: "login_started", step: "form", status: "info", payload: null, client_ip: clientIp, user_agent: ua });
 
   const anonClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
   const { data: sessionData, error: signInErr } = await anonClient.auth.signInWithPassword({ email, password });
   if (signInErr || !sessionData?.session || !sessionData?.user) {
     logEvent(db, {
       trace_id: traceId, event_type: "login_failed", step: "form", status: "error",
-      error_code: "invalid_credentials", error_message: signInErr?.message, payload: { email }, client_ip: clientIp,
+      error_code: "invalid_credentials", payload: null, client_ip: clientIp,
     });
     return jsonResponse({ error: "E-mail ou senha inválidos.", code: "invalid_credentials" }, 401);
   }
 
   const userId = sessionData.user.id;
+  if (await getActiveUserBlock(db, userId)) {
+    logEvent(db, {
+      trace_id: traceId, event_type: "blocked_user_denied", step: "form", status: "warning",
+      error_code: "user_blocked", client_ip: clientIp,
+    });
+    return jsonResponse({ error: "Acesso bloqueado. Procure o atendimento.", code: "user_blocked" }, 403);
+  }
 
   // Load profile
   const { data: profile, error: profErr } = await db
@@ -2863,7 +3653,7 @@ async function handleLogin(req: Request): Promise<Response> {
 
   logEvent(db, {
     session_id: result.session_id, trace_id: traceId, event_type: "login_success",
-    step: "form", status: "success", payload: { email, store_slug: result.store_slug }, client_ip: clientIp,
+    step: "form", status: "success", payload: { store_slug: result.store_slug }, client_ip: clientIp,
   });
 
   return jsonResponse({
@@ -2903,6 +3693,14 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
     return jsonResponse({ needs_login: true, error: "invalid_token" }, 401);
   }
   const userId = userRes.user.id;
+  const activeBlock = await getActiveUserBlock(db, userId);
+  if (activeBlock) {
+    logEvent(db, {
+      trace_id: traceId, event_type: "blocked_user_denied", step: "form", status: "warning",
+      error_code: "user_blocked", client_ip: clientIp,
+    });
+    return jsonResponse({ error: "Acesso bloqueado. Procure o atendimento.", code: "user_blocked" }, 403);
+  }
   const provider = String((userRes.user.app_metadata as any)?.provider || "").toLowerCase();
   const authMethod: "silent" | "google" | "apple" =
     provider === "google" ? "google" :
@@ -2920,20 +3718,20 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
     
     // Protection against user_id swap
     if (val.attempt.user_id && val.attempt.user_id !== userId) {
-      console.error(`[auth] Attempt ${attemptId} already linked to another user`);
+      Logger.error("[auth] Attempt already linked to another user", { attempt_id: attemptId });
       return jsonResponse({ error: "Esta tentativa pertence a outro usuário.", code: "forbidden_attempt" }, 403);
     }
 
-    // handleAuthorizeExisting must support Replay (Prompt 31)
+    // Replay a previously persisted result without a new controller command.
     if (val.status === 'completed') {
-      console.log(`[auth] Replay detected for completed attempt ${attemptId}. Reusing persisted result.`);
+      Logger.info("[auth] Replay detected; reusing persisted result", { attempt_id: attemptId });
       
       const { data: sess } = await db.from("captive_sessions")
         .select("id, status")
         .eq("attempt_id", attemptId)
         .maybeSingle();
       
-      const storeRes = await detectStoreFromRequest(db, req, ctx.apMac);
+      const storeRes = await detectStoreFromRequest(db, req, ctx.apMac, ctx.storeHint);
 
       return jsonResponse({
         session_id: sess?.id || null,
@@ -2950,7 +3748,7 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
     // Both missing (allowed for non-authoritative paths like direct email login)
     // but google auth MUST have tokens
     if (authMethod === "google") {
-      console.error(`[auth] Google login without authoritative tokens. User: ${userId}`);
+      Logger.warn("[auth] Google login rejected because attempt tokens are missing");
       return jsonResponse({ error: "Transação de login inválida ou incompleta.", code: "missing_attempt_tokens" }, 403);
     }
   }
@@ -2991,7 +3789,7 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
       cpf_required: true,
     });
     if (insErr) {
-      console.error("[authorize-existing] profile auto-create failed:", insErr.message);
+      Logger.error("[authorize-existing] profile auto-create failed", { code: insErr.code || "PROFILE_CREATE_FAILED" });
       return jsonResponse({ needs_login: true, error: "profile_create_failed" }, 500);
     }
     profile = {
@@ -3003,14 +3801,14 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
     } as any;
     logEvent(db, {
       trace_id: traceId, event_type: "profile_auto_created", step: "form", status: "info",
-      payload: { provider, email: emailValue }, client_ip: clientIp,
+      payload: { provider }, client_ip: clientIp,
     });
   }
 
   // authMethod is already determined earlier to support replay logic
 
   // Check if CPF is required before UniFi authorization
-    // Authoritative CPF validation (Prompt 20)
+  // Authoritative CPF validation.
   const storedCpf = profile?.cpf_digits || "";
   const isCpfInvalid = !Validators.cpf(storedCpf);
   
@@ -3018,11 +3816,7 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
     if (profile?.cpf_required || isCpfInvalid) {
       logEvent(db, {
         trace_id: traceId, event_type: "google_auth_cpf_pending", step: "form", status: "info",
-        payload: { email: profile?.email, mac: ctx.clientMac, attempt_id: attemptId, is_invalid: isCpfInvalid }, client_ip: clientIp,
-      });
-      logEvent(db, {
-        trace_id: traceId, event_type: "google_auth_cpf_pending", step: "form", status: "info",
-        payload: { email: profile?.email, mac: ctx.clientMac, attempt_id: attemptId }, client_ip: clientIp,
+        payload: { attempt_id: attemptId, cpf_invalid: isCpfInvalid }, client_ip: clientIp,
       });
 
       // Atomic link attempt to user before CPF step
@@ -3064,7 +3858,7 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
           store_id: result.store_id || null,
         }, db, traceId);
       } catch (e) {
-        console.warn("[authorize-existing] CRM sync failed (bg):", (e as Error).message);
+        Logger.warn("[authorize-existing] CRM sync failed", { error: (e as Error).message });
       }
     })();
     // @ts-ignore
@@ -3089,6 +3883,8 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
     store_slug: result.store_slug,
     store_id: result.store_id,
     auth_method: authMethod,
+    replay: result.replay || false,
+    processing: result.processing || false,
     trace_id: traceId,
   });
 }
@@ -3111,27 +3907,24 @@ async function handleUpdateProfile(req: Request): Promise<Response> {
   const { data: userRes, error: userErr } = await anonClient.auth.getUser(accessToken);
   if (userErr || !userRes?.user?.id) return errorResponse("Unauthorized", 401);
   const userId = userRes.user.id;
+  if (await getActiveUserBlock(db, userId)) {
+    return jsonResponse({ error: "Acesso bloqueado. Procure o atendimento.", code: "user_blocked" }, 403);
+  }
 
   const cpfDigits = typeof body.cpf === "string" ? body.cpf.replace(/\D/g, "") : null;
   const phoneDigits = typeof body.phone === "string" ? body.phone.replace(/\D/g, "") : null;
   const name = typeof body.name === "string" ? sanitizeString(body.name, MAX_NAME_LEN) : null;
 
-  const updatePayload: Record<string, any> = {};
-  
   if (phoneDigits) {
     if (!isValidPhone(phoneDigits)) return errorResponse("Telefone inválido.");
-    updatePayload.phone_digits = phoneDigits;
   }
-  if (name) updatePayload.full_name = name;
 
-  if (Object.keys(updatePayload).length === 0) return jsonResponse({ ok: true });
-
-  const { data: userProfile } = await db.from("profiles").select("email").eq("id", userId).maybeSingle();
+  if (!cpfDigits && !phoneDigits && !name) return jsonResponse({ ok: true });
 
   // --- CPF Handle ---
   if (cpfDigits) {
     if (!Validators.cpf(cpfDigits)) {
-      console.warn(`[captive-portal] Invalid CPF attempt user=${userId} cpf=${cpfDigits.slice(0, 3)}...`);
+      Logger.warn("[update-profile] invalid CPF rejected", { trace_id: traceId });
       return errorResponse("CPF inválido.", 400);
     }
 
@@ -3145,10 +3938,10 @@ async function handleUpdateProfile(req: Request): Promise<Response> {
       if (err === "CPF_ALREADY_EXISTS") {
         return errorResponse("Este CPF já está cadastrado em outra conta.", 409);
       }
-      console.error(`[captive-portal] secure_set_cpf error user=${userId}:`, err);
+      Logger.error("[update-profile] secure_set_cpf failed", { trace_id: traceId, code: err });
       return errorResponse("Erro ao atualizar CPF.", 400);
     }
-    console.log(`[captive-portal] CPF set successfully user=${userId}`);
+    Logger.info("[update-profile] CPF stored", { trace_id: traceId });
   }
 
   // --- Profile Update (Name/Phone) ---
@@ -3160,13 +3953,17 @@ async function handleUpdateProfile(req: Request): Promise<Response> {
     });
 
     if (profileErr || !profileRes?.ok) {
-      console.error(`[captive-portal] secure_update_profile error user=${userId}:`, profileErr || profileRes?.error);
+      Logger.error("[update-profile] secure_update_profile failed", {
+        trace_id: traceId,
+        code: profileErr?.code || profileRes?.error || "PROFILE_UPDATE_FAILED"
+      });
       return errorResponse("Erro ao atualizar perfil.");
     }
   }
 
   // Background sync with CRM on profile update
   if (cpfDigits && name && phoneDigits) {
+    const { data: userProfile } = await db.from("profiles").select("email").eq("id", userId).maybeSingle();
     const bgSync = (async () => {
       try {
         await syncWithClubeMais({
@@ -3176,7 +3973,7 @@ async function handleUpdateProfile(req: Request): Promise<Response> {
           email: userProfile?.email || null,
         }, db, traceId);
       } catch (e) {
-        console.warn("[update-profile] ClubeMais sync failed (bg):", (e as Error).message);
+        Logger.warn("[update-profile] ClubeMais sync failed", { error: (e as Error).message });
       }
     })();
     // @ts-ignore
@@ -3188,7 +3985,11 @@ async function handleUpdateProfile(req: Request): Promise<Response> {
 
   logEvent(db, {
     trace_id: traceId, event_type: "profile_updated", step: "form", status: "success",
-    payload: { fields: Object.keys(updatePayload) }, client_ip: clientIp, user_agent: ua,
+    payload: {
+      fields: [cpfDigits ? "cpf" : null, phoneDigits ? "phone" : null, name ? "name" : null].filter(Boolean)
+    },
+    client_ip: clientIp,
+    user_agent: ua,
   });
 
   return jsonResponse({ ok: true });
@@ -3219,7 +4020,21 @@ Deno.serve(async (req: Request) => {
 
   try {
     // 1. System/Health endpoints
-    if (path === "/health" || path === "/ready") return jsonResponse({ status: "ok" });
+    if (path === "/health") return jsonResponse({ status: "ok" });
+    if (path === "/ready") {
+      const { error: databaseError } = await supabaseAdmin()
+        .from("global_settings")
+        .select("id")
+        .eq("id", 1)
+        .maybeSingle();
+      const checks = {
+        database: !databaseError,
+        unifi_credentials: !!UNIFI_USERNAME && !!UNIFI_PASSWORD,
+        cron_secret: !!CRON_SECRET,
+      };
+      const ready = checks.database && checks.unifi_credentials;
+      return jsonResponse({ status: ready ? "ready" : "degraded", checks }, ready ? 200 : 503);
+    }
 
     // 2. Redirect standard captive aliases to React portal
     if (
@@ -3245,14 +4060,19 @@ Deno.serve(async (req: Request) => {
     if (path === "/authorize-existing" && req.method === "POST") return await handleAuthorizeExisting(req);
 
     // 3. Admin endpoints (requires service_role/admin auth)
+    if (path === "/admin/me") return await handleAdminMe(req);
+    if (path === "/admin/users") return await handleAdminUsers(req, url);
     if (path === "/admin/settings") return await handleAdminSettings(req);
     if (path === "/admin/stores") return await handleAdminStores(req);
     if (path === "/admin/store-ips") return await handleAdminStoreIps(req, url);
     if (path === "/admin/access-points") return await handleAdminAccessPoints(req, url);
     if (path === "/admin/leads-xml" && req.method === "GET") return await handleAdminLeadsXml(req, url);
+    if (path === "/admin/leads/actions") return await handleAdminLeadActions(req);
     if (path === "/admin/leads") return await handleAdminLeads(req, url);
     if (path === "/admin/consent") return await handleAdminConsent(req);
     if (path === "/admin/sessions") return await handleAdminSessions(req, url);
+    if (path === "/admin/diagnostics") return await handleAdminDiagnostics(req, url);
+    if (path === "/admin/audit") return await handleAdminAudit(req, url);
     if (path === "/admin/clusters") return await handleAdminClusters(req, url);
     
     
@@ -3290,11 +4110,7 @@ async function validateOAuthAttempt(
   }
 
   // Tokens are stored hashed in DB
-  const encoder = new TextEncoder();
-  const tokenData = encoder.encode(token);
-  const hashBuffer = await crypto.subtle.digest("SHA-256", tokenData);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  const tokenHash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  const tokenHash = await sha256Hex(token);
 
   const { data: attempt, error: fetchErr } = await db
     .from("captive_auth_attempts")
@@ -3323,7 +4139,7 @@ async function validateOAuthAttempt(
     return { status: 'invalid', error: `Esta tentativa foi finalizada com erro ou cancelada (status: ${attempt.status}).` };
   }
 
-  // Interpretation of status (Prompt 31)
+  // Interpret persisted attempt state.
   let status: 'active' | 'processing' | 'completed' | 'invalid' = 'active';
   if (attempt.status === 'authorized') {
     status = 'completed';
@@ -3337,6 +4153,7 @@ async function validateOAuthAttempt(
     ssid: attempt.ssid,
     redirectUrl: attempt.original_url, 
     captiveTimestamp: attempt.captive_timestamp,
+    storeHint: attempt.store_hint,
   };
 
   return { status, params, attempt };
@@ -3362,7 +4179,7 @@ async function handleOAuthInit(req: Request): Promise<Response> {
     const rl = await checkRateLimitDb(db, `oauth-init:mac:${clientMac}`, 60, 5, 300);
     if (!rl.allowed) return errorResponse("Muitas tentativas. Aguarde alguns minutos.", 429);
   } catch (e) {
-    console.error("[oauth-init] Rate limiter error:", e);
+    Logger.error("[oauth-init] Rate limiter error", { error: (e as Error).message });
     return errorResponse("Serviço temporariamente indisponível.", 503);
   }
 
@@ -3372,10 +4189,7 @@ async function handleOAuthInit(req: Request): Promise<Response> {
   const token = Array.from(tokenBytes).map(b => b.toString(16).padStart(2, '0')).join('');
 
   // Hash it for DB storage
-  const encoder = new TextEncoder();
-  const tokenData = encoder.encode(token);
-  const hashBuffer = await crypto.subtle.digest("SHA-256", tokenData);
-  const tokenHash = new TextDecoder().decode(encode(new Uint8Array(hashBuffer)));
+  const tokenHash = await sha256Hex(token);
 
   const now = new Date();
   const expiresAt = new Date(now.getTime() + 10 * 60 * 1000); // 10 minutes
@@ -3398,7 +4212,7 @@ async function handleOAuthInit(req: Request): Promise<Response> {
     .single();
 
   if (insErr || !attempt?.id) {
-    console.error("[oauth-init] insert failed:", insErr?.message);
+    Logger.error("[oauth-init] insert failed", { code: insErr?.code || "ATTEMPT_INSERT_FAILED" });
     return errorResponse("Erro ao inicializar transação de login.", 500);
   }
 
@@ -3428,7 +4242,7 @@ async function handleOAuthRestart(req: Request): Promise<Response> {
     const rlMac = await checkRateLimitDb(db, `oauth-restart:attempt:${attemptId}`, 60, 3, 300);
     if (!rlMac.allowed) return errorResponse("Limite de reinício excedido para esta tentativa.", 429);
   } catch (e) {
-    console.error("[oauth-restart] Rate limiter unavailable:", e);
+    Logger.error("[oauth-restart] Rate limiter unavailable", { error: (e as Error).message });
     return errorResponse("Serviço temporariamente indisponível.", 503);
   }
 
@@ -3441,7 +4255,7 @@ async function handleOAuthRestart(req: Request): Promise<Response> {
 
   if (error || !data || data.length === 0) {
     const msg = error?.message || "Erro ao reiniciar sessão.";
-    console.error("[oauth-restart] RPC failed:", error);
+    Logger.error("[oauth-restart] RPC failed", { code: error?.code || "OAUTH_RESTART_FAILED" });
     
     if (msg === 'INVALID_TOKEN' || msg === 'ATTEMPT_NOT_FOUND') {
       return errorResponse("Transação inválida ou token incorreto.", 403);
@@ -3459,4 +4273,3 @@ async function handleOAuthRestart(req: Request): Promise<Response> {
     token: result.new_token
   });
 }
-

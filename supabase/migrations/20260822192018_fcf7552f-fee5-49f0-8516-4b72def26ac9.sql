@@ -1,4 +1,4 @@
--- Migration to replace pseudo-idempotency with transactional claims (Prompt 06)
+-- Replace pseudo-idempotency with transactional claims.
 
 -- 1. Database schema updates
 -- Add attempt_id to captive_sessions

@@ -1,4 +1,4 @@
--- Migration to harden Google OAuth attempts (Prompt 05)
+-- Harden Google OAuth attempts.
 -- Objetivo: Tornar as tentativas server-authoritative e impedir manipulação via Data API.
 
 -- 1. Revogar todos os privilégios públicos
@@ -22,7 +22,10 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'captive_auth_attempts_status_check') THEN
         ALTER TABLE public.captive_auth_attempts 
         ADD CONSTRAINT captive_auth_attempts_status_check 
-        CHECK (status IN ('created', 'authorized', 'failed', 'expired', 'cancelled'));
+        CHECK (status IN (
+            'created', 'oauth_redirected', 'callback_received', 'awaiting_cpf',
+            'authorizing', 'authorized', 'failed', 'expired', 'cancelled'
+        ));
     END IF;
 END $$;
 

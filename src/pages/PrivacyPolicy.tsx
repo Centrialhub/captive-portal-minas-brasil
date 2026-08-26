@@ -18,27 +18,28 @@ export default function PrivacyPolicy() {
 
         <div className="policy-body">
           <p className="policy-intro">
-            A Minas Brasil valoriza a privacidade e a proteção dos dados pessoais de seus clientes, visitantes e colaboradores. Esta Política de Privacidade explica de forma transparente como coletamos, utilizamos, armazenamos e protegemos os seus dados ao utilizar o nosso serviço de acesso à internet sem fio (Wi-Fi) por meio do nosso Captive Portal com autenticação via Google OAuth.
+            Esta Política explica como a Minas Brasil trata dados pessoais quando você usa o Wi-Fi disponibilizado por meio deste Captive Portal, seja pelo cadastro com e-mail e senha, seja pela autenticação com Google.
           </p>
 
           <section className="policy-section">
             <h2>1. Dados Pessoais Coletados</h2>
-            <p>
-              Ao optar por se autenticar via Google no Captive Portal, solicitamos permissão de acesso estritamente para os seguintes escopos básicos (OpenID Connect):
-            </p>
+            <p>Conforme a forma de acesso escolhida, podemos tratar:</p>
             <ul>
               <li>
-                <strong>openid:</strong> Identificador único da sessão para autenticação segura.
+                <strong>Dados cadastrais:</strong> nome, e-mail, telefone e CPF informado pelo usuário.
               </li>
               <li>
-                <strong>userinfo.profile:</strong> Nome completo, foto de perfil pública e idioma de preferência.
+                <strong>Login com Google:</strong> identificador da conta, nome, e-mail verificado, foto de perfil e idioma disponibilizados pelos escopos básicos do OpenID Connect.
               </li>
               <li>
-                <strong>userinfo.email:</strong> Endereço de e-mail e confirmação de e-mail verificado.
+                <strong>Dados técnicos e de acesso:</strong> endereços MAC do dispositivo e do ponto de acesso, endereço IP, SSID, unidade, data e hora, navegador e resultado da autorização da rede.
+              </li>
+              <li>
+                <strong>Consentimento:</strong> versão dos termos aceitos e data e hora do aceite.
               </li>
             </ul>
             <p className="policy-note">
-              <strong>Importante:</strong> O Captive Portal Minas Brasil <strong>NÃO</strong> acessa, coleta ou armazena senhas, contatos, e-mails pessoais, arquivos do Google Drive ou qualquer outro dado privado da sua conta Google.
+              <strong>Importante:</strong> não solicitamos acesso a contatos, mensagens ou arquivos do Google Drive. Senhas são processadas pelo serviço de autenticação e não são armazenadas em texto legível pela aplicação.
             </p>
           </section>
 
@@ -50,10 +51,13 @@ export default function PrivacyPolicy() {
                 <strong>Autenticação e Liberação de Acesso:</strong> Identificar o usuário e liberar a navegação na rede Wi-Fi.
               </li>
               <li>
-                <strong>Segurança e Prevenção de Abusos:</strong> Garantir a estabilidade da rede e mitigar riscos de uso indevido.
+                <strong>Segurança e prevenção de abusos:</strong> proteger usuários e infraestrutura, investigar falhas e impedir uso indevido.
               </li>
               <li>
-                <strong>Cumprimento do Marco Civil da Internet (Lei nº 12.965/2014):</strong> Manter registros de acesso a aplicações de internet pelo prazo legal estipulado.
+                <strong>Operação e suporte:</strong> identificar a unidade, diagnosticar a conexão e manter registros necessários à operação e ao cumprimento de obrigações aplicáveis.
+              </li>
+              <li>
+                <strong>Relacionamento:</strong> registrar o cadastro no Clube Mais/CRM, quando essa integração estiver habilitada e for aplicável ao fluxo escolhido.
               </li>
             </ol>
           </section>
@@ -61,35 +65,50 @@ export default function PrivacyPolicy() {
           <section className="policy-section">
             <h2>3. Compartilhamento de Dados</h2>
             <p>
-              A Minas Brasil <strong>não vende, aluga ou compartilha</strong> seus dados pessoais com terceiros para fins comerciais ou publicitários. O compartilhamento ocorre apenas:
+              A Minas Brasil não vende nem aluga seus dados pessoais. O tratamento pode envolver:
             </p>
             <ul>
               <li>
-                Para atendimento de requisições judiciais ou de autoridades policiais competentes, nos termos do Marco Civil da Internet.
+                provedores de autenticação, banco de dados, hospedagem e infraestrutura necessários ao funcionamento do portal;
               </li>
               <li>
-                Com provedores de infraestrutura de TI estritamente necessários para a operação e manutenção do Captive Portal.
+                Google, quando você escolhe essa forma de login;
+              </li>
+              <li>
+                Clube Mais/CRM, quando a integração de relacionamento estiver habilitada;
+              </li>
+              <li>
+                autoridades públicas, quando houver obrigação legal ou ordem válida.
               </li>
             </ul>
           </section>
 
           <section className="policy-section">
-            <h2>4. Direitos do Titular (LGPD)</h2>
+            <h2>4. Armazenamento e Segurança</h2>
             <p>
-              Nos termos da Lei Geral de Proteção de Dados (Lei nº 13.709/2018 - LGPD), você pode a qualquer momento:
+              Usamos controles técnicos e administrativos para restringir o acesso e proteger os dados. Os registros são mantidos pelo período necessário às finalidades informadas e às obrigações aplicáveis, e depois eliminados ou anonimizados quando cabível. O portal usa armazenamento local do navegador para preservar o contexto da autenticação e da conexão.
             </p>
-            <ul>
-              <li>Confirmar a existência de tratamento de seus dados.</li>
-              <li>
-                Revogar a permissão de acesso deste aplicativo diretamente na sua conta Google na seção <strong>"Segurança &gt; Aplicativos de terceiros com acesso à sua conta"</strong>.
-              </li>
-            </ul>
           </section>
 
           <section className="policy-section">
-            <h2>5. Contato</h2>
+            <h2>5. Direitos do Titular (LGPD)</h2>
+            <p>Nos termos da LGPD, você pode solicitar, conforme aplicável:</p>
+            <ul>
+              <li>confirmação do tratamento e acesso aos dados;</li>
+              <li>correção de dados incompletos, inexatos ou desatualizados;</li>
+              <li>informação sobre compartilhamentos;</li>
+              <li>anonimização, bloqueio, portabilidade ou eliminação, nas hipóteses legais;</li>
+              <li>revogação do consentimento e informação sobre suas consequências.</li>
+            </ul>
             <p>
-              Em caso de dúvidas sobre este documento ou sobre o tratamento de seus dados pessoais, entre em contato com a equipe técnica ou com o encarregado de dados (DPO) da <strong>Minas Brasil</strong>.
+              A permissão concedida ao Google também pode ser revogada nas configurações de segurança da sua Conta Google. A revogação não elimina automaticamente registros cuja conservação seja necessária por outra base legal.
+            </p>
+          </section>
+
+          <section className="policy-section">
+            <h2>6. Contato</h2>
+            <p>
+              O controlador é a <strong>Guedes e Paixão Ltda. (Drogaria Minas-Brasil)</strong>. Para dúvidas ou para exercer seus direitos, use o telefone <strong>(38) 2211-2080</strong> ou o <a href="https://www.drogariaminasbrasil.com.br/fale-conosco/" target="_blank" rel="noreferrer">canal oficial de atendimento</a>.
             </p>
           </section>
         </div>

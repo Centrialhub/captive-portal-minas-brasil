@@ -1,0 +1,5 @@
+# Default routes already embedded in the image. Use this file only when the
+# Easypanel service has a read-only mount at /etc/nginx/routes/routes.conf.
+location ~ ^/(cintra|cula|dpedro|drive|hu|ibituruna|joao23|major|matriz|mestra|povao|shopping)(?:/|$) {
+    proxy_pass http://177.85.235.28:8083;
+}

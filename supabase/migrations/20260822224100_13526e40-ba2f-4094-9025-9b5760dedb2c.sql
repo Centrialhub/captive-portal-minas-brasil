@@ -22,4 +22,4 @@ BEGIN
     END IF;
 END $$;
 
-COMMENT ON TABLE public.captive_sessions IS 'Historical portal sessions. OTP subsystem removed (Prompt 43).';
+COMMENT ON TABLE public.captive_sessions IS 'Historical portal sessions; the legacy OTP subsystem is disabled.';

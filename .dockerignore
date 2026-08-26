@@ -3,6 +3,9 @@ dist
 .git
 .pnpm-store
 tmp
+*.tsbuildinfo
+supabase/.temp
+public/build-info.json
 *.log
 # .env is explicitly excluded to prevent accidental secret leakage in images
 # Configuration must be injected via build-args or runtime environment

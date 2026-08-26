@@ -1,4 +1,4 @@
--- PROMPT 05: Centralizar segredos UniFi em armazenamento seguro
+-- Centralize UniFi credentials in runtime secret storage.
 -- Migration forward-only para limpar credenciais legadas e restringir acesso.
 
 -- 1. Zerar valores legados de credenciais UniFi na tabela stores

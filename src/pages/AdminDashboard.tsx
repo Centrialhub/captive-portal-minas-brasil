@@ -181,7 +181,6 @@ export default function AdminDashboard() {
       loadAuthCounts();
       loadAuthAttempts();
     }
-    /* eslint-disable-next-line */
   }, [isAdmin, statusFilter, stepFilter, authMethodFilter, rangeHours]);
 
   const openSession = async (s: SessionRow) => {
@@ -539,4 +538,3 @@ function AuthEventPill({ type }: { type: string }) {
   const [bg, fg, label] = map[type] || ["#f3f4f6", "#374151", type];
   return <span style={{ background: bg, color: fg, padding: "2px 8px", borderRadius: 999, fontSize: 11, fontWeight: 600 }}>{label}</span>;
 }
-

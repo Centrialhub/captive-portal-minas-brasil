@@ -2,13 +2,10 @@ import { getApiBase, getOrCreateTraceId } from "./portal-utils";
 
 const API_BASE = getApiBase();
 
-/** Forward ?store= param from the landing URL to API calls */
-function getStoreParam(): string {
-  const params = new URLSearchParams(window.location.search);
-  let store = params.get("store");
-  if (!store && (params.get("id") || params.get("mac"))) {
-    store = "matriz";
-  }
+/** Forward only an explicit ?store= param; server-side attempt/AP data is authoritative. */
+export function getStoreParam(search = window.location.search): string {
+  const params = new URLSearchParams(search);
+  const store = params.get("store");
   return store ? `?store=${encodeURIComponent(store)}` : "";
 }
 
@@ -169,7 +166,7 @@ export const api = {
   },
 
   initOAuth(data: {
-    params: Record<string, string>;
+    params: Record<string, string | undefined>;
     original_url: string;
   }): Promise<{ attempt_id: string; token: string }> {
     return xhrRequest<{ attempt_id: string; token: string }>("/oauth/init", {

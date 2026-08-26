@@ -11,6 +11,13 @@ node_modules
 dist
 dist-ssr
 *.local
+.pnpm-store
+tmp
+*.tsbuildinfo
+supabase/.temp
+public/build-info.json
+bun.lock
+bun.lockb
 
 # Editor directories and files
 .vscode/*

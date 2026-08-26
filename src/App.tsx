@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { api } from "./lib/api";
+import { api, ApiError } from "./lib/api";
 import { supabase } from "./integrations/supabase/client";
 import {
   getQueryParams,
@@ -9,6 +9,7 @@ import {
   Validators,
 } from "./lib/portal-utils";
 import { OAuthTracker } from "./lib/oauth-tracker";
+import { getAuthFailureMessage, isRecoverableAuthResult } from "./lib/auth-outcome";
 import { useOAuthCallback } from "./hooks/useOAuthCallback";
 import logoMinasBrasil from "./assets/logo-minas-brasil.png";
 import Footer from "./components/Footer";
@@ -152,7 +153,7 @@ export default function App() {
     },
     onError: (msg) => {
       setError(msg);
-      setStep("login");
+      setStep("error");
     },
     onNeedsCpf: (profile) => {
       if (profile) setGoogleUser(profile);
@@ -170,7 +171,7 @@ export default function App() {
 
   useEffect(() => {
     // Force production domain for OAuth compatibility
-    const isLocal = window.location.hostname === "localhost" || window.location.hostname.includes("lovable.app");
+    const isLocal = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
     const isCanonical = window.location.hostname === "minasbrasilwifi.com.br" && window.location.protocol === "https:";
     
     if (!isLocal && !isCanonical) {
@@ -190,16 +191,7 @@ export default function App() {
       () => { /* keep fallback */ },
     );
 
-    // Initial session check for non-OAuth flow (silent login)
-    if (!isOAuthCallbackFlow && step === "loading") {
-      supabase.auth.getSession().then(({ data: { session } }) => {
-        if (!isMounted.current) return;
-        if (!session) {
-          setStep("login");
-        }
-      });
-    }
-  }, [isOAuthCallbackFlow, step]);
+  }, []);
 
   const completeAuthenticatedSession = async (session: any, source: "google" | "silent") => {
     // Legacy helper kept for CPF submit flow, but most flows now use the hook
@@ -210,7 +202,12 @@ export default function App() {
       try {
         setStep("authorizing");
         const params = getQueryParams();
-        const tokens = OAuthTracker.getTokens();
+        const tokens = await OAuthTracker.ensureAttempt();
+        if (!tokens) {
+          setError("Não foi possível criar uma tentativa segura. Tente novamente.");
+          setStep("error");
+          return;
+        }
         const result = await api.authorizeExisting({
           access_token: session.access_token,
           client_mac: params.client_mac,
@@ -234,13 +231,20 @@ export default function App() {
           return result;
         }
 
-        setError(result?.fail_reason || "Não foi possível liberar o acesso.");
-        setStep("login");
+        if (!isRecoverableAuthResult(result)) OAuthTracker.clearAll();
+        setError(getAuthFailureMessage(result));
+        setStep("error");
         return result;
       } catch (err) {
-        setError("Erro ao processar liberação. Tente novamente.");
-        setStep("login");
-        throw err;
+        if (err instanceof ApiError && err.kind === "http" && [400, 401, 403].includes(err.status || 0)) {
+          OAuthTracker.clearAll();
+          setError(err.message);
+          setStep("error");
+          return;
+        }
+        setError(getAuthFailureMessage({ processing: true }));
+        setStep("error");
+        console.error("[auth] completion failed", err);
       } finally {
         processingAuthRef.current = null;
       }
@@ -248,6 +252,27 @@ export default function App() {
 
     return processingAuthRef.current;
   };
+
+  // Existing sessions outside the OAuth callback use a fresh authoritative
+  // attempt and the same completion path. Without this branch, a returning
+  // user with a valid session remains on the loading screen indefinitely.
+  useEffect(() => {
+    if (isOAuthCallbackFlow || stepRef.current !== "loading") return;
+    let cancelled = false;
+
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (cancelled || !isMounted.current) return;
+      if (!session) {
+        setStep("login");
+        return;
+      }
+      void completeAuthenticatedSession(session, "silent");
+    }).catch(() => {
+      if (!cancelled && isMounted.current) setStep("login");
+    });
+
+    return () => { cancelled = true; };
+  }, [isOAuthCallbackFlow]);
 
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -262,6 +287,11 @@ export default function App() {
     try {
       const params = getQueryParams();
       const tokens = await OAuthTracker.ensureAttempt();
+      if (!tokens) {
+        setError("Não foi possível criar uma tentativa segura. Tente novamente.");
+        setBusy(false);
+        return;
+      }
       
       const result = await api.login({
         email: loginEmail.trim().toLowerCase(),
@@ -271,8 +301,8 @@ export default function App() {
         ssid: params.ssid,
         redirect_url: params.redirect_url,
         captive_timestamp: params.captive_timestamp,
-        attempt_id: tokens?.attempt_id,
-        resume_token: tokens?.token,
+        attempt_id: tokens.attempt_id,
+        resume_token: tokens.token,
       });
       if (result?.error) {
         setError(result.error);
@@ -287,9 +317,9 @@ export default function App() {
         });
       }
       if (!handleAuthOutcome(result, "Conectado com sucesso!")) {
-        setError(
-          "Login realizado, mas o Wi-Fi não confirmou a liberação. Desconecte e conecte-se novamente à rede.",
-        );
+        if (!isRecoverableAuthResult(result)) OAuthTracker.clearAll();
+        setError(getAuthFailureMessage(result));
+        setStep("error");
       }
     } catch (err: any) {
       setError(err?.message || "Não foi possível conectar. Por favor, verifique seus dados e tente novamente.");
@@ -366,6 +396,11 @@ export default function App() {
     try {
       const params = getQueryParams();
       const tokens = await OAuthTracker.ensureAttempt();
+      if (!tokens) {
+        setError("Não foi possível criar uma tentativa segura. Tente novamente.");
+        setBusy(false);
+        return;
+      }
       
       const result = await api.signup({
         name: name.trim(),
@@ -378,8 +413,8 @@ export default function App() {
         redirect_url: params.redirect_url,
         captive_timestamp: params.captive_timestamp,
         consent_version: boot.consent?.version || "1.0",
-        attempt_id: tokens?.attempt_id,
-        resume_token: tokens?.token,
+        attempt_id: tokens.attempt_id,
+        resume_token: tokens.token,
       });
 
       if (result?.error) {
@@ -395,9 +430,9 @@ export default function App() {
         });
       }
       if (!handleAuthOutcome(result, "Cadastro concluído. Conectado com sucesso!")) {
-        setError(
-          "Conta criada, mas o Wi-Fi não confirmou a liberação. Desconecte e conecte-se novamente à rede.",
-        );
+        if (!isRecoverableAuthResult(result)) OAuthTracker.clearAll();
+        setError(getAuthFailureMessage(result));
+        setStep("error");
       }
     } catch (err: any) {
       setError(err?.message || "Não foi possível concluir seu cadastro. Por favor, verifique os dados e tente novamente.");
@@ -441,7 +476,7 @@ export default function App() {
         return;
       }
       
-      const redirectTo = `https://minasbrasilwifi.com.br/oauth/callback?attempt_id=${tokens.attempt_id}&resume_token=${tokens.token}`;
+      const redirectTo = "https://minasbrasilwifi.com.br/oauth/callback";
       const { error: err } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: { redirectTo, skipBrowserRedirect: false },
@@ -493,22 +528,15 @@ export default function App() {
         });
 
         if (res.attempt_id && res.token) {
-          // 2. Remove old pair from URL using history API to prevent concurrency
-          const current = new URLSearchParams(window.location.search);
-          current.delete("attempt_id");
-          current.delete("resume_token");
-          const qs = current.toString();
-          const cleanUrl = window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash;
-          window.history.replaceState(null, "", cleanUrl);
-
-          // 3. Update storage with NEW pair
+          // 2. Update storage with the new pair. Capability tokens are never
+          // placed in the callback URL, browser history, or referrer headers.
           OAuthTracker.updateTokens(res.attempt_id, res.token);
           
-          // 4. Controlled signOut
+          // 3. Controlled signOut
           await supabase.auth.signOut();
 
-          // 5. Immediate new OAuth with strictly the new pair
-          const callbackUrl = `https://minasbrasilwifi.com.br/oauth/callback?attempt_id=${res.attempt_id}&resume_token=${res.token}`;
+          // 4. Immediate new OAuth; the pair stays in local storage.
+          const callbackUrl = "https://minasbrasilwifi.com.br/oauth/callback";
           
           const { error: oauthErr } = await supabase.auth.signInWithOAuth({
             provider: "google",
@@ -608,6 +636,7 @@ export default function App() {
   // ── ERROR ──
   if (step === "error") {
     const isOAuthError = error.includes("Google") || OAuthTracker.isValidOAuthFlow();
+    const isRecoverable = error.includes("ainda está sendo confirmada");
     return (
       <div className="portal-wrapper">
         <div className="portal-card" style={{ textAlign: "center" }}>
@@ -616,7 +645,9 @@ export default function App() {
           <button 
             onClick={() => { 
               setError(""); 
-              if (isOAuthError) {
+              if (isRecoverable) {
+                window.location.reload();
+              } else if (isOAuthError) {
                 OAuthTracker.clearAll();
                 setStep("login");
               } else {
@@ -625,7 +656,7 @@ export default function App() {
             }} 
             className="portal-btn"
           >
-            {isOAuthError ? "Voltar e tentar novamente" : "Tentar novamente"}
+            {isRecoverable ? "Verificar novamente" : isOAuthError ? "Voltar e tentar novamente" : "Tentar novamente"}
           </button>
           <Footer />
         </div>
@@ -785,7 +816,7 @@ export default function App() {
                     type="checkbox" checked={signupFields.consented}
                     onChange={(e) => setSignupFields(prev => ({ ...prev, consented: e.target.checked }))}
                   />
-                  <span>Li e aceito os <button type="button" className="text-red-600 font-bold hover:underline bg-transparent border-none p-0 inline cursor-pointer" onClick={() => navigate("/privacy")}>Termos de Privacidade</button></span>
+                  <span>Li e aceito os <button type="button" className="text-red-600 font-bold hover:underline bg-transparent border-none p-0 inline cursor-pointer" onClick={() => navigate("/politica-privacidade")}>Termos de Privacidade</button></span>
                 </label>
               </div>
             )}
