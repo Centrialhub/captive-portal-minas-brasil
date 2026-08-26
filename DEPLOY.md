@@ -45,19 +45,35 @@ com autenticação própria, cookies UniFi completos e secrets disponíveis.
 
 ## 4. Frontend
 
-Publique o `Dockerfile` da raiz com estes build arguments, preservando os
-valores configurados no EasyPanel:
+No EasyPanel, use o fluxo de repositório:
+
+- **Source:** GitHub ou Git, apontando para o repositório e branch publicados.
+- **Build:** Dockerfile.
+- **Build Path:** `/` (raiz do repositório).
+- **Dockerfile Path:** `Dockerfile`.
+- **Porta interna:** `80`.
+
+Não use **Dockerfile** como tipo de fonte inline: esse modo não possui os
+arquivos do repositório e, portanto, não atende aos comandos `COPY` deste
+projeto. Também não defina `GIT_SHA` manualmente nesse fluxo; o EasyPanel o
+injeta automaticamente a partir do commit selecionado.
+
+Preserve apenas estes valores públicos nas variáveis do serviço:
 
 - `VITE_SUPABASE_URL=https://fqamejlyytrhovawgtwg.supabase.co`
 - `VITE_SUPABASE_PUBLISHABLE_KEY=<chave publicável atual>`
-- `GIT_SHA=<SHA completo da versão publicada>` — o EasyPanel injeta este
-  argumento automaticamente quando a origem é Git/GitHub. Em deploy por
-  upload, defina-o manualmente com 40 ou 64 caracteres hexadecimais.
+
+Antes de disparar o deploy, confirme no mesmo commit a presença de
+`Dockerfile`, `package.json`, `package-lock.json`, `.dockerignore`, `src/`,
+`public/`, `scripts/` e `supabase/`. Em especial, `scripts/check-assets.ts`
+deve validar as assinaturas dos arquivos com `Buffer.subarray` e não deve
+conter `execSync` nem `file --mime-type`.
 
 O `Dockerfile` também aceita `COMMIT_SHA` para builds manuais e para o gate de
-release local. O estágio de validação usa Node baseado em Debian/glibc e copia
-o Deno 2.9.5 da imagem oficial fixada por digest; nenhuma dependência do host
-nem o utilitário `file` são necessários para o build no EasyPanel.
+release local. O estágio de validação usa Node baseado em Debian/glibc, copia
+o Deno 2.9.5 da imagem oficial fixada por digest e instala o pequeno utilitário
+`file` como compatibilidade para commits que ainda contenham o validador antigo.
+Nenhuma dependência precisa estar instalada no host do EasyPanel.
 
 Destino do domínio `minasbrasilwifi.com.br`: protocolo `HTTP`, porta interna
 `80`, caminho `/`, HTTPS/Let's Encrypt habilitado.
