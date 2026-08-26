@@ -1,6 +1,8 @@
 node_modules
 dist
 .git
+.pnpm-store
+tmp
 *.log
 # .env is explicitly excluded to prevent accidental secret leakage in images
 # Configuration must be injected via build-args or runtime environment
@@ -8,4 +10,3 @@ dist
 *.zip
 *.tar.gz
 .DS_Store
-
