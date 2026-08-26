@@ -1,0 +1,6 @@
+* text=auto
+
+# Shell and container build files must keep Unix line endings.
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.conf text eol=lf

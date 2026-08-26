@@ -58,7 +58,7 @@ const checks: Array<[string, boolean]> = [
     "Referrer-Policy",
     "Permissions-Policy",
   ].every((header) => contents["Dockerfile"].includes(`add_header ${header}`))],
-  ["release Docker build has no stray context arguments", /docker build \\\n\s+--build-arg/.test(contents["scripts/release-gate.sh"]) && !/docker build\s+\+/.test(contents["scripts/release-gate.sh"])],
+  ["release Docker build has no stray context arguments", /docker build \\\r?\n\s+--build-arg/.test(contents["scripts/release-gate.sh"]) && !/docker build\s+\+/.test(contents["scripts/release-gate.sh"])],
   ["release Docker build supplies EasyPanel-compatible GIT_SHA", /--build-arg "GIT_SHA=\$COMMIT_SHA"/.test(contents["scripts/release-gate.sh"])],
   ["release requires compromised UniFi credential rotation", /UNIFI_CREDENTIALS_ROTATED/.test(contents["scripts/release-gate.sh"])],
   ["release requires Supabase leaked-password protection", /SUPABASE_LEAKED_PASSWORD_PROTECTION_ENABLED/.test(contents["scripts/release-gate.sh"])],
