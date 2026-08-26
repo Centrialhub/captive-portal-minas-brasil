@@ -64,7 +64,7 @@ const checks: Array<[string, boolean]> = [
   ["release Docker build supplies EasyPanel-compatible GIT_SHA", /--build-arg "GIT_SHA=\$COMMIT_SHA"/.test(contents["scripts/release-gate.sh"])],
   ["release requires compromised UniFi credential rotation", /UNIFI_CREDENTIALS_ROTATED/.test(contents["scripts/release-gate.sh"])],
   ["release requires Supabase leaked-password protection", /SUPABASE_LEAKED_PASSWORD_PROTECTION_ENABLED/.test(contents["scripts/release-gate.sh"])],
-  ["remote verifier checks build identity, OAuth bundle, and UniFi TLS health", /EXPECTED_COMMIT_SHA/.test(contents["scripts/verify-production.mjs"]) && /deployed Google OAuth bundle contract/.test(contents["scripts/verify-production.mjs"]) && /UniFi proxy TLS and health/.test(contents["scripts/verify-production.mjs"])],
+  ["remote verifier checks build identity, captive OAuth handoff, and UniFi TLS health", /EXPECTED_COMMIT_SHA/.test(contents["scripts/verify-production.mjs"]) && /oauth\/handoff\/create/.test(contents["scripts/verify-production.mjs"]) && /oauth\/handoff\/claim/.test(contents["scripts/verify-production.mjs"]) && /UniFi proxy TLS and health/.test(contents["scripts/verify-production.mjs"])],
   ["UniFi verifier covers every managed store", ["cintra", "cula", "dpedro", "drive", "hu", "ibituruna", "joao23", "major", "matriz", "mestra", "povao", "shopping"].every((slug) => contents["scripts/verify-unifi-proxy.mjs"].includes(slug))],
   ["migrations contain no literal UniFi passwords", !/unifi_password\s*=\s*'(?!')/i.test(migrationContents)],
   ["Docker build context excludes .env", /^\.env$/m.test(contents[".dockerignore"])],
