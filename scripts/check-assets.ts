@@ -1,6 +1,6 @@
-import { readFileSync, existsSync } from 'fs';
-import { join } from 'path';
-import { execSync } from 'child_process';
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
 const assets = [
   { path: 'src/assets/logo-minas-brasil.png', mime: 'image/png' },
@@ -24,13 +24,15 @@ assets.forEach(asset => {
     process.exit(1);
   }
 
-  const fileType = execSync(`file --mime-type -b ${fullPath}`).toString().trim();
-  if (fileType !== asset.mime && !fileType.startsWith('image/')) {
-     // icon resource might be detected differently by 'file' utility on some systems
-     console.warn(`WARN: ${asset.path} MIME type detected as ${fileType}, expected ${asset.mime}`);
+  const isPng = stats.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  const isIco = stats.subarray(0, 4).equals(Buffer.from([0x00, 0x00, 0x01, 0x00]));
+  const validSignature = asset.mime === "image/png" ? isPng : isIco;
+  if (!validSignature) {
+    console.error(`FAIL: ${asset.path} does not match ${asset.mime}.`);
+    process.exit(1);
   }
 
-  const sha = execSync(`sha256sum ${fullPath}`).toString().split(' ')[0];
+  const sha = createHash("sha256").update(stats).digest("hex");
   console.log(`OK: ${asset.path} | Size: ${stats.length} bytes | SHA-256: ${sha}`);
 });
 
