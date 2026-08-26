@@ -55,7 +55,9 @@ valores configurados no EasyPanel:
   upload, defina-o manualmente com 40 ou 64 caracteres hexadecimais.
 
 O `Dockerfile` também aceita `COMMIT_SHA` para builds manuais e para o gate de
-release local.
+release local. O estágio de validação usa Node baseado em Debian/glibc e copia
+o Deno 2.9.5 da imagem oficial fixada por digest; nenhuma dependência do host
+nem o utilitário `file` são necessários para o build no EasyPanel.
 
 Destino do domínio `minasbrasilwifi.com.br`: protocolo `HTTP`, porta interna
 `80`, caminho `/`, HTTPS/Let's Encrypt habilitado.

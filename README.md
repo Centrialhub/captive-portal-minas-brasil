@@ -7,7 +7,10 @@ pelo proxy same-origin `/api/captive-portal`.
 
 ## Desenvolvimento e validação
 
-Requisitos: Node 24 LTS, npm 10.9.4 e acesso à internet na primeira instalação.
+Requisitos locais: Node 24 LTS, npm 10.9.4, Deno 2.9.5 e acesso à internet na
+primeira instalação. No Docker, o Deno vem da imagem oficial
+`denoland/deno:bin-2.9.5`, fixada por digest, e não executa scripts de instalação
+do npm.
 
 ```bash
 npm ci

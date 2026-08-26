@@ -4,9 +4,16 @@ ARG VITE_SUPABASE_PUBLISHABLE_KEY
 ARG GIT_SHA
 ARG COMMIT_SHA
 
+# Official Deno binary, isolated from npm install scripts and pinned immutably.
+FROM denoland/deno:bin-2.9.5@sha256:0d1262facd139e815217c001945eb822c7a78584cf660142c34a6b53effec1aa AS deno
+
 # Stage 1: Build frontend
 FROM node:24-bookworm-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df AS build
 WORKDIR /app
+
+# The official bin image is the supported way to add Deno to another base.
+COPY --from=deno /deno /usr/local/bin/deno
+RUN deno --version
 
 # Re-declare ARGs to make them available to Vite/Node
 ARG VITE_SUPABASE_URL
@@ -18,9 +25,18 @@ ARG COMMIT_SHA
 RUN resolved_sha="${COMMIT_SHA:-$GIT_SHA}"; \
     if [ -z "$VITE_SUPABASE_URL" ] || [ -z "$VITE_SUPABASE_PUBLISHABLE_KEY" ] || [ -z "$resolved_sha" ] || [ "$resolved_sha" = "unknown" ]; then \
       echo "ERROR: VITE_SUPABASE_URL, VITE_SUPABASE_PUBLISHABLE_KEY and COMMIT_SHA or GIT_SHA (non-placeholder) are required" && exit 1; \
+    fi; \
+    if ! echo "$resolved_sha" | grep -Eq '^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$'; then \
+      echo "ERROR: COMMIT_SHA or GIT_SHA must be a full 40- or 64-character hexadecimal revision" && exit 1; \
     fi
-RUN if ! echo "$VITE_SUPABASE_URL" | grep -q "^https://"; then \
-      echo "ERROR: VITE_SUPABASE_URL must use HTTPS" && exit 1; \
+RUN if [ "$VITE_SUPABASE_URL" != "https://fqamejlyytrhovawgtwg.supabase.co" ]; then \
+      echo "ERROR: VITE_SUPABASE_URL must match the Supabase project configured in the proxy and CSP" && exit 1; \
+    fi; \
+    if ! echo "$VITE_SUPABASE_PUBLISHABLE_KEY" | grep -q '^sb_publishable_'; then \
+      echo "ERROR: VITE_SUPABASE_PUBLISHABLE_KEY must be a Supabase sb_publishable_ key; never use a secret or service-role key" && exit 1; \
+    fi; \
+    if echo "$VITE_SUPABASE_PUBLISHABLE_KEY" | grep -Eqi 'replace|your|<|>'; then \
+      echo "ERROR: VITE_SUPABASE_PUBLISHABLE_KEY is still a placeholder" && exit 1; \
     fi
 
 ENV VITE_SUPABASE_URL=$VITE_SUPABASE_URL
@@ -43,10 +59,10 @@ FROM nginx:1.30.4-alpine@sha256:97d490c12ba55b4946b01546d1c3ed324e8d41ab1c9fcb2a
 # Install curl for HEALTHCHECK
 RUN apk add --no-cache curl
 
-# Re-declare COMMIT_SHA for labels
+# EasyPanel always injects GIT_SHA; the manual release gate now does too.
 ARG GIT_SHA
 ARG COMMIT_SHA
-LABEL org.opencontainers.image.revision=$COMMIT_SHA
+LABEL org.opencontainers.image.revision=$GIT_SHA
 LABEL io.easypanel.git-sha=$GIT_SHA
 LABEL org.opencontainers.image.source="https://github.com/drogariaminasbrasil/captive-portal"
 
