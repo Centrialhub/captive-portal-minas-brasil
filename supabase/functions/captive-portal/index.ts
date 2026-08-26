@@ -23,7 +23,10 @@ const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") || Deno.env.get("SUPABASE_PUBLISHABLE_KEY")!;
 
 const DEFAULT_REDIRECT_URL = Deno.env.get("POST_AUTH_REDIRECT_URL") || "https://www.drogariaminasbrasil.com.br/";
+const UNIFI_PROXY_ORIGIN = "https://unifiproxy.minasbrasilwifi.com.br";
 const UNIFI_TIMEOUT_MS = 10_000;
+const UNIFI_DISCOVERY_LOGIN_TIMEOUT_MS = 3_000;
+const UNIFI_DISCOVERY_STATIONS_TIMEOUT_MS = 3_000;
 const UNIFI_RETRY_COUNT = 1;
 const unifiAuthModeValue = (Deno.env.get("UNIFI_AUTH_MODE") || "legacy").toLowerCase();
 const UNIFI_AUTH_MODE = unifiAuthModeValue === "auto" || unifiAuthModeValue === "unifi-os"
@@ -111,6 +114,10 @@ function jsonResponse(data: unknown, status = 200) {
 
 function errorResponse(message: string, status = 400) {
   return jsonResponse({ error: message }, status);
+}
+
+function canonicalUnifiControllerUrl(slug: string): string {
+  return `${UNIFI_PROXY_ORIGIN}/${slug}`;
 }
 
 async function sha256Hex(value: string): Promise<string> {
@@ -262,14 +269,17 @@ function getPublicIp(req: Request): string | null {
   const cfIp = req.headers.get("cf-connecting-ip")?.trim();
   if (cfIp && Validators.ip(cfIp)) return cfIp;
 
+  // The same-origin Nginx proxy overwrites X-Real-IP with the captive
+  // client's address. Supabase may prepend its own hop to X-Forwarded-For,
+  // which previously made the VPS address appear as the customer.
+  const xRealIp = req.headers.get("x-real-ip")?.trim();
+  if (xRealIp && Validators.ip(xRealIp)) return xRealIp;
+
   const xForwardedFor = req.headers.get("x-forwarded-for");
   if (xForwardedFor) {
     const first = xForwardedFor.split(",")[0]?.trim();
     if (first && Validators.ip(first)) return first;
   }
-
-  const xRealIp = req.headers.get("x-real-ip")?.trim();
-  if (xRealIp && Validators.ip(xRealIp)) return xRealIp;
 
   return null;
 }
@@ -376,13 +386,12 @@ function logEvent(db: ReturnType<typeof supabaseAdmin>, args: LogEventArgs): voi
 }
 
 // ========== Detect Store ==========
-// Priority order (physical truth first — nginx/UniFi may inject a generic
-// store query fallback, but the AP MAC reflects the real physical location):
-//   1. AP MAC -> store_access_points    (deterministic per physical AP — TRUTH)
-//   2. ?store=slug query param          (deterministic only if URL is per-store)
-//   3. Public IP -> store_public_ips    (fragile: ISP/NAT shared)
-//   4. Single active store              (only meaningful in 1-store deployments)
-//   5. Generic fallback                 (caller should trigger discoverStoreByClientMac)
+// Priority order:
+//   1. Store already resolved and persisted in the server-side attempt
+//   2. AP MAC -> store_access_points (opportunistic server-managed cache)
+//   3. Public IP -> store_public_ips (legacy fallback)
+//   4. Single active store (only meaningful in 1-store deployments)
+// Browser-controlled ?store= values are deliberately not authoritative.
 async function detectStoreFromRequest(
   db: ReturnType<typeof supabaseAdmin>,
   req: Request,
@@ -408,7 +417,19 @@ async function detectStoreFromRequest(
     detection_source: source,
   });
 
-  // 1) AP MAC mapping (deterministic per physical AP — works even when all
+  // 1) A store persisted by /oauth/init has already been resolved on the
+  // server and survives the browser handoff/OAuth callback.
+  if (persistedStoreHint && isValidSlug(persistedStoreHint)) {
+    const { data: store } = await db
+      .from("stores")
+      .select("id, slug, name, city, is_active, post_auth_redirect_url")
+      .eq("slug", persistedStoreHint)
+      .eq("is_active", true)
+      .maybeSingle();
+    if (store) return storeResult(store, "attempt_store_hint");
+  }
+
+  // 2) AP MAC mapping (deterministic per physical AP — works even when all
   //    controllers share IP/SSID/walled garden). Takes priority over ?store=
   //    because nginx may inject a fallback param that masks the real store.
   const normApMac = (apMac || "").replace(/[^a-fA-F0-9]/g, "").toUpperCase();
@@ -430,28 +451,6 @@ async function detectStoreFromRequest(
       return storeResult(store, "ap_mac");
     }
   }
-
-  // 2) Use the store captured in the server-side attempt, falling back to the
-  // current query parameter. The attempt survives OAuth redirects and cannot
-  // be silently replaced by a frontend default.
-  try {
-    const url = new URL(req.url);
-    const storeSlug = persistedStoreHint || url.searchParams.get("store");
-    if (storeSlug && isValidSlug(storeSlug)) {
-      const { data: store } = await db
-        .from("stores")
-        .select("id, slug, name, city, is_active, post_auth_redirect_url")
-        .eq("slug", storeSlug)
-        .eq("is_active", true)
-        .maybeSingle();
-
-      if (store) {
-        Logger.info("Store detected via store hint", { store_slug: store.slug });
-        return storeResult(store, persistedStoreHint ? "attempt_store_hint" : "url_param");
-      }
-      Logger.warn("Store hint not found or inactive");
-    }
-  } catch { /* ignore URL parse errors */ }
 
   // 3) Public IP mapping (legacy fallback)
   const ip = getPublicIp(req);
@@ -494,18 +493,94 @@ async function detectStoreFromRequest(
   return fallback;
 }
 
-// ========== Auto-Discovery: probe all controllers to find which one sees the client MAC ==========
-// Used when detectStoreFromRequest cannot resolve a store deterministically.
-// Logs in to every active controller in parallel and queries /stat/sta. If
-// exactly one controller has the client MAC associated, that's the store.
-// On success, persists ap_mac -> store mapping for future O(1) detection.
-// discoverStoreByClientMac removed as it was unused
-async function _discoverStoreByClientMac(
-  _db: ReturnType<typeof supabaseAdmin>,
-  _clientMac: string,
-  _apMacHint?: string | null,
-): Promise<{ store_id: string | null; store_slug: string; redirect_url: string | null; store_name: string; store_city: string | null; detection_source: string } | null> {
-  return null;
+// ========== Auto-Discovery: probe controllers for the exact client MAC ==========
+// AP mappings are a cache, never a provisioning requirement. Only the AP MAC
+// returned by the controller is learned; URL parameters are not trusted for
+// cache writes. Ambiguous results fail closed.
+async function discoverStoreByClientMac(
+  db: ReturnType<typeof supabaseAdmin>,
+  clientMac: string,
+): Promise<{ store_id: string; store_slug: string; redirect_url: string | null; store_name: string; store_city: string | null; detection_source: string } | null> {
+  const normalizedClientMac = normalizeMac(clientMac);
+  if (!normalizedClientMac || !UNIFI_USERNAME || !UNIFI_PASSWORD) return null;
+
+  const formattedClientMac = normalizedClientMac.replace(/(.{2})(?=.)/g, "$1:").toLowerCase();
+  const { data: stores, error } = await db
+    .from("stores")
+    .select("id, slug, name, city, post_auth_redirect_url, unifi_controller_url, unifi_site_id")
+    .eq("is_active", true)
+    .not("unifi_controller_url", "is", null);
+
+  if (error || !stores?.length) {
+    Logger.warn("[store-discovery] no controllers available", { code: error?.code || null });
+    return null;
+  }
+
+  const probes = await Promise.allSettled(stores.map(async (store) => {
+    const parsed = new URL(store.unifi_controller_url as string);
+    const baseUrl = (parsed.origin + parsed.pathname).replace(/\/+$/, "");
+    const httpClient = createUnifiHttpClient();
+    try {
+      const login = await unifiLogin(
+        baseUrl,
+        httpClient,
+        UNIFI_USERNAME,
+        UNIFI_PASSWORD,
+        UNIFI_DISCOVERY_LOGIN_TIMEOUT_MS,
+      );
+      if (!login.ok) return null;
+      const siteId = store.unifi_site_id || "default";
+      const staUrl = login.isUnifiOs
+        ? `${parsed.origin}/proxy/network/api/s/${siteId}/stat/sta`
+        : `${baseUrl}/api/s/${siteId}/stat/sta`;
+      const stations = await unifiFetchStations(
+        staUrl,
+        buildUnifiHeaders(login),
+        httpClient,
+        UNIFI_DISCOVERY_STATIONS_TIMEOUT_MS,
+      );
+      if (!stations.ok || !stations.data) return null;
+      const station = stations.data.find((item) => (item.mac || "").toLowerCase() === formattedClientMac);
+      return station ? { store, station } : null;
+    } finally {
+      try { httpClient?.close(); } catch (_) { /* ignore close error */ }
+    }
+  }));
+
+  const matches = probes.flatMap((probe) =>
+    probe.status === "fulfilled" && probe.value ? [probe.value] : []
+  );
+  if (matches.length !== 1) {
+    Logger.warn("[store-discovery] exact client match was not unique", {
+      matches: matches.length,
+      controllers: stores.length,
+    });
+    return null;
+  }
+
+  const { store, station } = matches[0];
+  const learnedApMac = normalizeMac(station.ap_mac);
+  if (learnedApMac) {
+    await db.from("store_access_points").upsert({
+      ap_mac: learnedApMac,
+      store_id: store.id,
+      source: "auto_discovered",
+      last_seen_at: new Date().toISOString(),
+    }, { onConflict: "ap_mac" }).then(
+      () => {},
+      (e) => Logger.warn("[store-discovery] AP cache update failed", { error: (e as Error)?.message }),
+    );
+  }
+
+  Logger.info("[store-discovery] store detected via exact controller station", { store_slug: store.slug });
+  return {
+    store_id: store.id,
+    store_slug: store.slug,
+    redirect_url: store.post_auth_redirect_url || null,
+    store_name: store.name,
+    store_city: store.city,
+    detection_source: "controller_station",
+  };
 }
 
 // ========== Distributed Rate Limiting (Postgres) ==========
@@ -641,7 +716,8 @@ function createUnifiHttpClient(): Deno.HttpClient | null {
  */
 async function unifiTryLogin(
   loginUrl: string, httpClient: Deno.HttpClient | null,
-  username?: string, password?: string
+  username?: string, password?: string,
+  timeoutMs = UNIFI_TIMEOUT_MS,
 ): Promise<{ ok: boolean; cookies?: UnifiCookieJar; csrfToken?: string; error?: string; isUnifiOs?: boolean }> {
    const effectiveUser = username || UNIFI_USERNAME;
    const effectivePass = password || UNIFI_PASSWORD;
@@ -670,7 +746,7 @@ async function unifiTryLogin(
     let warmTimer: ReturnType<typeof setTimeout> | undefined;
     try {
       const warmAc = new AbortController();
-      warmTimer = setTimeout(() => warmAc.abort(), UNIFI_TIMEOUT_MS);
+      warmTimer = setTimeout(() => warmAc.abort(), timeoutMs);
       const warmOpts: Record<string, unknown> = {
         method: "GET",
         headers: { "User-Agent": baseHeaders["User-Agent"], "Accept": "*/*" },
@@ -703,7 +779,7 @@ async function unifiTryLogin(
     };
 
     Logger.info(`[UniFi] Login attempt: ${loginUrl} (custom client: ${!!httpClient}, warm cookies: ${warmupCookies ? "yes" : "no"})`);
-    timeout = setTimeout(() => ac.abort(), UNIFI_TIMEOUT_MS);
+    timeout = setTimeout(() => ac.abort(), timeoutMs);
     const fetchOpts: Record<string, unknown> = {
       method: "POST",
       headers,
@@ -755,7 +831,7 @@ async function unifiTryLogin(
   } catch (err) {
     if (timeout !== undefined) clearTimeout(timeout);
     const msg = (err as Error).name === "AbortError"
-      ? `Login timeout after ${UNIFI_TIMEOUT_MS}ms`
+      ? `Login timeout after ${timeoutMs}ms`
       : (err as Error).message;
     return { ok: false, error: msg };
   }
@@ -766,22 +842,23 @@ async function unifiTryLogin(
  */
 async function unifiLogin(
   baseUrl: string, httpClient: Deno.HttpClient | null,
-  username?: string, password?: string
+  username?: string, password?: string,
+  timeoutMs = UNIFI_TIMEOUT_MS,
 ): Promise<{ ok: boolean; cookies?: UnifiCookieJar; csrfToken?: string; isUnifiOs?: boolean; error?: string }> {
   if (UNIFI_AUTH_MODE === "legacy") {
-    const result = await unifiTryLogin(`${baseUrl}/api/login`, httpClient, username, password);
+    const result = await unifiTryLogin(`${baseUrl}/api/login`, httpClient, username, password, timeoutMs);
     if (result.ok) Logger.info("UniFi login succeeded via legacy endpoint");
     return result;
   }
 
   if (UNIFI_AUTH_MODE === "unifi-os") {
-    const result = await unifiTryLogin(`${baseUrl}/api/auth/login`, httpClient, username, password);
+    const result = await unifiTryLogin(`${baseUrl}/api/auth/login`, httpClient, username, password, timeoutMs);
     if (result.ok) Logger.info("UniFi login succeeded via UniFi OS endpoint");
     return result;
   }
 
   // Auto mode is intended only for migrations between controller families.
-  const osResult = await unifiTryLogin(`${baseUrl}/api/auth/login`, httpClient, username, password);
+  const osResult = await unifiTryLogin(`${baseUrl}/api/auth/login`, httpClient, username, password, timeoutMs);
   if (osResult.ok) {
     Logger.info("UniFi login succeeded via UniFi OS endpoint");
     return osResult;
@@ -789,7 +866,7 @@ async function unifiLogin(
 
   // Always try legacy /api/login as fallback
   Logger.info("UniFi OS endpoint failed; trying legacy login", { error: osResult.error?.slice(0, 100) });
-  const legacyResult = await unifiTryLogin(`${baseUrl}/api/login`, httpClient, username, password);
+  const legacyResult = await unifiTryLogin(`${baseUrl}/api/login`, httpClient, username, password, timeoutMs);
   if (legacyResult.ok) {
     Logger.info("UniFi login succeeded via legacy endpoint");
     return legacyResult;
@@ -813,7 +890,7 @@ function buildUnifiHeaders(
 // Polling backoff for /stat/sta confirmation (~3s total across 3 attempts).
 // Captive assistants typically time out around 5-10s, so we keep this short
 // and rely on the hotspot fallback redirect for the final handshake.
-const VERIFY_BACKOFF_MS = [500, 1000, 1500];
+const VERIFY_BACKOFF_MS = [400, 800, 1500, 2500];
 // RESEND_AFTER_ATTEMPT removed as it was unused
 
 interface UnifiStation {
@@ -862,9 +939,10 @@ function isJsonContentType(res: Response): boolean {
 
 async function unifiFetchStations(
   staUrl: string, headers: Record<string, string>, httpClient: Deno.HttpClient | null,
+  timeoutMs = 5_000,
 ): Promise<{ ok: boolean; sessionExpired?: boolean; data?: UnifiStation[]; error?: string }> {
   const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(), 5000);
+  const t = setTimeout(() => ac.abort(), timeoutMs);
   try {
     const res = await fetch(staUrl, {
       method: "GET",
@@ -997,6 +1075,8 @@ async function checkUnifiAuthorizationState(
   mac: string,
   username?: string,
   password?: string,
+  apMac?: string | null,
+  ssid?: string | null,
 ): Promise<{ state: "authorized" | "not_authorized" | "inconclusive"; effective_mac?: string }> {
   const parsed = new URL(controllerUrl);
   const baseUrl = (parsed.origin + parsed.pathname).replace(/\/+$/, "");
@@ -1017,11 +1097,11 @@ async function checkUnifiAuthorizationState(
     
     if (!staRes.ok || !staRes.data) return { state: "inconclusive" };
     
-    // Procura o MAC exato ou via pickEffectiveMac (heurística de randomização)
-    const pick = pickEffectiveMac(staRes.data, formattedMac);
-    const effectiveMac = pick.mac || formattedMac;
-    
-    if (pick.candidateCount > 1) return { state: "inconclusive" };
+    // Never infer a different station without AP/SSID context. An absent exact
+    // client is inconclusive and must not trigger another state-changing call.
+    const pick = pickEffectiveMac(staRes.data, formattedMac, apMac, ssid);
+    if (!pick.mac || pick.candidateCount > 1) return { state: "inconclusive" };
+    const effectiveMac = pick.mac;
     
     const found = staRes.data.find(s => (s.mac || "").toLowerCase() === effectiveMac);
     if (found) {
@@ -1076,25 +1156,44 @@ async function unifiAuthorizeByMac(
       login = await unifiLogin(baseUrl, httpClient, username, password);
       if (login.ok) { headers = buildUnifiHeaders(login); stationsRes = await unifiFetchStations(staUrl0, headers, httpClient); }
     }
-    const stations = stationsRes.data || [];
+    if (!stationsRes.ok || !stationsRes.data) {
+      closeClient();
+      return {
+        ok: false,
+        reason: "UNIFI_STATION_LOOKUP_FAILED",
+        error: stationsRes.error || "Não foi possível confirmar o cliente na controladora.",
+        latency_ms: Date.now() - startedAt,
+      };
+    }
+    const stations = stationsRes.data;
 
     const pick = pickEffectiveMac(stations, formattedMac, options.apMac, options.ssid);
-    const effectiveMac = pick.mac || formattedMac;
-    let apMacForPayload = options.apMac || null;
-
-    if (pick.remapped) {
-      Logger.info(`[unifi-auth] reason=MAC_REMAPPED_OK portal=${formattedMac} controller=${effectiveMac} ap=${apMacForPayload || "?"}`);
-    } else if (!pick.mac) {
+    if (!pick.mac) {
+      closeClient();
       if (pick.candidateCount > 1) {
-        Logger.warn("[unifi-auth] reason=MAC_RANDOMIZATION_AMBIGUOUS", { candidates: pick.candidateCount, ap_mac: apMacForPayload });
-        closeClient();
+        Logger.warn("[unifi-auth] reason=MAC_RANDOMIZATION_AMBIGUOUS", { candidates: pick.candidateCount, ap_mac: options.apMac || null });
         return {
           ok: false,
           reason: "MAC_RANDOMIZATION_AMBIGUOUS",
-          error: "Múltiplos dispositivos não autorizados detectados. Desative 'Endereço Wi-Fi privado' nas configurações do celular e tente novamente.",
+          error: "Múltiplos dispositivos não autorizados foram encontrados neste ponto de acesso. Reconecte-se à rede e tente novamente.",
           latency_ms: Date.now() - startedAt,
         };
       }
+      Logger.warn("[unifi-auth] reason=CLIENT_NOT_FOUND_ON_CONTROLLER", { ap_mac: options.apMac || null, ssid: options.ssid || null });
+      return {
+        ok: false,
+        reason: "CLIENT_NOT_FOUND_ON_CONTROLLER",
+        error: "O dispositivo não foi localizado na controladora desta unidade.",
+        latency_ms: Date.now() - startedAt,
+      };
+    }
+
+    const effectiveMac = pick.mac;
+    const selectedStation = stations.find((s) => (s.mac || "").toLowerCase() === effectiveMac);
+    let apMacForPayload = selectedStation?.ap_mac || options.apMac || null;
+
+    if (pick.remapped) {
+      Logger.info(`[unifi-auth] reason=MAC_REMAPPED_OK portal=${formattedMac} controller=${effectiveMac} ap=${apMacForPayload || "?"}`);
     }
 
     if (!apMacForPayload) {
@@ -1318,10 +1417,10 @@ async function authorizeClient(
     return { ok: false, reason: "INVALID_MAC_ADDRESS" };
   }
 
-  // Secondary MAC-level idempotency lock (15s).
-  // Prevents multiple concurrent UniFi commands for the same MAC
+  // Store-scoped MAC idempotency lock. The same private MAC may legitimately
+  // appear in a different store and must be authorized on that controller.
   const lock = await db.rpc("rate_limit_hit", {
-    p_key: `unifi_auth:mac:${clientMac.toUpperCase()}`,
+    p_key: `unifi_auth:store:${storeId}:mac:${clientMac.toUpperCase()}`,
     p_window_seconds: 15,
     p_max_hits: 1,
     p_block_seconds: 0,
@@ -1333,6 +1432,7 @@ async function authorizeClient(
     const { data: recentAuth } = await db
       .from("captive_sessions")
       .select("id, status, unifi_cmd_accepted_at, authorized_at")
+      .eq("store_id", storeId)
       .eq("client_mac", clientMac.toUpperCase())
       .eq("status", "authorized")
       .gte("authorized_at", new Date(Date.now() - 30 * 1000).toISOString())
@@ -1536,11 +1636,18 @@ async function internalHousekeeping(db: ReturnType<typeof supabaseAdmin>): Promi
     .lt("created_at", auditCutoff)
     .select("id");
 
+  const { data: expiredHandoffData } = await db
+    .from("oauth_browser_handoffs")
+    .delete()
+    .lt("expires_at", now.toISOString())
+    .select("id");
+
   return {
     expired_verifications: expiredVerifData?.length || 0,
     old_rate_limits: oldRateLimitData?.length || 0,
     old_sessions: (oldSessionData?.length || 0) + (oldAuthSessionData?.length || 0),
     old_audit_logs: oldAuditData?.length || 0,
+    expired_oauth_handoffs: expiredHandoffData?.length || 0,
   };
 }
 
@@ -1918,11 +2025,14 @@ async function handleAdminStores(req: Request): Promise<Response> {
     if (!slug || !isValidSlug(slug)) return errorResponse("Slug inválido");
     if (!name) return errorResponse("Nome obrigatório");
 
-    const controllerUrl = body.unifi_controller_url
-      ? sanitizeHttpUrl(body.unifi_controller_url, { httpsOnly: true })
-      : null;
+    const controllerUrl = canonicalUnifiControllerUrl(slug);
     const redirectUrl = body.post_auth_redirect_url ? sanitizeHttpUrl(body.post_auth_redirect_url, { httpsOnly: true }) : null;
-    if (body.unifi_controller_url && !controllerUrl) return errorResponse("URL da controladora deve usar HTTPS válido");
+    if (body.unifi_controller_url) {
+      const supplied = sanitizeHttpUrl(body.unifi_controller_url, { httpsOnly: true })?.replace(/\/+$/, "");
+      if (supplied !== controllerUrl) {
+        return errorResponse(`A URL da controladora é gerenciada automaticamente: ${controllerUrl}`);
+      }
+    }
     if (body.post_auth_redirect_url && !redirectUrl) return errorResponse("Redirecionamento deve usar uma URL HTTPS válida");
 
     const { data, error } = await db.from("stores").insert({
@@ -1930,7 +2040,7 @@ async function handleAdminStores(req: Request): Promise<Response> {
       city: sanitizeString(body.city, 100) || null,
       is_active: body.is_active === false ? false : true,
       post_auth_redirect_url: redirectUrl,
-      unifi_site_id: sanitizeString(body.unifi_site_id, 100) || null,
+      unifi_site_id: sanitizeString(body.unifi_site_id, 100) || "default",
       unifi_controller_url: controllerUrl,
     }).select("id, slug, name").single();
     if (error) return errorResponse(error.code === "23505" ? "Já existe uma loja com este slug" : error.message, error.code === "23505" ? 409 : 500);
@@ -1947,6 +2057,13 @@ async function handleAdminStores(req: Request): Promise<Response> {
     const body = await safeParseJson(req);
     if (!body || !isValidUUID(body.id)) return errorResponse("Missing or invalid store id");
 
+    const { data: currentStore, error: currentStoreError } = await db
+      .from("stores")
+      .select("slug")
+      .eq("id", body.id as string)
+      .maybeSingle();
+    if (currentStoreError || !currentStore) return errorResponse("Loja não encontrada", 404);
+
     const updateData: Record<string, unknown> = {};
     if (body.slug !== undefined) { const s = sanitizeString(body.slug, MAX_SLUG_LEN); if (s && isValidSlug(s)) updateData.slug = s; }
     if (body.name !== undefined) { const n = sanitizeString(body.name, MAX_NAME_LEN); if (n) updateData.name = n; }
@@ -1961,14 +2078,16 @@ async function handleAdminStores(req: Request): Promise<Response> {
       }
     }
     if (body.unifi_site_id !== undefined) updateData.unifi_site_id = sanitizeString(body.unifi_site_id, 100);
-    if (body.unifi_controller_url !== undefined) {
-      if (body.unifi_controller_url === "" || body.unifi_controller_url === null) updateData.unifi_controller_url = null;
-      else {
-        const controllerUrl = sanitizeHttpUrl(body.unifi_controller_url, { httpsOnly: true });
-        if (!controllerUrl) return errorResponse("URL da controladora deve usar HTTPS válido");
-        updateData.unifi_controller_url = controllerUrl;
+    const effectiveSlug = (updateData.slug as string | undefined) || currentStore.slug;
+    const controllerUrl = canonicalUnifiControllerUrl(effectiveSlug);
+    if (body.unifi_controller_url !== undefined && body.unifi_controller_url !== null && body.unifi_controller_url !== "") {
+      const supplied = sanitizeHttpUrl(body.unifi_controller_url, { httpsOnly: true })?.replace(/\/+$/, "");
+      if (supplied !== controllerUrl) {
+        return errorResponse(`A URL da controladora é gerenciada automaticamente: ${controllerUrl}`);
       }
     }
+    updateData.unifi_controller_url = controllerUrl;
+    if (!updateData.unifi_site_id && body.unifi_site_id === "") updateData.unifi_site_id = "default";
     if (Object.keys(updateData).length === 0) return errorResponse("Nenhum campo para atualizar");
 
     const { data, error } = await db.from("stores").update(updateData).eq("id", body.id as string).select("id, slug, name").single();
@@ -2726,21 +2845,23 @@ async function previewHousekeeping(db: ReturnType<typeof supabaseAdmin>): Promis
   const sessionCutoff365 = new Date(now.getTime() - 365 * 86400000).toISOString();
   const auditCutoff = new Date(now.getTime() - 180 * 86400000).toISOString();
 
-  const [verifications, rateLimits, oldSessions, authorizedSessions, auditLogs] = await Promise.all([
+  const [verifications, rateLimits, oldSessions, authorizedSessions, auditLogs, oauthHandoffs] = await Promise.all([
     db.from("captive_verifications").select("id", { count: "exact", head: true }).lt("expires_at", verifCutoff).in("status", ["pending", "expired", "locked"]),
     db.from("rate_limits").select("key", { count: "exact", head: true }).lt("updated_at", rateLimitCutoff),
     db.from("captive_sessions").select("id", { count: "exact", head: true }).lt("started_at", sessionCutoff180).in("status", ["started", "submitted", "failed"]),
     db.from("captive_sessions").select("id", { count: "exact", head: true }).lt("started_at", sessionCutoff365).eq("status", "authorized"),
     db.from("audit_logs").select("id", { count: "exact", head: true }).lt("created_at", auditCutoff),
+    db.from("oauth_browser_handoffs").select("id", { count: "exact", head: true }).lt("expires_at", now.toISOString()),
   ]);
 
-  const firstError = [verifications, rateLimits, oldSessions, authorizedSessions, auditLogs].find((result) => result.error)?.error;
+  const firstError = [verifications, rateLimits, oldSessions, authorizedSessions, auditLogs, oauthHandoffs].find((result) => result.error)?.error;
   if (firstError) throw new Error(firstError.message);
   return {
     expired_verifications: verifications.count || 0,
     old_rate_limits: rateLimits.count || 0,
     old_sessions: (oldSessions.count || 0) + (authorizedSessions.count || 0),
     old_audit_logs: auditLogs.count || 0,
+    expired_oauth_handoffs: oauthHandoffs.count || 0,
   };
 }
 
@@ -2973,9 +3094,21 @@ async function authorizeAuthenticatedUser(args: {
   const { db, userId, profile, ctx, req, authMethod, traceId, clientIp, userAgent, attemptId, resumeToken } = args;
 
 
-  const detected = await detectStoreFromRequest(db, req, ctx.apMac, ctx.storeHint);
+  let detected = await detectStoreFromRequest(db, req, ctx.apMac, ctx.storeHint);
+  if (!detected.store_id && ctx.clientMac) {
+    const discovered = await discoverStoreByClientMac(db, ctx.clientMac);
+    if (discovered) detected = discovered;
+  }
   const storeSlug = detected.store_slug;
   const storeId = detected.store_id;
+
+  if (attemptId && storeId) {
+    await db.from("captive_auth_attempts").update({
+      store_id: storeId,
+      store_hint: storeSlug,
+      store_detection_source: detected.detection_source,
+    }).eq("id", attemptId);
+  }
   const nowIso = new Date().toISOString();
   // A trace id is shared by retries and concurrent requests, so it must never
   // be used as lease ownership. Every invocation gets an unguessable owner.
@@ -3046,7 +3179,9 @@ async function authorizeAuthenticatedUser(args: {
         store.unifi_site_id,
         macToCheck || "",
         Deno.env.get("UNIFI_USERNAME"),
-        Deno.env.get("UNIFI_PASSWORD")
+        Deno.env.get("UNIFI_PASSWORD"),
+        ctx.apMac,
+        ctx.ssid,
       );
 
       if (check.state === 'authorized') {
@@ -3190,7 +3325,14 @@ async function authorizeAuthenticatedUser(args: {
     sessionId = session.id;
   }
 
-  // Upsert lead by user_id
+  const { data: activeConsent } = await db
+    .from("consent_versions")
+    .select("version")
+    .eq("is_active", true)
+    .maybeSingle();
+
+  // Upsert lead by user_id. Never hard-code a consent version: the active
+  // server-side record is authoritative for both password and Google flows.
   try {
     const { data: existingLead } = await db
       .from("leads")
@@ -3215,7 +3357,7 @@ async function authorizeAuthenticatedUser(args: {
         ...leadPayload,
         first_seen_at: nowIso,
         consented_at: nowIso,
-        consent_version: "1.0",
+        consent_version: activeConsent?.version || "unavailable",
       });
     }
   } catch (e) {
@@ -3652,8 +3794,14 @@ async function handleLogin(req: Request): Promise<Response> {
 
 
   logEvent(db, {
-    session_id: result.session_id, trace_id: traceId, event_type: "login_success",
-    step: "form", status: "success", payload: { store_slug: result.store_slug }, client_ip: clientIp,
+    session_id: result.session_id,
+    trace_id: traceId,
+    event_type: result.authorized ? "login_success" : "login_failed",
+    step: "form",
+    status: result.authorized ? "success" : "warning",
+    error_code: result.authorized ? null : (result.fail_reason || "WIFI_NOT_AUTHORIZED"),
+    payload: { store_slug: result.store_slug, fail_reason: result.fail_reason || null },
+    client_ip: clientIp,
   });
 
   return jsonResponse({
@@ -3914,6 +4062,7 @@ async function handleUpdateProfile(req: Request): Promise<Response> {
   const cpfDigits = typeof body.cpf === "string" ? body.cpf.replace(/\D/g, "") : null;
   const phoneDigits = typeof body.phone === "string" ? body.phone.replace(/\D/g, "") : null;
   const name = typeof body.name === "string" ? sanitizeString(body.name, MAX_NAME_LEN) : null;
+  const consentVersion = Validators.string(body.consent_version, 64);
 
   if (phoneDigits) {
     if (!isValidPhone(phoneDigits)) return errorResponse("Telefone inválido.");
@@ -3923,6 +4072,17 @@ async function handleUpdateProfile(req: Request): Promise<Response> {
 
   // --- CPF Handle ---
   if (cpfDigits) {
+    const { data: activeConsent, error: consentError } = await db
+      .from("consent_versions")
+      .select("version")
+      .eq("is_active", true)
+      .maybeSingle();
+    if (consentError || !activeConsent?.version || consentVersion !== activeConsent.version) {
+      return jsonResponse({
+        error: "Leia e aceite os termos de privacidade atuais para continuar.",
+        code: "CONSENT_REQUIRED",
+      }, 409);
+    }
     if (!Validators.cpf(cpfDigits)) {
       Logger.warn("[update-profile] invalid CPF rejected", { trace_id: traceId });
       return errorResponse("CPF inválido.", 400);
@@ -3986,7 +4146,8 @@ async function handleUpdateProfile(req: Request): Promise<Response> {
   logEvent(db, {
     trace_id: traceId, event_type: "profile_updated", step: "form", status: "success",
     payload: {
-      fields: [cpfDigits ? "cpf" : null, phoneDigits ? "phone" : null, name ? "name" : null].filter(Boolean)
+      fields: [cpfDigits ? "cpf" : null, phoneDigits ? "phone" : null, name ? "name" : null].filter(Boolean),
+      consent_version: cpfDigits ? consentVersion : null,
     },
     client_ip: clientIp,
     user_agent: ua,
@@ -4022,17 +4183,28 @@ Deno.serve(async (req: Request) => {
     // 1. System/Health endpoints
     if (path === "/health") return jsonResponse({ status: "ok" });
     if (path === "/ready") {
-      const { error: databaseError } = await supabaseAdmin()
+      const readyDb = supabaseAdmin();
+      const { error: databaseError } = await readyDb
         .from("global_settings")
         .select("id")
         .eq("id", 1)
         .maybeSingle();
+      const { data: activeStores, error: storesError } = await readyDb
+        .from("stores")
+        .select("slug, unifi_controller_url, unifi_site_id")
+        .eq("is_active", true);
+      const invalidStores = (activeStores || []).filter((store) =>
+        store.unifi_controller_url !== canonicalUnifiControllerUrl(store.slug) ||
+        !store.unifi_site_id
+      );
       const checks = {
         database: !databaseError,
         unifi_credentials: !!UNIFI_USERNAME && !!UNIFI_PASSWORD,
+        controller_configuration: !storesError && invalidStores.length === 0 && (activeStores?.length || 0) > 0,
+        invalid_controller_stores: invalidStores.map((store) => store.slug),
         cron_secret: !!CRON_SECRET,
       };
-      const ready = checks.database && checks.unifi_credentials;
+      const ready = checks.database && checks.unifi_credentials && checks.controller_configuration;
       return jsonResponse({ status: ready ? "ready" : "degraded", checks }, ready ? 200 : 503);
     }
 
@@ -4052,6 +4224,8 @@ Deno.serve(async (req: Request) => {
     if (path === "/login" && req.method === "POST") return await handleLogin(req);
   if (path === "/oauth/init" && req.method === "POST") return await handleOAuthInit(req);
   if (path === "/oauth/restart" && req.method === "POST") return await handleOAuthRestart(req);
+  if (path === "/oauth/handoff/create" && req.method === "POST") return await handleOAuthHandoffCreate(req);
+  if (path === "/oauth/handoff/claim" && req.method === "POST") return await handleOAuthHandoffClaim(req);
 
     if (path === "/oauth/callback") return await handleOAuthCallback(req);
     if (path === "/update-profile" && req.method === "POST") return await handleUpdateProfile(req);
@@ -4183,6 +4357,32 @@ async function handleOAuthInit(req: Request): Promise<Response> {
     return errorResponse("Serviço temporariamente indisponível.", 503);
   }
 
+  // Resolve the store before sending the customer through authentication.
+  // This prevents a successful Google/CPF flow from ending in
+  // NO_STORE_CONFIGURED and makes the result survive a browser handoff.
+  let detected = await detectStoreFromRequest(db, req, apMac, null);
+  if (!detected.store_id) {
+    const discovered = await discoverStoreByClientMac(db, clientMac);
+    if (discovered) detected = discovered;
+  }
+  if (!detected.store_id) {
+    logEvent(db, {
+      trace_id: getTraceId(req, body),
+      store_id: null,
+      event_type: "store_resolution_failed_before_auth",
+      step: "params",
+      status: "error",
+      error_code: "STORE_NOT_RESOLVED",
+      payload: { has_ap_mac: !!apMac, has_store_hint: !!sanitizeString(rawParams.store, 64) },
+      client_ip: clientIp,
+      user_agent: ua,
+    });
+    return jsonResponse({
+      error: "Não foi possível identificar esta unidade. Reconecte-se ao Wi-Fi e tente novamente.",
+      code: "STORE_NOT_RESOLVED",
+    }, 409);
+  }
+
   // Cryptographically strong random token (opaque)
   const tokenBytes = new Uint8Array(32);
   crypto.getRandomValues(tokenBytes);
@@ -4201,12 +4401,19 @@ async function handleOAuthInit(req: Request): Promise<Response> {
       client_mac: clientMac,
       ap_mac: apMac,
       ssid: sanitizeString(rawParams.ssid, 64),
-      store_hint: sanitizeString(rawParams.store, 64),
+      store_id: detected.store_id,
+      store_hint: detected.store_slug,
+      store_detection_source: detected.detection_source,
       captive_timestamp: sanitizeString(rawParams.t, 32),
       original_url: sanitizeString(body.original_url as string, 500),
       expires_at: expiresAt.toISOString(),
       status: 'created',
-      metadata: { client_ip: clientIp, user_agent: ua }
+      metadata: {
+        client_ip: clientIp,
+        user_agent: ua,
+        requested_redirect_url: sanitizeString(rawParams.url, 500),
+        supplied_store_hint: sanitizeString(rawParams.store, 64),
+      }
     })
     .select("id")
     .single();
@@ -4218,7 +4425,110 @@ async function handleOAuthInit(req: Request): Promise<Response> {
 
   return jsonResponse({
     attempt_id: attempt.id,
-    token: token
+    token: token,
+    store: { slug: detected.store_slug, name: detected.store_name, city: detected.store_city },
+    detection_source: detected.detection_source,
+  });
+}
+
+async function handleOAuthHandoffCreate(req: Request): Promise<Response> {
+  const db = supabaseAdmin();
+  const clientIp = getPublicIp(req);
+  const body = await safeParseJson(req);
+  if (!body) return errorResponse("Requisição inválida (JSON esperado).");
+
+  const attemptId = typeof body.attempt_id === "string" ? body.attempt_id : "";
+  const resumeToken = typeof body.resume_token === "string" ? body.resume_token : "";
+  const validation = await validateOAuthAttempt(db, attemptId, resumeToken);
+  if (validation.status !== "active" || !validation.attempt) {
+    return jsonResponse({ error: "Tentativa inválida ou expirada.", code: "INVALID_ATTEMPT" }, 403);
+  }
+
+  const rateLimit = await checkRateLimitDb(db, `oauth-handoff:${attemptId}`, 60, 3, 300);
+  if (!rateLimit.allowed) return errorResponse("Muitas tentativas. Aguarde alguns minutos.", 429);
+
+  const codeBytes = new Uint8Array(32);
+  crypto.getRandomValues(codeBytes);
+  const code = Array.from(codeBytes).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  const codeHash = await sha256Hex(code);
+  const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+
+  const { error } = await db.from("oauth_browser_handoffs").upsert({
+    attempt_id: attemptId,
+    code_hash: codeHash,
+    expires_at: expiresAt,
+    claimed_at: null,
+  }, { onConflict: "attempt_id" });
+  if (error) {
+    Logger.error("[oauth-handoff] create failed", { code: error.code || "HANDOFF_CREATE_FAILED" });
+    return errorResponse("Não foi possível preparar a abertura no navegador.", 500);
+  }
+
+  await db.from("captive_auth_attempts").update({ status: "oauth_redirected" }).eq("id", attemptId);
+  logEvent(db, {
+    trace_id: getTraceId(req, body),
+    store_id: validation.attempt.store_id || null,
+    event_type: "oauth_browser_handoff_created",
+    step: "params",
+    status: "success",
+    client_ip: clientIp,
+    user_agent: req.headers.get("user-agent"),
+  });
+
+  return jsonResponse({
+    handoff_url: `https://minasbrasilwifi.com.br/oauth/continue?handoff=${code}`,
+    expires_at: expiresAt,
+  });
+}
+
+async function handleOAuthHandoffClaim(req: Request): Promise<Response> {
+  const db = supabaseAdmin();
+  const clientIp = getPublicIp(req);
+  const body = await safeParseJson(req);
+  const code = typeof body?.handoff === "string" ? body.handoff.trim() : "";
+  if (!/^[a-f0-9]{64}$/i.test(code)) {
+    return jsonResponse({ error: "Transferência inválida.", code: "HANDOFF_INVALID" }, 400);
+  }
+
+  const codeHash = await sha256Hex(code.toLowerCase());
+  const rateLimit = await checkRateLimitDb(db, `oauth-handoff-claim:${clientIp || "unknown"}`, 60, 10, 300);
+  if (!rateLimit.allowed) return errorResponse("Muitas tentativas. Aguarde alguns minutos.", 429);
+
+  const tokenBytes = new Uint8Array(32);
+  crypto.getRandomValues(tokenBytes);
+  const token = Array.from(tokenBytes).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  const tokenHash = await sha256Hex(token);
+
+  const { data, error } = await db.rpc("claim_oauth_browser_handoff", {
+    p_code_hash: codeHash,
+    p_new_resume_token_hash: tokenHash,
+  });
+  const claim = Array.isArray(data) ? data[0] : null;
+  if (error || !claim?.attempt_id) {
+    Logger.warn("[oauth-handoff] invalid or expired claim", { code: error?.code || "HANDOFF_CLAIM_FAILED" });
+    return jsonResponse({ error: "Esta transferência expirou ou já foi utilizada.", code: "HANDOFF_EXPIRED" }, 410);
+  }
+
+  logEvent(db, {
+    trace_id: getTraceId(req, body),
+    event_type: "oauth_browser_handoff_claimed",
+    step: "params",
+    status: "success",
+    client_ip: clientIp,
+    user_agent: req.headers.get("user-agent"),
+  });
+
+  return jsonResponse({
+    attempt_id: claim.attempt_id,
+    token,
+    params: {
+      id: claim.client_mac,
+      ap: claim.ap_mac || undefined,
+      ssid: claim.ssid || undefined,
+      store: claim.store_hint || undefined,
+      t: claim.captive_timestamp || undefined,
+      url: claim.requested_redirect_url || undefined,
+    },
   });
 }
 

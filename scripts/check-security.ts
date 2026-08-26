@@ -30,6 +30,8 @@ const checks: Array<[string, boolean]> = [
   ["OAuth capability tokens are absent from callback URLs", !/oauth\/callback\?[^\n]*(attempt_id|resume_token)/.test(contents["src/App.tsx"])],
   ["frontend has no private Supabase auth API calls", !/_notifyAllChannels/.test(contents["src/App.tsx"])],
   ["Google OAuth returns only to the canonical HTTPS callback", (contents["src/App.tsx"].match(/https:\/\/minasbrasilwifi\.com\.br\/oauth\/callback/g) || []).length >= 2 && !/redirectTo\s*[:=]\s*["']http:/.test(contents["src/App.tsx"])],
+  ["embedded Google OAuth uses a one-time server-side browser handoff", /requiresExternalOAuthBrowser/.test(contents["src/App.tsx"]) && /createExternalHandoff/.test(contents["src/App.tsx"]) && /claim_oauth_browser_handoff/.test(contents["supabase/functions/captive-portal/index.ts"])],
+  ["fresh captive visits do not enter callback mode from stale local state", /location\.pathname === "\/oauth\/callback"/.test(contents["src/App.tsx"]) && !/location\.pathname === "\/oauth\/callback" \|\| OAuthTracker\.isValidOAuthFlow/.test(contents["src/App.tsx"])],
   ["auth sessions are never brokered to preview editors", !/postMessage\([^\n]*(access_token|refresh_token|session|value)/i.test(Object.values(contents).join("\n"))],
   ["UniFi credentials come from runtime secrets", /Deno\.env\.get\("UNIFI_PASSWORD"\)/.test(contents["supabase/functions/captive-portal/index.ts"])],
   ["frontend does not force the matriz route", !/store\s*=\s*["']matriz["']/.test(contents["src/lib/api.ts"])],

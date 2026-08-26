@@ -10,7 +10,7 @@ export type Database = {
   // Allows to automatically instantiate createClient with right options
   // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
   __InternalSupabase: {
-    PostgrestVersion: "14.1"
+    PostgrestVersion: "14.17"
   }
   public: {
     Tables: {
@@ -47,7 +47,7 @@ export type Database = {
       captive_auth_attempts: {
         Row: {
           ap_mac: string | null
-          authorization_attempts: number | null
+          authorization_attempts: number
           authorization_finished_at: string | null
           authorization_started_at: string | null
           authorized: boolean | null
@@ -68,12 +68,14 @@ export type Database = {
           resume_token_hash: string
           ssid: string | null
           status: string
+          store_detection_source: string | null
           store_hint: string | null
+          store_id: string | null
           user_id: string | null
         }
         Insert: {
           ap_mac?: string | null
-          authorization_attempts?: number | null
+          authorization_attempts?: number
           authorization_finished_at?: string | null
           authorization_started_at?: string | null
           authorized?: boolean | null
@@ -94,12 +96,14 @@ export type Database = {
           resume_token_hash: string
           ssid?: string | null
           status?: string
+          store_detection_source?: string | null
           store_hint?: string | null
+          store_id?: string | null
           user_id?: string | null
         }
         Update: {
           ap_mac?: string | null
-          authorization_attempts?: number | null
+          authorization_attempts?: number
           authorization_finished_at?: string | null
           authorization_started_at?: string | null
           authorized?: boolean | null
@@ -120,7 +124,9 @@ export type Database = {
           resume_token_hash?: string
           ssid?: string | null
           status?: string
+          store_detection_source?: string | null
           store_hint?: string | null
+          store_id?: string | null
           user_id?: string | null
         }
         Relationships: [
@@ -129,6 +135,20 @@ export type Database = {
             columns: ["captive_session_id"]
             isOneToOne: false
             referencedRelation: "captive_sessions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "captive_auth_attempts_store_id_fkey"
+            columns: ["store_id"]
+            isOneToOne: false
+            referencedRelation: "stores"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "captive_auth_attempts_store_id_fkey"
+            columns: ["store_id"]
+            isOneToOne: false
+            referencedRelation: "stores_public"
             referencedColumns: ["id"]
           },
         ]
@@ -252,13 +272,6 @@ export type Database = {
           user_id?: string | null
         }
         Relationships: [
-          {
-            foreignKeyName: "captive_sessions_attempt_id_fkey"
-            columns: ["attempt_id"]
-            isOneToOne: false
-            referencedRelation: "captive_auth_attempts"
-            referencedColumns: ["id"]
-          },
           {
             foreignKeyName: "captive_sessions_store_id_fkey"
             columns: ["store_id"]
@@ -547,6 +560,41 @@ export type Database = {
             columns: ["store_id"]
             isOneToOne: false
             referencedRelation: "stores_public"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      oauth_browser_handoffs: {
+        Row: {
+          attempt_id: string
+          claimed_at: string | null
+          code_hash: string
+          created_at: string
+          expires_at: string
+          id: string
+        }
+        Insert: {
+          attempt_id: string
+          claimed_at?: string | null
+          code_hash: string
+          created_at?: string
+          expires_at: string
+          id?: string
+        }
+        Update: {
+          attempt_id?: string
+          claimed_at?: string | null
+          code_hash?: string
+          created_at?: string
+          expires_at?: string
+          id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "oauth_browser_handoffs_attempt_id_fkey"
+            columns: ["attempt_id"]
+            isOneToOne: true
+            referencedRelation: "captive_auth_attempts"
             referencedColumns: ["id"]
           },
         ]
@@ -906,38 +954,34 @@ export type Database = {
       }
     }
     Functions: {
-      claim_auth_attempt:
-        | {
-            Args: {
-              p_attempt_id: string
-              p_lease_duration?: string
-              p_lease_owner: string
-              p_user_id: string
-            }
-            Returns: {
-              authorized: boolean
-              fail_reason: string
-              redirect_url: string
-              result_status: string
-              session_id: string
-            }[]
-          }
-        | {
-            Args: {
-              p_attempt_id: string
-              p_lease_duration?: string
-              p_lease_owner: string
-              p_resume_token?: string
-              p_user_id: string
-            }
-            Returns: {
-              authorized: boolean
-              fail_reason: string
-              redirect_url: string
-              result_status: string
-              session_id: string
-            }[]
-          }
+      claim_auth_attempt: {
+        Args: {
+          p_attempt_id: string
+          p_lease_duration?: string
+          p_lease_owner: string
+          p_resume_token?: string
+          p_user_id: string
+        }
+        Returns: {
+          authorized: boolean
+          fail_reason: string
+          redirect_url: string
+          result_status: string
+          session_id: string
+        }[]
+      }
+      claim_oauth_browser_handoff: {
+        Args: { p_code_hash: string; p_new_resume_token_hash: string }
+        Returns: {
+          ap_mac: string
+          attempt_id: string
+          captive_timestamp: string
+          client_mac: string
+          requested_redirect_url: string
+          ssid: string
+          store_hint: string
+        }[]
+      }
       finalize_auth_attempt: {
         Args: {
           p_attempt_id: string
@@ -964,6 +1008,7 @@ export type Database = {
         Returns: boolean
       }
       normalize_mac: { Args: { mac: string }; Returns: string }
+      production_release_contract: { Args: never; Returns: string }
       rate_limit_hit: {
         Args: {
           p_block_seconds?: number
