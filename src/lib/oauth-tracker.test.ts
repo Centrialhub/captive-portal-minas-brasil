@@ -69,9 +69,10 @@ describe("OAuth transaction tracking", () => {
     expect(OAuthTracker.getTokens()).toEqual({ attempt_id: "new-attempt", token: "new-secret" });
   });
 
-  it("detects captive and embedded user agents without blocking full Safari", () => {
+  it("keeps Android captive OAuth in place while handing off incompatible embedded browsers", () => {
     expect(requiresExternalOAuthBrowser("CaptiveNetworkSupport-443.40.1 wispr")).toBe(true);
-    expect(requiresExternalOAuthBrowser("Mozilla/5.0 (Linux; Android 14; Pixel 8 Build/UP1A; wv) Version/4.0 Chrome/125 Mobile Safari/537.36")).toBe(true);
+    expect(requiresExternalOAuthBrowser("Mozilla/5.0 (Linux; Android 14; Pixel 8 Build/UP1A; wv) Version/4.0 Chrome/125 Mobile Safari/537.36")).toBe(false);
+    expect(requiresExternalOAuthBrowser("Mozilla/5.0 (Linux; Android 14; wv) Instagram 342.0.0.0")).toBe(true);
     expect(requiresExternalOAuthBrowser("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1")).toBe(false);
   });
 

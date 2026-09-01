@@ -36,8 +36,15 @@ const CAPTIVE_PARAM_KEYS: CaptiveParamKey[] = [
 
 export function requiresExternalOAuthBrowser(userAgent = navigator.userAgent): boolean {
   const ua = userAgent || "";
-  if (/CaptiveNetworkSupport|; wv\)|\bFBAN\b|\bFBAV\b|Instagram/i.test(ua)) return true;
-  if (/Android/i.test(ua) && /Version\/4\.0/i.test(ua)) return true;
+  if (/Android/i.test(ua)) {
+    // Android's captive assistant identifies itself as a generic WebView
+    // (`wv` / `Version/4.0`), but field validation confirms that this flow can
+    // complete the provider redirect in place. Forcing every Android WebView
+    // through target=_blank regresses devices whose captive assistant blocks
+    // new windows. Keep the handoff only for known social-app browsers.
+    return /\bFBAN\b|\bFBAV\b|Instagram/i.test(ua);
+  }
+  if (/CaptiveNetworkSupport|\bFBAN\b|\bFBAV\b|Instagram/i.test(ua)) return true;
   if (/(iPhone|iPad|iPod)/i.test(ua)) {
     const fullBrowser = /Version\/[^ ]+.*Safari|CriOS|FxiOS|EdgiOS|OPiOS/i.test(ua);
     return !fullBrowser;
