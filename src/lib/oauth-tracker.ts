@@ -45,6 +45,42 @@ export function requiresExternalOAuthBrowser(userAgent = navigator.userAgent): b
   return false;
 }
 
+export interface ExternalBrowserLink {
+  href: string;
+  target: "_self" | "_blank";
+}
+
+/**
+ * Android captive-portal WebViews commonly ignore target="_blank" without
+ * reporting an error. An ACTION_VIEW intent hands the one-time continuation
+ * URL to the device browser while keeping the HTTPS URL as a safe fallback.
+ */
+export function buildExternalBrowserLink(
+  handoffUrl: string,
+  userAgent = navigator.userAgent,
+): ExternalBrowserLink {
+  const fallback: ExternalBrowserLink = { href: handoffUrl, target: "_blank" };
+  if (!/Android/i.test(userAgent || "")) return fallback;
+
+  try {
+    const url = new URL(handoffUrl);
+    if (
+      url.protocol !== "https:" ||
+      url.hostname !== "minasbrasilwifi.com.br" ||
+      url.pathname !== "/oauth/continue"
+    ) return fallback;
+
+    const intentTarget = `${url.host}${url.pathname}${url.search}`;
+    const encodedFallback = encodeURIComponent(url.toString());
+    return {
+      href: `intent://${intentTarget}#Intent;scheme=https;action=android.intent.action.VIEW;category=android.intent.category.BROWSABLE;S.browser_fallback_url=${encodedFallback};end`,
+      target: "_self",
+    };
+  } catch {
+    return fallback;
+  }
+}
+
 function readCaptiveParams(search = window.location.search): CaptiveParams {
   const query = new URLSearchParams(search);
   const params: CaptiveParams = {};

@@ -8,7 +8,11 @@ import {
   formatCPF,
   Validators,
 } from "./lib/portal-utils";
-import { OAuthTracker, requiresExternalOAuthBrowser } from "./lib/oauth-tracker";
+import {
+  buildExternalBrowserLink,
+  OAuthTracker,
+  requiresExternalOAuthBrowser,
+} from "./lib/oauth-tracker";
 import { getAuthFailureMessage, isRecoverableAuthResult } from "./lib/auth-outcome";
 import { useOAuthCallback } from "./hooks/useOAuthCallback";
 import logoMinasBrasil from "./assets/logo-minas-brasil.png";
@@ -574,6 +578,9 @@ export default function App() {
 
 
   if (step === "oauth_external") {
+    const externalBrowserLink = externalHandoffUrl
+      ? buildExternalBrowserLink(externalHandoffUrl)
+      : null;
     return (
       <div className="portal-wrapper">
         <div className="portal-card" style={{ textAlign: "center" }}>
@@ -583,10 +590,10 @@ export default function App() {
             Por segurança, o Google não permite login dentro da janela automática do Wi-Fi.
             Abra o navegador para continuar; sua unidade e seu dispositivo já estão vinculados a esta tentativa.
           </p>
-          {externalHandoffUrl && (
+          {externalBrowserLink && (
             <a
-              href={externalHandoffUrl}
-              target="_blank"
+              href={externalBrowserLink.href}
+              target={externalBrowserLink.target}
               rel="noopener noreferrer"
               className="portal-btn block text-center"
               onClick={() => api.clientEvent({ event: "oauth_external_browser_opened", step: "oauth" })}
@@ -595,7 +602,8 @@ export default function App() {
             </a>
           )}
           <p className="mt-4 text-xs text-gray-500">
-            No iPhone/iPad, se esta janela continuar aberta, use o menu e escolha “Abrir no Safari”.
+            Se esta janela continuar aberta, use o menu acima e escolha “Abrir no navegador” ou
+            “Abrir no Chrome”. No iPhone/iPad, escolha “Abrir no Safari”.
           </p>
           <button
             type="button"

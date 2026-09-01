@@ -1,7 +1,12 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "./api";
-import { OAuthTracker, OAUTH_FLOW_TTL_MS, requiresExternalOAuthBrowser } from "./oauth-tracker";
+import {
+  buildExternalBrowserLink,
+  OAuthTracker,
+  OAUTH_FLOW_TTL_MS,
+  requiresExternalOAuthBrowser,
+} from "./oauth-tracker";
 
 const ATTEMPT_ID_KEY = "mb_oauth_attempt_id";
 const ATTEMPT_TOKEN_KEY = "mb_oauth_attempt_token";
@@ -68,5 +73,33 @@ describe("OAuth transaction tracking", () => {
     expect(requiresExternalOAuthBrowser("CaptiveNetworkSupport-443.40.1 wispr")).toBe(true);
     expect(requiresExternalOAuthBrowser("Mozilla/5.0 (Linux; Android 14; Pixel 8 Build/UP1A; wv) Version/4.0 Chrome/125 Mobile Safari/537.36")).toBe(true);
     expect(requiresExternalOAuthBrowser("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1")).toBe(false);
+  });
+
+  it("uses an Android ACTION_VIEW intent instead of a blocked blank window", () => {
+    const handoffUrl = "https://minasbrasilwifi.com.br/oauth/continue?handoff=abc123";
+    const link = buildExternalBrowserLink(
+      handoffUrl,
+      "Mozilla/5.0 (Linux; Android 14; Pixel 8 Build/UP1A; wv) Version/4.0 Chrome/125 Mobile Safari/537.36",
+    );
+
+    expect(link.target).toBe("_self");
+    expect(link.href).toContain("intent://minasbrasilwifi.com.br/oauth/continue?handoff=abc123#Intent;");
+    expect(link.href).toContain(`S.browser_fallback_url=${encodeURIComponent(handoffUrl)};end`);
+  });
+
+  it("keeps the normal HTTPS blank-window link outside Android", () => {
+    const handoffUrl = "https://minasbrasilwifi.com.br/oauth/continue?handoff=abc123";
+    expect(buildExternalBrowserLink(handoffUrl, "CaptiveNetworkSupport-443.40.1 wispr")).toEqual({
+      href: handoffUrl,
+      target: "_blank",
+    });
+  });
+
+  it("never creates an Android intent for a non-canonical handoff URL", () => {
+    const untrustedUrl = "https://example.com/oauth/continue?handoff=abc123";
+    expect(buildExternalBrowserLink(untrustedUrl, "Mozilla/5.0 (Linux; Android 14; wv) Version/4.0")).toEqual({
+      href: untrustedUrl,
+      target: "_blank",
+    });
   });
 });

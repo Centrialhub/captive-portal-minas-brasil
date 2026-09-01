@@ -118,6 +118,8 @@ await runCheck("deployed Google OAuth bundle contract", async () => {
   assert(bundle.includes("/oauth/handoff/create"), "deployed bundle is missing captive-assistant handoff creation");
   assert(bundle.includes("/oauth/handoff/claim"), "deployed bundle is missing one-time browser handoff claiming");
   assert(bundle.includes("/oauth/continue"), "deployed bundle is missing the external-browser continuation route");
+  assert(bundle.includes("intent://"), "deployed bundle is missing the Android external-browser intent");
+  assert(bundle.includes("browser_fallback_url"), "deployed bundle is missing the Android HTTPS fallback");
   assert(bundle.includes("google_oauth_started"), "deployed bundle is missing Google OAuth telemetry");
   assert(!bundle.includes("rwificontroller.drogariaminasbrasil.com.br"), "deployed browser bundle contains the private controller hostname");
 });
