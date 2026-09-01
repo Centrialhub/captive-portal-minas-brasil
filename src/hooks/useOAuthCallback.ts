@@ -46,7 +46,7 @@ export function useOAuthCallback({ onSuccess, onError, onNeedsCpf, enabled }: Us
           
           const result = await api.authorizeExisting({
             access_token: session.access_token,
-            client_mac: params.get("mac") || undefined,
+            client_mac: params.get("id") || params.get("mac") || undefined,
             ap_mac: params.get("ap") || undefined,
             ssid: params.get("ssid") || undefined,
             redirect_url: params.get("url") || undefined,
@@ -97,14 +97,15 @@ export function useOAuthCallback({ onSuccess, onError, onNeedsCpf, enabled }: Us
       return processingRef.current;
     };
 
-    // 10s Timeout for session arrival
+    // Captive assistants and mobile account selection can take longer to
+    // persist the Supabase session, especially with MFA or slow mobile data.
     timeoutId = setTimeout(() => {
       if (!terminalReachedRef.current && status !== "processing") {
         terminalReachedRef.current = true;
         setStatus("expired");
         onError("Não foi possível concluir o login do Google. Tempo esgotado.");
       }
-    }, 10000);
+    }, 30000);
 
     setStatus("waiting");
 

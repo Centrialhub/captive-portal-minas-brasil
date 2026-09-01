@@ -40,8 +40,9 @@ idempotente e normaliza as 12 lojas ativas para
 ## 3. Edge Function
 
 `captive-portal` deve permanecer com `verify_jwt=false`, pois as rotas públicas
-do captive chegam antes de existir uma sessão. A versão 230 já está publicada
-com autenticação própria, cookies UniFi completos e secrets disponíveis.
+do captive chegam antes de existir uma sessão. Antes de publicar o frontend,
+confirme que a função ativa corresponde a este repositório e mantém a
+autenticação própria, os cookies UniFi completos e os secrets disponíveis.
 
 ## 4. Frontend
 
