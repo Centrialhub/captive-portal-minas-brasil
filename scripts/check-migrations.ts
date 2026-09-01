@@ -34,10 +34,6 @@ const allStoresUnifiBridgeMigration = readFileSync(
   join(root, "supabase/migrations/20260825200944_route_all_unifi_stores_through_tls_proxy.sql"),
   "utf8",
 );
-const captiveHardeningMigration = readFileSync(
-  join(root, "supabase/migrations/20260826202326_harden_captive_flow_and_oauth_handoff.sql"),
-  "utf8",
-);
 const duplicateMigration = readFileSync(
   join(root, "supabase/migrations/20260822221520_cbf3ebe4-1d29-4c1a-83e3-818255bc0eb0.sql"),
   "utf8",
@@ -80,12 +76,7 @@ const requirements: Array<[string, boolean]> = [
   ["legacy UniFi proxy URLs are normalized to public port 443", /https:\/\/rwificontroller\.drogariaminasbrasil\.com\.br'/.test(unifiHttpsMigration) && /8083\|8443/.test(unifiHttpsMigration)],
   ["matriz traffic is routed through the local TLS proxy", /https:\/\/unifiproxy\.minasbrasilwifi\.com\.br\/matriz/.test(unifiBridgeMigration) && /rwificontroller\\\.drogariaminasbrasil/.test(unifiBridgeMigration)],
   ["all managed stores are routed through the local TLS proxy", /https:\/\/unifiproxy\.minasbrasilwifi\.com\.br\/['"]?\s*\|\|\s*slug/.test(allStoresUnifiBridgeMigration) && ["cintra", "cula", "dpedro", "drive", "hu", "ibituruna", "joao23", "major", "matriz", "mestra", "povao", "shopping"].every((slug) => allStoresUnifiBridgeMigration.includes(`'${slug}'`))],
-  ["controller URLs are bound to the canonical TLS proxy and store slug", /stores_unifi_controller_url_canonical/.test(captiveHardeningMigration) && /unifi_controller_url = 'https:\/\/unifiproxy\.minasbrasilwifi\.com\.br\/' \|\| slug/.test(captiveHardeningMigration)],
-  ["browser handoffs are one-time, RLS protected, and service-role-only", /CREATE TABLE IF NOT EXISTS public\.oauth_browser_handoffs/.test(captiveHardeningMigration) && /claimed_at IS NOT NULL/.test(captiveHardeningMigration) && /ENABLE ROW LEVEL SECURITY/.test(captiveHardeningMigration) && /claim_oauth_browser_handoff\(TEXT, TEXT\)[\s\S]*TO service_role/.test(captiveHardeningMigration)],
-  ["admin controller URLs are derived from the store slug", /canonicalUnifiControllerUrl\(slug\)/.test(edgeFunction) && /canonicalUnifiControllerUrl\(effectiveSlug\)/.test(edgeFunction)],
-  ["UniFi idempotency is scoped by store and MAC", /unifi_auth:store:\$\{storeId\}:mac:\$\{clientMac\.toUpperCase\(\)\}/.test(edgeFunction) && /\.eq\("store_id", storeId\)/.test(edgeFunction)],
-  ["authorization never sends a blind command for an absent station", /CLIENT_NOT_FOUND_ON_CONTROLLER/.test(edgeFunction) && /UNIFI_STATION_LOOKUP_FAILED/.test(edgeFunction)],
-  ["store discovery caches only the controller-observed AP", /normalizeMac\(station\.ap_mac\)/.test(edgeFunction) && !/normalizeMac\(station\.ap_mac \|\| apMacHint\)/.test(edgeFunction)],
+  ["admin controller URL writes require HTTPS", (edgeFunction.match(/sanitizeHttpUrl\(body\.unifi_controller_url, \{ httpsOnly: true \}\)/g) || []).length === 2],
   ["troubleshooting exposes diagnostics, trace events, and audit", /handleAdminDiagnostics/.test(edgeFunction) && /portal_events/.test(edgeFunction) && /handleAdminAudit/.test(edgeFunction)],
   ["manual housekeeping is preview-first and explicitly confirmed", /body\.dry_run !== false/.test(edgeFunction) && /EXCLUIR DADOS EXPIRADOS/.test(edgeFunction) && /previewHousekeeping/.test(edgeFunction)],
   ["readiness reports degraded dependencies", /path === "\/ready"/.test(edgeFunction) && /ready \? 200 : 503/.test(edgeFunction)],

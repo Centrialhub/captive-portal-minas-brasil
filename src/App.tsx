@@ -8,11 +8,7 @@ import {
   formatCPF,
   Validators,
 } from "./lib/portal-utils";
-import {
-  buildExternalBrowserLink,
-  OAuthTracker,
-  requiresExternalOAuthBrowser,
-} from "./lib/oauth-tracker";
+import { OAuthTracker } from "./lib/oauth-tracker";
 import { getAuthFailureMessage, isRecoverableAuthResult } from "./lib/auth-outcome";
 import { useOAuthCallback } from "./hooks/useOAuthCallback";
 import logoMinasBrasil from "./assets/logo-minas-brasil.png";
@@ -25,7 +21,6 @@ import "./index.css";
 type Step = 
   | "loading" 
   | "oauth_redirecting" 
-  | "oauth_external"
   | "oauth_callback" 
   | "login" 
   | "signup" 
@@ -80,7 +75,6 @@ export default function App() {
   const [error, setError] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
   const [busy, setBusy] = useState(false);
-  const [externalHandoffUrl, setExternalHandoffUrl] = useState<string | null>(null);
   
   // Scroll to top on error to ensure user sees the message
   useEffect(() => {
@@ -106,7 +100,6 @@ export default function App() {
 
   // CPF Prompt (for Google users)
   const [promptCpf, setPromptCpf] = useState("");
-  const [googleConsented, setGoogleConsented] = useState(false);
 
   // signup form fields state
   const [signupFields, setSignupFields] = useState({
@@ -150,10 +143,8 @@ export default function App() {
   }, []);
 
   const isOAuthCallbackFlow = useMemo(() => {
-    return location.pathname === "/oauth/callback";
+    return location.pathname === "/oauth/callback" || OAuthTracker.isValidOAuthFlow();
   }, [location.pathname]);
-  const isOAuthContinueFlow = location.pathname === "/oauth/continue";
-  const isOAuthRoute = isOAuthCallbackFlow || isOAuthContinueFlow;
 
   const { status: oauthStatus } = useOAuthCallback({
     enabled: isOAuthCallbackFlow,
@@ -189,9 +180,8 @@ export default function App() {
       return;
     }
 
-    // Only callbacks may restore stored parameters. A fresh captive visit must
-    // never be hijacked by state left by another device/attempt.
-    if (location.pathname === "/oauth/callback") OAuthTracker.restoreCaptiveParams();
+    // Restore captive parameters if coming back from OAuth
+    OAuthTracker.restoreCaptiveParams();
 
     // Non-blocking bootstrap (store name / consent text)
     api.bootstrap().then(
@@ -201,55 +191,7 @@ export default function App() {
       () => { /* keep fallback */ },
     );
 
-  }, [location.pathname]);
-
-  useEffect(() => {
-    if (!isOAuthContinueFlow) return;
-    let cancelled = false;
-
-    const continueInBrowser = async () => {
-      setStep("oauth_redirecting");
-      const handoff = new URLSearchParams(window.location.search).get("handoff") || "";
-      if (!handoff) {
-        setError("A transferência para o navegador está ausente ou expirou.");
-        setStep("error");
-        return;
-      }
-
-      // Some captive assistants ignore target=_blank and reopen this URL in
-      // another embedded view. Do not consume the one-time handoff there;
-      // keep it valid until the user opens the same URL in Safari/Chrome.
-      if (requiresExternalOAuthBrowser()) {
-        setExternalHandoffUrl(window.location.href);
-        setStep("oauth_external");
-        return;
-      }
-
-      const claimed = await OAuthTracker.claimExternalHandoff(handoff);
-      window.history.replaceState(null, "", "/oauth/continue");
-      if (cancelled) return;
-      if (!claimed) {
-        setError("A transferência para o navegador expirou. Volte ao Wi-Fi e inicie novamente.");
-        setStep("error");
-        return;
-      }
-
-      const { error: oauthError } = await supabase.auth.signInWithOAuth({
-        provider: "google",
-        options: {
-          redirectTo: "https://minasbrasilwifi.com.br/oauth/callback",
-          skipBrowserRedirect: false,
-        },
-      });
-      if (!cancelled && oauthError) {
-        setError("Não foi possível iniciar o login do Google no navegador.");
-        setStep("error");
-      }
-    };
-
-    void continueInBrowser();
-    return () => { cancelled = true; };
-  }, [isOAuthContinueFlow]);
+  }, []);
 
   const completeAuthenticatedSession = async (session: any, source: "google" | "silent") => {
     // Legacy helper kept for CPF submit flow, but most flows now use the hook
@@ -315,7 +257,7 @@ export default function App() {
   // attempt and the same completion path. Without this branch, a returning
   // user with a valid session remains on the loading screen indefinitely.
   useEffect(() => {
-    if (isOAuthRoute || stepRef.current !== "loading") return;
+    if (isOAuthCallbackFlow || stepRef.current !== "loading") return;
     let cancelled = false;
 
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -330,7 +272,7 @@ export default function App() {
     });
 
     return () => { cancelled = true; };
-  }, [isOAuthRoute]);
+  }, [isOAuthCallbackFlow]);
 
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -395,10 +337,6 @@ export default function App() {
       setError("CPF inválido. Verifique os números informados.");
       return;
     }
-    if (!googleConsented || !boot.consent?.version) {
-      setError("Leia e aceite os termos de privacidade para continuar.");
-      return;
-    }
 
     setBusy(true);
     try {
@@ -412,7 +350,6 @@ export default function App() {
       const result = await api.updateProfile({
         access_token: session.access_token,
         cpf: digits,
-        consent_version: boot.consent.version,
       });
 
       if (result?.error) {
@@ -539,17 +476,6 @@ export default function App() {
         return;
       }
       
-      if (requiresExternalOAuthBrowser()) {
-        const handoff = await OAuthTracker.createExternalHandoff();
-        if (!handoff?.handoff_url) {
-          throw new Error("Não foi possível criar a transferência para o navegador.");
-        }
-        setExternalHandoffUrl(handoff.handoff_url);
-        setStep("oauth_external");
-        setBusy(false);
-        return;
-      }
-
       const redirectTo = "https://minasbrasilwifi.com.br/oauth/callback";
       const { error: err } = await supabase.auth.signInWithOAuth({
         provider: "google",
@@ -576,51 +502,6 @@ export default function App() {
   };
 
 
-
-  if (step === "oauth_external") {
-    const externalBrowserLink = externalHandoffUrl
-      ? buildExternalBrowserLink(externalHandoffUrl)
-      : null;
-    return (
-      <div className="portal-wrapper">
-        <div className="portal-card" style={{ textAlign: "center" }}>
-          <img src={logoMinasBrasil} alt="Drogaria Minas Brasil" className="portal-logo" />
-          <h1 className="portal-title">Continue no navegador</h1>
-          <p className="portal-subtitle">
-            Por segurança, o Google não permite login dentro da janela automática do Wi-Fi.
-            Abra o navegador para continuar; sua unidade e seu dispositivo já estão vinculados a esta tentativa.
-          </p>
-          {externalBrowserLink && (
-            <a
-              href={externalBrowserLink.href}
-              target={externalBrowserLink.target}
-              rel="noopener noreferrer"
-              className="portal-btn block text-center"
-              onClick={() => api.clientEvent({ event: "oauth_external_browser_opened", step: "oauth" })}
-            >
-              Abrir no navegador e entrar com Google
-            </a>
-          )}
-          <p className="mt-4 text-xs text-gray-500">
-            Se esta janela continuar aberta, use o menu acima e escolha “Abrir no navegador” ou
-            “Abrir no Chrome”. No iPhone/iPad, escolha “Abrir no Safari”.
-          </p>
-          <button
-            type="button"
-            className="portal-btn-secondary"
-            onClick={() => {
-              OAuthTracker.clearAll();
-              setExternalHandoffUrl(null);
-              setStep("login");
-            }}
-          >
-            Voltar
-          </button>
-          <Footer />
-        </div>
-      </div>
-    );
-  }
 
   // ── CPF PROMPT (Google Auth Gate) ──
   if (step === "cpf_prompt") {
@@ -705,28 +586,8 @@ export default function App() {
               disabled={busy}
               required
             />
-
-            {boot.consent && (
-              <div className="mt-4 text-left">
-                <details className="portal-terms">
-                  <summary>Termos de Uso e LGPD</summary>
-                  <div className="p-3 text-[11px] text-gray-500 bg-gray-50 rounded-b-lg border-t border-gray-100 max-h-32 overflow-y-auto">
-                    {boot.consent.text}
-                  </div>
-                </details>
-                <label className="portal-checkbox-label mt-2">
-                  <input
-                    type="checkbox"
-                    checked={googleConsented}
-                    onChange={(e) => setGoogleConsented(e.target.checked)}
-                    disabled={busy}
-                  />
-                  <span>Li e aceito os termos de privacidade.</span>
-                </label>
-              </div>
-            )}
             
-            <button type="submit" className="portal-btn" disabled={busy || !googleConsented || promptCpf.replace(/\D/g, "").length !== 11}>
+            <button type="submit" className="portal-btn" disabled={busy || promptCpf.replace(/\D/g, "").length !== 11}>
               {busy ? "Processando..." : "Confirmar e Liberar Wi-Fi"}
             </button>
 

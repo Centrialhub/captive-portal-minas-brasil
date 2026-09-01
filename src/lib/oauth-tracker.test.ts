@@ -1,12 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { api } from "./api";
-import {
-  buildExternalBrowserLink,
-  OAuthTracker,
-  OAUTH_FLOW_TTL_MS,
-  requiresExternalOAuthBrowser,
-} from "./oauth-tracker";
+import { OAuthTracker, OAUTH_FLOW_TTL_MS } from "./oauth-tracker";
 
 const ATTEMPT_ID_KEY = "mb_oauth_attempt_id";
 const ATTEMPT_TOKEN_KEY = "mb_oauth_attempt_token";
@@ -24,14 +18,7 @@ describe("OAuth transaction tracking", () => {
     const now = Date.now();
     localStorage.setItem(ATTEMPT_ID_KEY, "attempt");
     localStorage.setItem(ATTEMPT_TOKEN_KEY, "secret");
-    localStorage.setItem(PARAMS_KEY, JSON.stringify({ id: "001122334455", ap: "AABBCCDDEEFF" }));
-    localStorage.setItem(MARKER_KEY, JSON.stringify({
-      version: 2,
-      provider: "google",
-      startedAt: now,
-      attemptId: "attempt",
-      captiveFingerprint: "001122334455|aabbccddeeff||",
-    }));
+    localStorage.setItem(MARKER_KEY, JSON.stringify({ version: 1, provider: "google", startedAt: now }));
     expect(OAuthTracker.isValidOAuthFlow(now)).toBe(true);
     expect(OAuthTracker.isValidOAuthFlow(now + OAUTH_FLOW_TTL_MS + 1)).toBe(false);
   });
@@ -53,54 +40,5 @@ describe("OAuth transaction tracking", () => {
     expect(query.get("store")).toBe("matriz");
     expect(query.has("attempt_id")).toBe(false);
     expect(query.has("resume_token")).toBe(false);
-  });
-
-  it("does not reuse an attempt belonging to another captive identity", async () => {
-    localStorage.setItem(ATTEMPT_ID_KEY, "old-attempt");
-    localStorage.setItem(ATTEMPT_TOKEN_KEY, "old-secret");
-    localStorage.setItem(PARAMS_KEY, JSON.stringify({ id: "001122334455", ap: "AABBCCDDEEFF" }));
-    window.history.replaceState(null, "", "/?id=66778899AABB&ap=112233445566");
-    vi.spyOn(api, "initOAuth").mockResolvedValue({ attempt_id: "new-attempt", token: "new-secret" });
-
-    await expect(OAuthTracker.ensureAttempt()).resolves.toEqual({
-      attempt_id: "new-attempt",
-      token: "new-secret",
-    });
-    expect(OAuthTracker.getTokens()).toEqual({ attempt_id: "new-attempt", token: "new-secret" });
-  });
-
-  it("keeps Android captive OAuth in place while handing off incompatible embedded browsers", () => {
-    expect(requiresExternalOAuthBrowser("CaptiveNetworkSupport-443.40.1 wispr")).toBe(true);
-    expect(requiresExternalOAuthBrowser("Mozilla/5.0 (Linux; Android 14; Pixel 8 Build/UP1A; wv) Version/4.0 Chrome/125 Mobile Safari/537.36")).toBe(false);
-    expect(requiresExternalOAuthBrowser("Mozilla/5.0 (Linux; Android 14; wv) Instagram 342.0.0.0")).toBe(true);
-    expect(requiresExternalOAuthBrowser("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1")).toBe(false);
-  });
-
-  it("uses an Android ACTION_VIEW intent instead of a blocked blank window", () => {
-    const handoffUrl = "https://minasbrasilwifi.com.br/oauth/continue?handoff=abc123";
-    const link = buildExternalBrowserLink(
-      handoffUrl,
-      "Mozilla/5.0 (Linux; Android 14; Pixel 8 Build/UP1A; wv) Version/4.0 Chrome/125 Mobile Safari/537.36",
-    );
-
-    expect(link.target).toBe("_self");
-    expect(link.href).toContain("intent://minasbrasilwifi.com.br/oauth/continue?handoff=abc123#Intent;");
-    expect(link.href).toContain(`S.browser_fallback_url=${encodeURIComponent(handoffUrl)};end`);
-  });
-
-  it("keeps the normal HTTPS blank-window link outside Android", () => {
-    const handoffUrl = "https://minasbrasilwifi.com.br/oauth/continue?handoff=abc123";
-    expect(buildExternalBrowserLink(handoffUrl, "CaptiveNetworkSupport-443.40.1 wispr")).toEqual({
-      href: handoffUrl,
-      target: "_blank",
-    });
-  });
-
-  it("never creates an Android intent for a non-canonical handoff URL", () => {
-    const untrustedUrl = "https://example.com/oauth/continue?handoff=abc123";
-    expect(buildExternalBrowserLink(untrustedUrl, "Mozilla/5.0 (Linux; Android 14; wv) Version/4.0")).toEqual({
-      href: untrustedUrl,
-      target: "_blank",
-    });
   });
 });

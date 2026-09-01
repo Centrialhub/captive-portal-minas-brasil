@@ -134,7 +134,7 @@ export const api = {
     attempt_id?: string | null;
     resume_token?: string | null;
   }) {
-    return xhrRequest<any>("/signup", { method: "POST", body: data, timeoutMs: 35000 });
+    return xhrRequest<any>("/signup", { method: "POST", body: data, timeoutMs: 25000 });
   },
 
   login(data: {
@@ -148,7 +148,7 @@ export const api = {
     attempt_id?: string | null;
     resume_token?: string | null;
   }) {
-    return xhrRequest<any>("/login", { method: "POST", body: data, timeoutMs: 35000 });
+    return xhrRequest<any>("/login", { method: "POST", body: data, timeoutMs: 20000 });
   },
 
   authorizeExisting(data: {
@@ -162,30 +162,14 @@ export const api = {
     attempt_id?: string | null;
     resume_token?: string | null;
   }) {
-    return xhrRequest<any>("/authorize-existing", { method: "POST", body: data, timeoutMs: 35000 });
+    return xhrRequest<any>("/authorize-existing", { method: "POST", body: data, timeoutMs: 20000 });
   },
 
   initOAuth(data: {
     params: Record<string, string | undefined>;
     original_url: string;
-  }): Promise<{ attempt_id: string; token: string; store?: { slug: string; name: string; city?: string | null }; detection_source?: string }> {
-    return xhrRequest<{ attempt_id: string; token: string; store?: { slug: string; name: string; city?: string | null }; detection_source?: string }>("/oauth/init", {
-      method: "POST",
-      body: data,
-      timeoutMs: 20000,
-    });
-  },
-
-  createOAuthHandoff(data: { attempt_id: string; resume_token: string }): Promise<{ handoff_url: string; expires_at: string }> {
-    return xhrRequest<{ handoff_url: string; expires_at: string }>("/oauth/handoff/create", {
-      method: "POST",
-      body: data,
-      timeoutMs: 15000,
-    });
-  },
-
-  claimOAuthHandoff(data: { handoff: string }): Promise<{ attempt_id: string; token: string; params: Record<string, string | undefined> }> {
-    return xhrRequest<{ attempt_id: string; token: string; params: Record<string, string | undefined> }>("/oauth/handoff/claim", {
+  }): Promise<{ attempt_id: string; token: string }> {
+    return xhrRequest<{ attempt_id: string; token: string }>("/oauth/init", {
       method: "POST",
       body: data,
       timeoutMs: 15000,
@@ -204,7 +188,7 @@ export const api = {
     return xhrRequest<any>("/request-password-reset", { method: "POST", body: data, timeoutMs: 15000 });
   },
 
-  updateProfile(data: { access_token: string; name?: string; phone?: string; cpf?: string; consent_version?: string }) {
+  updateProfile(data: { access_token: string; name?: string; phone?: string; cpf?: string }) {
     return xhrRequest<any>("/update-profile", { method: "POST", body: data, timeoutMs: 20000 });
   },
 
