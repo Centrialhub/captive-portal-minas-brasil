@@ -949,6 +949,10 @@ type UnifiAuthOptions = {
   apMac?: string | null;
   ssid?: string | null;
   minutes?: number;
+  // The portal MAC may be absent from /stat/sta while the client is still in
+  // the pre-authorization captive state. Only enable this fallback after the
+  // AP MAC has been verified server-side as belonging to the same store.
+  allowPortalMacFallback?: boolean;
   // When true, return ok as soon as the controller acknowledges the
   // authorize-guest command (CMD_ACCEPTED), and continue /stat/sta polling
   // in the background. Lets the client get a response in ~700ms instead of
@@ -967,6 +971,7 @@ type UnifiAuthResult = {
   cmd_accepted_at?: string; // ISO when controller accepted authorize-guest
   last_verify_result?: Record<string, unknown>; // diagnostic snapshot
   weak_signal?: boolean; // station has IP/is_guest/recentAssoc but authorized!=true
+  station_lookup_fallback?: boolean;
   pending_confirmation?: boolean; // set when fastReturn=true and CMD accepted
   confirm?: Promise<UnifiAuthResult>; // resolves with the final polling result
 };
@@ -1207,9 +1212,11 @@ async function unifiAuthorizeByMac(
     const stations = stationsRes.data;
 
     const pick = pickEffectiveMac(stations, formattedMac, options.apMac, options.ssid);
-    if (!pick.mac) {
-      closeClient();
+    let effectiveMac = pick.mac;
+    let stationLookupFallback = false;
+    if (!effectiveMac) {
       if (pick.candidateCount > 1) {
+        closeClient();
         Logger.warn("[unifi-auth] reason=MAC_RANDOMIZATION_AMBIGUOUS", { candidates: pick.candidateCount, ap_mac: options.apMac || null });
         return {
           ok: false,
@@ -1218,16 +1225,29 @@ async function unifiAuthorizeByMac(
           latency_ms: Date.now() - startedAt,
         };
       }
-      Logger.warn("[unifi-auth] reason=CLIENT_NOT_FOUND_ON_CONTROLLER", { ap_mac: options.apMac || null, ssid: options.ssid || null });
-      return {
-        ok: false,
-        reason: "CLIENT_NOT_FOUND_ON_CONTROLLER",
-        error: "O dispositivo não foi localizado na controladora desta unidade.",
-        latency_ms: Date.now() - startedAt,
-      };
+      if (options.allowPortalMacFallback && options.apMac) {
+        // The AP/store binding was checked against store_access_points by
+        // authorizeClient. The controller command remains authoritative: if
+        // this MAC is truly unknown, stamgr rejects it and no access is opened.
+        effectiveMac = formattedMac;
+        stationLookupFallback = true;
+        Logger.warn("[unifi-auth] reason=PORTAL_MAC_FALLBACK", {
+          ap_mac: options.apMac,
+          ssid: options.ssid || null,
+          stations_seen: stations.length,
+        });
+      } else {
+        closeClient();
+        Logger.warn("[unifi-auth] reason=CLIENT_NOT_FOUND_ON_CONTROLLER", { ap_mac: options.apMac || null, ssid: options.ssid || null });
+        return {
+          ok: false,
+          reason: "CLIENT_NOT_FOUND_ON_CONTROLLER",
+          error: "O dispositivo não foi localizado na controladora desta unidade.",
+          latency_ms: Date.now() - startedAt,
+        };
+      }
     }
 
-    const effectiveMac = pick.mac;
     const selectedStation = stations.find((s) => (s.mac || "").toLowerCase() === effectiveMac);
     let apMacForPayload = selectedStation?.ap_mac || options.apMac || null;
 
@@ -1296,7 +1316,13 @@ async function unifiAuthorizeByMac(
     }
     if (!accepted) {
       closeClient();
-      return { ok: false, reason: "UNIFI_CMD_REJECTED", error: lastError || "command rejected", latency_ms: Date.now() - startedAt };
+      return {
+        ok: false,
+        reason: "UNIFI_CMD_REJECTED",
+        error: lastError || "command rejected",
+        latency_ms: Date.now() - startedAt,
+        station_lookup_fallback: stationLookupFallback,
+      };
     }
 
     // Step 4: Polling extracted into closure so we can run it in the
@@ -1339,6 +1365,7 @@ async function unifiAuthorizeByMac(
                   ap_mac_used: apMacForPayload, latency_ms: ms,
                   cmd_accepted_at: cmdAcceptedAtIso,
                   last_verify_result: { ...lastVerifySnapshot, verify_error: null },
+                  station_lookup_fallback: stationLookupFallback,
                 };
               }
               if (hasIp && recentAssoc && found.is_guest) {
@@ -1372,6 +1399,7 @@ async function unifiAuthorizeByMac(
           cmd_accepted_at: cmdAcceptedAtIso,
           last_verify_result: { ...lastVerifySnapshot, verify_error: verifyError },
           weak_signal: weakSignal,
+          station_lookup_fallback: stationLookupFallback,
         };
       } finally {
         closeClient();
@@ -1387,6 +1415,7 @@ async function unifiAuthorizeByMac(
         latency_ms: Date.now() - startedAt,
         cmd_accepted_at: cmdAcceptedAtIso,
         pending_confirmation: true,
+        station_lookup_fallback: stationLookupFallback,
         confirm: pollConfirmation(),
       };
     }
@@ -1492,10 +1521,33 @@ async function authorizeClient(
     .maybeSingle();
   const desiredMinutes = settings?.session_duration_minutes ?? 60;
 
+  // A controller may omit a not-yet-authorized captive client from /stat/sta.
+  // Permit a direct command with the portal-provided MAC only when the AP was
+  // independently mapped to this exact store in our server-side registry.
+  const normalizedApMac = normalizeMac(context.apMac);
+  let allowPortalMacFallback = false;
+  if (normalizedApMac) {
+    const { data: mappedAp, error: mappedApError } = await db
+      .from("store_access_points")
+      .select("store_id")
+      .eq("ap_mac", normalizedApMac)
+      .maybeSingle();
+    allowPortalMacFallback = !mappedApError && mappedAp?.store_id === storeId;
+    if (mappedApError) {
+      Logger.warn("[authorize] AP trust lookup failed", { code: mappedApError.code || "AP_LOOKUP_FAILED" });
+    }
+  }
+
   const siteId = store.unifi_site_id || "default";
   const result = await unifiAuthorizeWithRetry(
     store.unifi_controller_url, siteId, clientMac, storeUser, storePass,
-    { apMac: context.apMac || null, ssid: context.ssid || null, minutes: desiredMinutes, fastReturn: !!context.fastReturn },
+    {
+      apMac: normalizedApMac,
+      ssid: context.ssid || null,
+      minutes: desiredMinutes,
+      fastReturn: !!context.fastReturn,
+      allowPortalMacFallback,
+    },
   );
 
   // Persist UniFi audit columns regardless of outcome
@@ -1526,6 +1578,7 @@ async function authorizeClient(
         store_slug: storeSlug, ip: clientIp,
         attempts: result.attempts, latency_ms: result.latency_ms,
         pending_confirmation: !!result.pending_confirmation,
+        station_lookup_fallback: !!result.station_lookup_fallback,
       },
     });
     return {
@@ -1578,6 +1631,7 @@ async function authorizeClient(
         store_slug: storeSlug, ip: clientIp,
         attempts: result.attempts, latency_ms: result.latency_ms,
         weak_signal: result.weak_signal || false,
+        station_lookup_fallback: !!result.station_lookup_fallback,
       },
     });
     const userMessage = result.reason === "MAC_RANDOMIZATION_AMBIGUOUS" ? result.error : undefined;

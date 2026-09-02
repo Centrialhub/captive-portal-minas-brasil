@@ -37,12 +37,11 @@ const CAPTIVE_PARAM_KEYS: CaptiveParamKey[] = [
 export function requiresExternalOAuthBrowser(userAgent = navigator.userAgent): boolean {
   const ua = userAgent || "";
   if (/Android/i.test(ua)) {
-    // Android's captive assistant identifies itself as a generic WebView
-    // (`wv` / `Version/4.0`), but field validation confirms that this flow can
-    // complete the provider redirect in place. Forcing every Android WebView
-    // through target=_blank regresses devices whose captive assistant blocks
-    // new windows. Keep the handoff only for known social-app browsers.
-    return /\bFBAN\b|\bFBAV\b|Instagram/i.test(ua);
+    // A first Google sign-in can leave Android captive WebViews stranded after
+    // account selection. The handoff uses an ACTION_VIEW intent (not a popup),
+    // so the complete provider flow runs in the device browser and can safely
+    // return through the one-time continuation URL.
+    return /;\s*wv\)|\bwv\b|Version\/4\.0|\bFBAN\b|\bFBAV\b|Instagram/i.test(ua);
   }
   if (/CaptiveNetworkSupport|\bFBAN\b|\bFBAV\b|Instagram/i.test(ua)) return true;
   if (/(iPhone|iPad|iPod)/i.test(ua)) {
