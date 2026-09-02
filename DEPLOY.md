@@ -100,3 +100,16 @@ O Supabase Authentication → URL Configuration deve possuir exatamente:
 ```text
 https://minasbrasilwifi.com.br/oauth/callback
 ```
+
+## Reteste do Google dentro do captive
+
+O portal deve iniciar e concluir OAuth na mesma janela, sem `intent://`, popup
+ou tela "Continue no navegador". Links `/oauth/continue` emitidos por versões
+anteriores continuam resgatáveis uma única vez, também na janela atual.
+
+Valide em campo com uma conta Google ainda não autenticada: login, callback,
+consentimento/CPF e liberação no UniFi. Teste também voltar do Google e tentar
+novamente; os controles do portal não devem permanecer desabilitados. Os testes
+automatizados simulam esses eventos, mas não comprovam compatibilidade de todos
+os captive browsers com o Google. Se o provedor bloquear a janela embutida,
+use o login/cadastro por e-mail no próprio portal, sem contornar essa restrição.

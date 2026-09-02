@@ -8,11 +8,7 @@ import {
   formatCPF,
   Validators,
 } from "./lib/portal-utils";
-import {
-  buildExternalBrowserLink,
-  OAuthTracker,
-  requiresExternalOAuthBrowser,
-} from "./lib/oauth-tracker";
+import { OAuthTracker } from "./lib/oauth-tracker";
 import { getAuthFailureMessage, isRecoverableAuthResult } from "./lib/auth-outcome";
 import { useOAuthCallback } from "./hooks/useOAuthCallback";
 import logoMinasBrasil from "./assets/logo-minas-brasil.png";
@@ -25,7 +21,6 @@ import "./index.css";
 type Step = 
   | "loading" 
   | "oauth_redirecting" 
-  | "oauth_external"
   | "oauth_callback" 
   | "login" 
   | "signup" 
@@ -71,6 +66,7 @@ export default function App() {
   // Use a local ref to track if component is mounted to prevent state updates on unmounted component
   const isMounted = useRef(true);
   useEffect(() => {
+    isMounted.current = true;
     return () => { isMounted.current = false; };
   }, []);
 
@@ -80,7 +76,6 @@ export default function App() {
   const [error, setError] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
   const [busy, setBusy] = useState(false);
-  const [externalHandoffUrl, setExternalHandoffUrl] = useState<string | null>(null);
   
   // Scroll to top on error to ensure user sees the message
   useEffect(() => {
@@ -91,6 +86,20 @@ export default function App() {
 
   const stepRef = useRef<Step>("loading");
   useEffect(() => { stepRef.current = step; }, [step]);
+
+  // Returning from Google through the captive's Back button may restore the
+  // page from bfcache, including its disabled button and redirecting spinner.
+  useEffect(() => {
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (event.persisted && stepRef.current === "oauth_redirecting") {
+        setBusy(false);
+        setError("O login do Google não foi concluído. Tente novamente ou entre com e-mail nesta janela.");
+        setStep("login");
+      }
+    };
+    window.addEventListener("pageshow", onPageShow);
+    return () => window.removeEventListener("pageshow", onPageShow);
+  }, []);
   
   // Processing refs for idempotency
   const processingAuthRef = useRef<Promise<any> | null>(null);
@@ -207,7 +216,7 @@ export default function App() {
     if (!isOAuthContinueFlow) return;
     let cancelled = false;
 
-    const continueInBrowser = async () => {
+    const continueInCaptive = async () => {
       setStep("oauth_redirecting");
       const handoff = new URLSearchParams(window.location.search).get("handoff") || "";
       if (!handoff) {
@@ -216,15 +225,8 @@ export default function App() {
         return;
       }
 
-      // Some captive assistants ignore target=_blank and reopen this URL in
-      // another embedded view. Do not consume the one-time handoff there;
-      // keep it valid until the user opens the same URL in Safari/Chrome.
-      if (requiresExternalOAuthBrowser()) {
-        setExternalHandoffUrl(window.location.href);
-        setStep("oauth_external");
-        return;
-      }
-
+      // Compatibility for links issued by older builds. Claim their one-time
+      // state here, but never ask the captive to launch another browser.
       const claimed = await OAuthTracker.claimExternalHandoff(handoff);
       window.history.replaceState(null, "", "/oauth/continue");
       if (cancelled) return;
@@ -247,7 +249,12 @@ export default function App() {
       }
     };
 
-    void continueInBrowser();
+    void continueInCaptive().catch(() => {
+      if (cancelled) return;
+      setBusy(false);
+      setError("Não foi possível continuar o login do Google. Tente novamente ou entre com e-mail.");
+      setStep("error");
+    });
     return () => { cancelled = true; };
   }, [isOAuthContinueFlow]);
 
@@ -539,17 +546,8 @@ export default function App() {
         return;
       }
       
-      if (requiresExternalOAuthBrowser()) {
-        const handoff = await OAuthTracker.createExternalHandoff();
-        if (!handoff?.handoff_url) {
-          throw new Error("Não foi possível criar a transferência para o navegador.");
-        }
-        setExternalHandoffUrl(handoff.handoff_url);
-        setStep("oauth_external");
-        setBusy(false);
-        return;
-      }
-
+      // Supabase redirects this same window. Do not use intents, popups, or
+      // external browser handoffs: they trigger the captive's exit warning.
       const redirectTo = "https://minasbrasilwifi.com.br/oauth/callback";
       const { error: err } = await supabase.auth.signInWithOAuth({
         provider: "google",
@@ -576,51 +574,6 @@ export default function App() {
   };
 
 
-
-  if (step === "oauth_external") {
-    const externalBrowserLink = externalHandoffUrl
-      ? buildExternalBrowserLink(externalHandoffUrl)
-      : null;
-    return (
-      <div className="portal-wrapper">
-        <div className="portal-card" style={{ textAlign: "center" }}>
-          <img src={logoMinasBrasil} alt="Drogaria Minas Brasil" className="portal-logo" />
-          <h1 className="portal-title">Continue no navegador</h1>
-          <p className="portal-subtitle">
-            Por segurança, o Google não permite login dentro da janela automática do Wi-Fi.
-            Abra o navegador para continuar; sua unidade e seu dispositivo já estão vinculados a esta tentativa.
-          </p>
-          {externalBrowserLink && (
-            <a
-              href={externalBrowserLink.href}
-              target={externalBrowserLink.target}
-              rel="noopener noreferrer"
-              className="portal-btn block text-center"
-              onClick={() => api.clientEvent({ event: "oauth_external_browser_opened", step: "oauth" })}
-            >
-              Abrir no navegador e entrar com Google
-            </a>
-          )}
-          <p className="mt-4 text-xs text-gray-500">
-            Se esta janela continuar aberta, use o menu acima e escolha “Abrir no navegador” ou
-            “Abrir no Chrome”. No iPhone/iPad, escolha “Abrir no Safari”.
-          </p>
-          <button
-            type="button"
-            className="portal-btn-secondary"
-            onClick={() => {
-              OAuthTracker.clearAll();
-              setExternalHandoffUrl(null);
-              setStep("login");
-            }}
-          >
-            Voltar
-          </button>
-          <Footer />
-        </div>
-      </div>
-    );
-  }
 
   // ── CPF PROMPT (Google Auth Gate) ──
   if (step === "cpf_prompt") {
@@ -759,7 +712,7 @@ export default function App() {
 
     let msg = "Carregando...";
     if (step === "oauth_redirecting") msg = "Abrindo login do Google...";
-    if (step === "oauth_callback") msg = "Conta Google validada. Preparando conexão...";
+    if (step === "oauth_callback") msg = "Concluindo login do Google...";
     if (step === "authorizing") msg = "Liberando seu acesso ao Wi-Fi...";
 
     return (
@@ -784,6 +737,7 @@ export default function App() {
           <button 
             onClick={() => { 
               setError(""); 
+              setBusy(false);
               if (isRecoverable) {
                 window.location.reload();
               } else if (isOAuthError) {

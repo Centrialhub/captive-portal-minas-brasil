@@ -34,59 +34,6 @@ const CAPTIVE_PARAM_KEYS: CaptiveParamKey[] = [
   "id", "mac", "ap", "ssid", "url", "t", "site", "store",
 ];
 
-export function requiresExternalOAuthBrowser(userAgent = navigator.userAgent): boolean {
-  const ua = userAgent || "";
-  if (/Android/i.test(ua)) {
-    // A first Google sign-in can leave Android captive WebViews stranded after
-    // account selection. The handoff uses an ACTION_VIEW intent (not a popup),
-    // so the complete provider flow runs in the device browser and can safely
-    // return through the one-time continuation URL.
-    return /;\s*wv\)|\bwv\b|Version\/4\.0|\bFBAN\b|\bFBAV\b|Instagram/i.test(ua);
-  }
-  if (/CaptiveNetworkSupport|\bFBAN\b|\bFBAV\b|Instagram/i.test(ua)) return true;
-  if (/(iPhone|iPad|iPod)/i.test(ua)) {
-    const fullBrowser = /Version\/[^ ]+.*Safari|CriOS|FxiOS|EdgiOS|OPiOS/i.test(ua);
-    return !fullBrowser;
-  }
-  return false;
-}
-
-export interface ExternalBrowserLink {
-  href: string;
-  target: "_self" | "_blank";
-}
-
-/**
- * Android captive-portal WebViews commonly ignore target="_blank" without
- * reporting an error. An ACTION_VIEW intent hands the one-time continuation
- * URL to the device browser while keeping the HTTPS URL as a safe fallback.
- */
-export function buildExternalBrowserLink(
-  handoffUrl: string,
-  userAgent = navigator.userAgent,
-): ExternalBrowserLink {
-  const fallback: ExternalBrowserLink = { href: handoffUrl, target: "_blank" };
-  if (!/Android/i.test(userAgent || "")) return fallback;
-
-  try {
-    const url = new URL(handoffUrl);
-    if (
-      url.protocol !== "https:" ||
-      url.hostname !== "minasbrasilwifi.com.br" ||
-      url.pathname !== "/oauth/continue"
-    ) return fallback;
-
-    const intentTarget = `${url.host}${url.pathname}${url.search}`;
-    const encodedFallback = encodeURIComponent(url.toString());
-    return {
-      href: `intent://${intentTarget}#Intent;scheme=https;action=android.intent.action.VIEW;category=android.intent.category.BROWSABLE;S.browser_fallback_url=${encodedFallback};end`,
-      target: "_self",
-    };
-  } catch {
-    return fallback;
-  }
-}
-
 function readCaptiveParams(search = window.location.search): CaptiveParams {
   const query = new URLSearchParams(search);
   const params: CaptiveParams = {};
@@ -238,15 +185,6 @@ export const OAuthTracker = {
   updateTokens(attemptId: string, token: string) {
     writeOAuthState(attemptId, token, readStoredCaptiveParams() || readCaptiveParams(), true);
     stripLegacyTokensFromUrl();
-  },
-
-  async createExternalHandoff(): Promise<{ handoff_url: string; expires_at: string } | null> {
-    const tokens = this.getTokens();
-    if (!tokens.attempt_id || !tokens.token || !this.isValidOAuthFlow()) return null;
-    return await api.createOAuthHandoff({
-      attempt_id: tokens.attempt_id,
-      resume_token: tokens.token,
-    });
   },
 
   async claimExternalHandoff(handoff: string): Promise<boolean> {

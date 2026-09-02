@@ -29,8 +29,20 @@ export function useOAuthCallback({ onSuccess, onError, onNeedsCpf, enabled }: Us
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
     let isCancelled = false;
 
+    // Do not wait for a session (or use a cached one) after provider rejection.
+    const query = new URLSearchParams(window.location.search);
+    const fragment = new URLSearchParams(window.location.hash.slice(1));
+    if ([query, fragment].some((params) => params.has("error") || params.has("error_code"))) {
+      terminalReachedRef.current = true;
+      setStatus("error");
+      onError("O Google não concluiu o login nesta janela. Tente novamente ou entre com e-mail no portal.");
+      return;
+    }
+
+    OAuthTracker.restoreCaptiveParams();
+
     const startProcessing = async (session: Session, source: "google" | "silent") => {
-      if (terminalReachedRef.current || processingRef.current) return;
+      if (isCancelled || terminalReachedRef.current || processingRef.current) return;
       
       if (timeoutId) {
         clearTimeout(timeoutId);
@@ -100,7 +112,7 @@ export function useOAuthCallback({ onSuccess, onError, onNeedsCpf, enabled }: Us
     // Captive assistants and mobile account selection can take longer to
     // persist the Supabase session, especially with MFA or slow mobile data.
     timeoutId = setTimeout(() => {
-      if (!terminalReachedRef.current && status !== "processing") {
+      if (!terminalReachedRef.current && !processingRef.current) {
         terminalReachedRef.current = true;
         setStatus("expired");
         onError("Não foi possível concluir o login do Google. Tempo esgotado.");
@@ -119,19 +131,41 @@ export function useOAuthCallback({ onSuccess, onError, onNeedsCpf, enabled }: Us
       }
     });
 
-    // Immediate check
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (isCancelled || terminalReachedRef.current) return;
-      if (session) {
-        const source = OAuthTracker.isValidOAuthFlow() ? "google" : "silent";
-        startProcessing(session, source);
+    // Recheck when the captive resumes: a suspended WebView may have missed
+    // SIGNED_IN while Google account selection was finishing.
+    let checkingSession = false;
+    const checkSession = async () => {
+      if (isCancelled || terminalReachedRef.current || processingRef.current || checkingSession) return;
+      checkingSession = true;
+      try {
+        const { data: { session }, error } = await supabase.auth.getSession();
+        if (error) throw error;
+        if (session) {
+          const source = OAuthTracker.isValidOAuthFlow() ? "google" : "silent";
+          void startProcessing(session, source);
+        }
+      } catch {
+        // Keep waiting for the auth event or a resume; the deadline remains
+        // bounded and a transient network failure must not discard the attempt.
+      } finally {
+        checkingSession = false;
       }
-    });
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void checkSession();
+    };
+    void checkSession();
+    window.addEventListener("pageshow", checkSession);
+    window.addEventListener("focus", checkSession);
+    document.addEventListener("visibilitychange", onVisible);
 
     return () => {
       isCancelled = true;
       if (timeoutId) clearTimeout(timeoutId);
       subscription.unsubscribe();
+      window.removeEventListener("pageshow", checkSession);
+      window.removeEventListener("focus", checkSession);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, [enabled]); // Only re-run if explicitly re-enabled (new transaction)
 
