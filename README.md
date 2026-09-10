@@ -17,9 +17,18 @@ npm ci
 npm run check
 ```
 
-`npm run check` valida assets, contratos de migrations, ausência de tokens
-OAuth em URLs, lint, TypeScript, `deno check` da Edge Function, testes e build
+`npm run check` valida assets, contratos de migrations, o fluxo público por
+telefone e CPF, lint, TypeScript, `deno check` da Edge Function, testes e build
 de produção. O único lockfile aceito é `package-lock.json`.
+
+## Acesso público
+
+O portal solicita somente telefone e CPF. Se o navegador já possuir uma sessão
+válida, ela continua sendo reaproveitada e a liberação ocorre sem novo
+preenchimento. Para um CPF já cadastrado, o telefone informado precisa
+corresponder ao telefone armazenado; o cadastro não é sobrescrito durante a
+autenticação. Após a liberação, o navegador troca um desafio de uso único por
+uma sessão persistida. O OAuth e o login público por e-mail/senha não são expostos.
 
 ## Banco
 
@@ -99,8 +108,9 @@ Antes de migrar todas as lojas, execute `npm run verify:unifi-proxy` sem limitar
 `PRODUCTION_UNIFI_STORES`; isso valida as 12 rotas cadastradas. O comando de
 produção reprova a publicação se o SHA servido não for o esperado, se
 `/ready` ou `/build-info.json` caírem no fallback da SPA, se os headers de
-segurança estiverem ausentes, se o bundle Google OAuth for antigo, se a Edge
-Function/bootstrap falharem ou se o TLS/health do proxy UniFi não estiver
+segurança estiverem ausentes, se o bundle não contiver o fluxo telefone + CPF
+ou ainda contiver o callback OAuth, se a Edge Function/bootstrap falharem ou se
+o TLS/health do proxy UniFi não estiver
 válido. Uma release só está aprovada
 quando `release:gate` e `verify:production` passam nessa ordem.
 
@@ -114,9 +124,7 @@ build, execução e integração TLS estão em `unifi-proxy/README.md`.
 
 ## Configuração externa obrigatória
 
-Cadastre exatamente `https://minasbrasilwifi.com.br/oauth/callback` em
-Supabase Authentication → URL Configuration → Redirect URLs. Credenciais
-UniFi, service role, CRM e cron pertencem apenas aos secrets do runtime da Edge
+Credenciais UniFi, service role, CRM e cron pertencem apenas aos secrets do runtime da Edge
 Function; nunca ao frontend ou à imagem final.
 
 No ingress HTTPS do portal, preserve os headers emitidos pelo container e não

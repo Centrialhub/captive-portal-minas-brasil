@@ -7,7 +7,7 @@
  *
  * The public portal and the dedicated controller proxy serve certificates for
  * their exact hostnames, so browser-facing traffic stays on HTTPS end-to-end.
- * HTTPS is also required for Google/Apple OAuth.
+ * HTTPS protects identity and captive-session data in transit.
  */
 export const PUBLIC_CAPTIVE_BASE_URL = "https://minasbrasilwifi.com.br";
 

@@ -106,21 +106,18 @@ await runCheck("browser security headers", async () => {
   assert(Boolean(response.headers.get("permissions-policy")), "Permissions-Policy is missing");
 });
 
-await runCheck("deployed Google OAuth bundle contract", async () => {
+await runCheck("deployed phone and CPF bundle contract", async () => {
   const { text: html } = await request(new URL("/", portalUrl));
   const scriptMatch = html.match(/<script[^>]+type=["']module["'][^>]+src=["']([^"']+)["']/i) ||
     html.match(/<script[^>]+src=["']([^"']+)["'][^>]+type=["']module["']/i);
   assert(scriptMatch, "portal HTML has no module bundle");
   const bundleUrl = new URL(scriptMatch[1], portalUrl);
   const { text: bundle } = await request(bundleUrl);
-  assert(bundle.includes("mb_oauth_attempt_id"), "deployed bundle is missing the server-authoritative OAuth attempt marker");
-  assert(bundle.includes("https://minasbrasilwifi.com.br/oauth/callback"), "deployed bundle is missing the canonical Google callback");
-  assert(bundle.includes("/oauth/handoff/claim"), "deployed bundle is missing one-time browser handoff claiming");
-  assert(bundle.includes("/oauth/continue"), "deployed bundle is missing the legacy continuation route");
-  assert(!bundle.includes("intent://"), "deployed bundle still launches an Android external-browser intent");
-  assert(!bundle.includes("oauth_external"), "deployed bundle still forces users out of the captive");
-  assert(!bundle.includes("browser_fallback_url"), "deployed bundle still includes an external-browser fallback");
-  assert(bundle.includes("google_oauth_started"), "deployed bundle is missing Google OAuth telemetry");
+  assert(bundle.includes("mb_auth_attempt_id"), "deployed bundle is missing the server-authoritative attempt marker");
+  assert(bundle.includes("/identify"), "deployed bundle is missing the phone and CPF endpoint");
+  assert(bundle.includes("session_token_hash"), "deployed bundle is missing the client-side session challenge exchange");
+  assert(!bundle.includes("google_oauth_started"), "deployed bundle still contains Google OAuth telemetry");
+  assert(!bundle.includes("/oauth/callback"), "deployed bundle still contains the OAuth callback");
   assert(!bundle.includes("rwificontroller.drogariaminasbrasil.com.br"), "deployed browser bundle contains the private controller hostname");
 });
 

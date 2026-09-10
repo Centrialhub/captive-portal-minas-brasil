@@ -42,6 +42,7 @@ const STEPS = ["params", "form", "unifi", "redirect"] as const;
 const STATUSES = ["started", "submitted", "authorized", "failed"] as const;
 const AUTH_METHODS = [
   { value: "", label: "Todos" },
+  { value: "identity", label: "Telefone/CPF" },
   { value: "password", label: "E-mail/senha" },
   { value: "google", label: "Google" },
   { value: "apple", label: "Apple" },
@@ -56,6 +57,8 @@ const dur = (a: string | null, b: string | null) => {
 };
 
 interface AuthCounts {
+  identity_success: number;
+  identity_failed: number;
   signup_success: number;
   signup_failed: number;
   login_success: number;
@@ -78,6 +81,7 @@ export default function AdminDashboard() {
   const [events, setEvents] = useState<EventRow[]>([]);
   const [loadingEvents, setLoadingEvents] = useState(false);
   const [authCounts, setAuthCounts] = useState<AuthCounts>({
+    identity_success: 0, identity_failed: 0,
     signup_success: 0, signup_failed: 0,
     login_success: 0, login_failed: 0,
     silent_success: 0, silent_failed: 0,
@@ -126,10 +130,11 @@ export default function AdminDashboard() {
     setLoading(false);
   };
 
-  // Load auth-flow counts (signup/login/silent) from portal_events within the selected window
+  // Load current and historical auth-flow counts within the selected window.
   const loadAuthCounts = async () => {
     const since = new Date(Date.now() - rangeHours * 3600 * 1000).toISOString();
     const types = [
+      "identity_success", "identity_failed",
       "signup_success", "signup_failed",
       "login_success", "login_failed",
       "silent_login_success", "silent_login_failed",
@@ -143,8 +148,9 @@ export default function AdminDashboard() {
           .gte("created_at", since)
       ),
     );
-    const [ss, sf, ls, lf, ils, ilf] = results.map((r) => r.count || 0);
+    const [ids, idf, ss, sf, ls, lf, ils, ilf] = results.map((r) => r.count || 0);
     setAuthCounts({
+      identity_success: ids, identity_failed: idf,
       signup_success: ss, signup_failed: sf,
       login_success: ls, login_failed: lf,
       silent_success: ils, silent_failed: ilf,
@@ -164,6 +170,7 @@ export default function AdminDashboard() {
       .from("portal_events")
       .select("id,created_at,event_type,step,status,error_code,error_message,latency_ms,payload,session_id,trace_id")
       .in("event_type", [
+        "identity_started", "identity_success", "identity_failed",
         "signup_started", "signup_success", "signup_failed",
         "login_started", "login_success", "login_failed",
         "silent_login_success", "silent_login_failed",
@@ -197,11 +204,11 @@ export default function AdminDashboard() {
 
   const funnel = useMemo(() => {
     const total = sessions.length;
-    const signups = sessions.filter(s => s.auth_method === "password" && !!s.form_submitted_at && !!s.user_id).length;
+    const identities = sessions.filter(s => s.auth_method === "identity").length;
     const silent = sessions.filter(s => s.auth_method === "silent").length;
     const unifiCalled = sessions.filter(s => !!s.unifi_authorize_called_at).length;
     const unifiConfirmed = sessions.filter(s => !!s.unifi_confirmed_at).length;
-    return { total, signups, silent, unifiCalled, unifiConfirmed };
+    return { total, identities, silent, unifiCalled, unifiConfirmed };
   }, [sessions]);
 
   if (isAdmin === null) {
@@ -221,7 +228,7 @@ export default function AdminDashboard() {
   }
 
   const totalAuthEvents =
-    authCounts.signup_success + authCounts.login_success + authCounts.silent_success;
+    authCounts.identity_success + authCounts.signup_success + authCounts.login_success + authCounts.silent_success;
 
   return (
     <div style={{ minHeight: "100vh", background: "#f9fafb", padding: 24 }}>
@@ -256,8 +263,9 @@ export default function AdminDashboard() {
             ))}
           </div>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 12, marginTop: 12 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 12, marginTop: 12 }}>
           <Stat label="Contas criadas (total)" value={totalAccounts} highlight />
+          <Stat label="Telefone/CPF" value={authCounts.identity_success} sub={authCounts.identity_failed ? `${authCounts.identity_failed} falhas` : undefined} />
           <Stat label="Cadastros" value={authCounts.signup_success} sub={authCounts.signup_failed ? `${authCounts.signup_failed} falhas` : undefined} />
           <Stat label="Logins" value={authCounts.login_success} sub={authCounts.login_failed ? `${authCounts.login_failed} falhas` : undefined} />
           <Stat label="Silent logins" value={authCounts.silent_success} sub={authCounts.silent_failed ? `${authCounts.silent_failed} falhas` : undefined} />
@@ -265,10 +273,10 @@ export default function AdminDashboard() {
           <Stat
             label="Taxa de sucesso"
             value={
-              (totalAuthEvents + authCounts.signup_failed + authCounts.login_failed + authCounts.silent_failed) > 0
+              (totalAuthEvents + authCounts.identity_failed + authCounts.signup_failed + authCounts.login_failed + authCounts.silent_failed) > 0
                 ? Math.round(
                     (totalAuthEvents /
-                      (totalAuthEvents + authCounts.signup_failed + authCounts.login_failed + authCounts.silent_failed)) *
+                      (totalAuthEvents + authCounts.identity_failed + authCounts.signup_failed + authCounts.login_failed + authCounts.silent_failed)) *
                       100,
                   )
                 : 0
@@ -283,7 +291,7 @@ export default function AdminDashboard() {
         <h2 style={h2Style}>Funil de sessões (últimas {sessions.length})</h2>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12, marginTop: 12 }}>
           <Stat label="Sessões" value={funnel.total} />
-          <Stat label="Cadastros (nesta lista)" value={funnel.signups} pct={funnel.total ? funnel.signups / funnel.total : 0} />
+          <Stat label="Telefone/CPF" value={funnel.identities} pct={funnel.total ? funnel.identities / funnel.total : 0} />
           <Stat label="Silent logins" value={funnel.silent} pct={funnel.total ? funnel.silent / funnel.total : 0} />
           <Stat label="UniFi chamado" value={funnel.unifiCalled} pct={funnel.total ? funnel.unifiCalled / funnel.total : 0} />
           <Stat label="UniFi confirmado" value={funnel.unifiConfirmed} pct={funnel.total ? funnel.unifiConfirmed / funnel.total : 0} highlight />
@@ -495,6 +503,7 @@ function AuthPill({ method, hasUser }: { method: string | null; hasUser: boolean
     return <span style={{ color: "#9ca3af", fontSize: 11 }}>—</span>;
   }
   const map: Record<string, [string, string, string]> = {
+    identity: ["#dcfce7", "#166534", "telefone/CPF"],
     password: ["#e0e7ff", "#3730a3", "senha"],
     google: ["#fee2e2", "#991b1b", "Google"],
     apple: ["#111827", "#f9fafb", "Apple"],
@@ -523,6 +532,9 @@ const btnLink: React.CSSProperties = { background: "none", border: 0, color: "#E
 
 function AuthEventPill({ type }: { type: string }) {
   const map: Record<string, [string, string, string]> = {
+    identity_started: ["#dbeafe", "#1d4ed8", "identificação"],
+    identity_success: ["#dcfce7", "#166534", "identificação ok"],
+    identity_failed: ["#fee2e2", "#b91c1c", "identificação falhou"],
     signup_started: ["#e0e7ff", "#3730a3", "signup"],
     signup_success: ["#dcfce7", "#166534", "signup ok"],
     signup_failed: ["#fee2e2", "#b91c1c", "signup falhou"],

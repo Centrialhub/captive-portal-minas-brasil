@@ -120,11 +120,9 @@ export const api = {
     return xhrRequest<any>("/bootstrap", { method: "GET", timeoutMs: 10000 });
   },
 
-  signup(data: {
-    name: string;
-    email: string;
+  identify(data: {
     phone: string;
-    password: string;
+    cpf: string;
     client_mac?: string;
     ap_mac?: string;
     ssid?: string;
@@ -134,21 +132,7 @@ export const api = {
     attempt_id?: string | null;
     resume_token?: string | null;
   }) {
-    return xhrRequest<any>("/signup", { method: "POST", body: data, timeoutMs: 35000 });
-  },
-
-  login(data: {
-    email: string;
-    password: string;
-    client_mac?: string;
-    ap_mac?: string;
-    ssid?: string;
-    redirect_url?: string;
-    captive_timestamp?: string;
-    attempt_id?: string | null;
-    resume_token?: string | null;
-  }) {
-    return xhrRequest<any>("/login", { method: "POST", body: data, timeoutMs: 35000 });
+    return xhrRequest<any>("/identify", { method: "POST", body: data, timeoutMs: 25000 });
   },
 
   authorizeExisting(data: {
@@ -162,50 +146,18 @@ export const api = {
     attempt_id?: string | null;
     resume_token?: string | null;
   }) {
-    return xhrRequest<any>("/authorize-existing", { method: "POST", body: data, timeoutMs: 35000 });
+    return xhrRequest<any>("/authorize-existing", { method: "POST", body: data, timeoutMs: 20000 });
   },
 
-  initOAuth(data: {
+  initAttempt(data: {
     params: Record<string, string | undefined>;
     original_url: string;
-  }): Promise<{ attempt_id: string; token: string; store?: { slug: string; name: string; city?: string | null }; detection_source?: string }> {
-    return xhrRequest<{ attempt_id: string; token: string; store?: { slug: string; name: string; city?: string | null }; detection_source?: string }>("/oauth/init", {
-      method: "POST",
-      body: data,
-      timeoutMs: 20000,
-    });
-  },
-
-  createOAuthHandoff(data: { attempt_id: string; resume_token: string }): Promise<{ handoff_url: string; expires_at: string }> {
-    return xhrRequest<{ handoff_url: string; expires_at: string }>("/oauth/handoff/create", {
+  }): Promise<{ attempt_id: string; token: string }> {
+    return xhrRequest<{ attempt_id: string; token: string }>("/attempt/init", {
       method: "POST",
       body: data,
       timeoutMs: 15000,
     });
-  },
-
-  claimOAuthHandoff(data: { handoff: string }): Promise<{ attempt_id: string; token: string; params: Record<string, string | undefined> }> {
-    return xhrRequest<{ attempt_id: string; token: string; params: Record<string, string | undefined> }>("/oauth/handoff/claim", {
-      method: "POST",
-      body: data,
-      timeoutMs: 15000,
-    });
-  },
-
-  restartOAuth(data: { attempt_id: string; resume_token: string }): Promise<{ attempt_id: string; token: string }> {
-    return xhrRequest<{ attempt_id: string; token: string }>("/oauth/restart", {
-      method: "POST",
-      body: data,
-      timeoutMs: 15000,
-    });
-  },
-
-  requestPasswordReset(data: { email: string }) {
-    return xhrRequest<any>("/request-password-reset", { method: "POST", body: data, timeoutMs: 15000 });
-  },
-
-  updateProfile(data: { access_token: string; name?: string; phone?: string; cpf?: string; consent_version?: string }) {
-    return xhrRequest<any>("/update-profile", { method: "POST", body: data, timeoutMs: 20000 });
   },
 
   /** Fire-and-forget client telemetry. Uses sendBeacon first (survives CNA),

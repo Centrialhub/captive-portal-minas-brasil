@@ -40,9 +40,8 @@ idempotente e normaliza as 12 lojas ativas para
 ## 3. Edge Function
 
 `captive-portal` deve permanecer com `verify_jwt=false`, pois as rotas públicas
-do captive chegam antes de existir uma sessão. Antes de publicar o frontend,
-confirme que a função ativa corresponde a este repositório e mantém a
-autenticação própria, os cookies UniFi completos e os secrets disponíveis.
+do captive chegam antes de existir uma sessão. A versão 230 já está publicada
+com autenticação própria, cookies UniFi completos e secrets disponíveis.
 
 ## 4. Frontend
 
@@ -86,30 +85,6 @@ EXPECTED_COMMIT_SHA=<mesmo SHA do build> npm run verify:production
 ```
 
 O gate verifica identidade do build, headers, readiness, banco, secrets,
-bootstrap, bundle Google OAuth, callback canônico e saúde do proxy. Só depois
-de ambos os verificadores passarem deve começar o teste de campo.
-
-O Google Cloud deve possuir exatamente este Authorized redirect URI:
-
-```text
-https://fqamejlyytrhovawgtwg.supabase.co/auth/v1/callback
-```
-
-O Supabase Authentication → URL Configuration deve possuir exatamente:
-
-```text
-https://minasbrasilwifi.com.br/oauth/callback
-```
-
-## Reteste do Google dentro do captive
-
-O portal deve iniciar e concluir OAuth na mesma janela, sem `intent://`, popup
-ou tela "Continue no navegador". Links `/oauth/continue` emitidos por versões
-anteriores continuam resgatáveis uma única vez, também na janela atual.
-
-Valide em campo com uma conta Google ainda não autenticada: login, callback,
-consentimento/CPF e liberação no UniFi. Teste também voltar do Google e tentar
-novamente; os controles do portal não devem permanecer desabilitados. Os testes
-automatizados simulam esses eventos, mas não comprovam compatibilidade de todos
-os captive browsers com o Google. Se o provedor bloquear a janela embutida,
-use o login/cadastro por e-mail no próprio portal, sem contornar essa restrição.
+bootstrap, presença do fluxo telefone + CPF, ausência do callback OAuth e saúde
+do proxy. Só depois de ambos os verificadores passarem deve começar o teste de
+campo.

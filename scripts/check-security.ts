@@ -5,8 +5,8 @@ const root = process.cwd();
 const files = [
   "src/App.tsx",
   "src/lib/api.ts",
-  "src/lib/oauth-tracker.ts",
   "src/integrations/supabase/client.ts",
+  "supabase/functions/_shared/identity.ts",
   "supabase/functions/captive-portal/index.ts",
   "Dockerfile",
   "unifi-proxy/Dockerfile",
@@ -27,13 +27,9 @@ const migrationContents = readdirSync(join(root, "supabase", "migrations"))
   .join("\n");
 
 const checks: Array<[string, boolean]> = [
-  ["OAuth capability tokens are absent from callback URLs", !/oauth\/callback\?[^\n]*(attempt_id|resume_token)/.test(contents["src/App.tsx"])],
+  ["attempt capability tokens stay out of browser URLs", !/(attempt_id|resume_token)[^\n]*history\.(pushState|replaceState)/.test(contents["src/App.tsx"])],
   ["frontend has no private Supabase auth API calls", !/_notifyAllChannels/.test(contents["src/App.tsx"])],
-  ["Google OAuth returns only to the canonical HTTPS callback", (contents["src/App.tsx"].match(/https:\/\/minasbrasilwifi\.com\.br\/oauth\/callback/g) || []).length >= 2 && !/redirectTo\s*[:=]\s*["']http:/.test(contents["src/App.tsx"])],
-  ["Google OAuth stays in the captive window without external handoff", (contents["src/App.tsx"].match(/skipBrowserRedirect: false/g) || []).length === 3 && !/requiresExternalOAuthBrowser|createExternalHandoff|oauth_external|window\.open/.test(contents["src/App.tsx"])],
-  ["captive OAuth has no Android external-browser intent", !/intent:\/\/|android\.intent\.action\.VIEW|browser_fallback_url/.test(contents["src/lib/oauth-tracker.ts"])],
-  ["legacy handoff links remain one-time and resume in place", /claimExternalHandoff/.test(contents["src/App.tsx"]) && /claim_oauth_browser_handoff/.test(contents["supabase/functions/captive-portal/index.ts"])],
-  ["fresh captive visits do not enter callback mode from stale local state", /location\.pathname === "\/oauth\/callback"/.test(contents["src/App.tsx"]) && !/location\.pathname === "\/oauth\/callback" \|\| OAuthTracker\.isValidOAuthFlow/.test(contents["src/App.tsx"])],
+  ["public portal exposes only phone and CPF identity", /api\.identify\(\{/.test(contents["src/App.tsx"]) && !/signInWithOAuth|google_oauth|oauth\/callback/.test(contents["src/App.tsx"])],
   ["auth sessions are never brokered to preview editors", !/postMessage\([^\n]*(access_token|refresh_token|session|value)/i.test(Object.values(contents).join("\n"))],
   ["UniFi credentials come from runtime secrets", /Deno\.env\.get\("UNIFI_PASSWORD"\)/.test(contents["supabase/functions/captive-portal/index.ts"])],
   ["frontend does not force the matriz route", !/store\s*=\s*["']matriz["']/.test(contents["src/lib/api.ts"])],
@@ -66,12 +62,16 @@ const checks: Array<[string, boolean]> = [
   ["release Docker build supplies EasyPanel-compatible GIT_SHA", /--build-arg "GIT_SHA=\$COMMIT_SHA"/.test(contents["scripts/release-gate.sh"])],
   ["release requires compromised UniFi credential rotation", /UNIFI_CREDENTIALS_ROTATED/.test(contents["scripts/release-gate.sh"])],
   ["release requires Supabase leaked-password protection", /SUPABASE_LEAKED_PASSWORD_PROTECTION_ENABLED/.test(contents["scripts/release-gate.sh"])],
-  ["remote verifier checks build identity, in-captive OAuth, and UniFi TLS health", /EXPECTED_COMMIT_SHA/.test(contents["scripts/verify-production.mjs"]) && /oauth\/handoff\/claim/.test(contents["scripts/verify-production.mjs"]) && /!bundle\.includes\("intent:\/\/"\)/.test(contents["scripts/verify-production.mjs"]) && /UniFi proxy TLS and health/.test(contents["scripts/verify-production.mjs"])],
+  ["remote verifier checks build identity, phone-CPF bundle, and UniFi TLS health", /EXPECTED_COMMIT_SHA/.test(contents["scripts/verify-production.mjs"]) && /deployed phone and CPF bundle contract/.test(contents["scripts/verify-production.mjs"]) && /UniFi proxy TLS and health/.test(contents["scripts/verify-production.mjs"])],
   ["UniFi verifier covers every managed store", ["cintra", "cula", "dpedro", "drive", "hu", "ibituruna", "joao23", "major", "matriz", "mestra", "povao", "shopping"].every((slug) => contents["scripts/verify-unifi-proxy.mjs"].includes(slug))],
   ["migrations contain no literal UniFi passwords", !/unifi_password\s*=\s*'(?!')/i.test(migrationContents)],
   ["Docker build context excludes .env", /^\.env$/m.test(contents[".dockerignore"])],
   ["git ignores .env", /^\.env$/m.test(contents[".gitignore"])],
   ["CPF values are not interpolated into logs", !/console\.(?:log|warn|error)\([^\n]*(cpfDigits|profile\?\.cpf_digits)/.test(contents["supabase/functions/captive-portal/index.ts"])],
+  ["public identity flow refuses administrator accounts", /privileged account rejected/.test(contents["supabase/functions/captive-portal/index.ts"]) && /code: "privileged_account"/.test(contents["supabase/functions/captive-portal/index.ts"])],
+  ["existing CPF requires the matching stored phone", /storedPhoneMatches\(profile\.phone_digits, phoneDigits\)/.test(contents["supabase/functions/captive-portal/index.ts"]) && /stored\.length > 0 && supplied\.length > 0 && stored === supplied/.test(contents["supabase/functions/_shared/identity.ts"])],
+  ["Edge Function never consumes the shared OTP verification endpoint", !/\.auth\.verifyOtp\(/.test(contents["supabase/functions/captive-portal/index.ts"]) && /session_token_hash/.test(contents["supabase/functions/captive-portal/index.ts"])],
+  ["browser exchanges the one-use session challenge", /\.auth\.verifyOtp\(\{/.test(contents["src/App.tsx"]) && /session_token_hash/.test(contents["src/App.tsx"])],
 ];
 
 const failures = checks.filter(([, passed]) => !passed).map(([name]) => name);

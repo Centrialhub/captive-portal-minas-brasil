@@ -7,6 +7,7 @@ import {
   serializeCookieJar,
   type UnifiCookieJar,
 } from "../_shared/unifi-cookie.ts";
+import { normalizeBrazilianPhone, storedPhoneMatches } from "../_shared/identity.ts";
 
 
 // ========== Constants ==========
@@ -72,8 +73,8 @@ const Logger = {
   redact(s: string): string {
     return s
       .replace(/([Cc]ookie|[Ss]et-[Cc]ookie|[Aa]uthorization):\s*[^\r\n,;]+/gi, "$1: [REDACTED]")
-      .replace(/(password|token|secret|resume_token|access_token|refresh_token|csrf_token)=[^&\r\n,;\s]+/gi, "$1=[REDACTED]")
-      .replace(/"(password|token|secret|resume_token|access_token|refresh_token|csrf_token)":\s*"[^"]+"/gi, "\"$1\": \"[REDACTED]\"")
+      .replace(/(password|token|secret|resume_token|access_token|refresh_token|csrf_token|token_hash|session_token_hash)=[^&\r\n,;\s]+/gi, "$1=[REDACTED]")
+      .replace(/"(password|token|secret|resume_token|access_token|refresh_token|csrf_token|token_hash|session_token_hash)":\s*"[^"]+"/gi, "\"$1\": \"[REDACTED]\"")
       .replace(/Bearer\s+[a-zA-Z0-9\-\._~\+/]+=*/gi, "Bearer [REDACTED]")
       .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[REDACTED_EMAIL]")
       .replace(/\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b/g, "[REDACTED_CPF]")
@@ -123,6 +124,11 @@ function canonicalUnifiControllerUrl(slug: string): string {
 async function sha256Hex(value: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function publicProfileEmail(email: unknown): string | null {
+  if (typeof email !== "string" || !email) return null;
+  return email.endsWith("@wifi.minasbrasilwifi.com.br") ? null : email;
 }
 
 // ========== Sanitization & Validation ==========
@@ -453,27 +459,29 @@ async function detectStoreFromRequest(
     }
   }
 
-  // 3) Resolve explicit store hints from both transport surfaces. The AP
-  // mapping above remains authoritative. Reverse proxies may preserve the
-  // JSON body while dropping the original query string (or vice versa), so
-  // accept the hint only when every supplied value agrees.
+  // 2) Use an explicit store URL/body hint only when all supplied hints agree.
+  // The AP mapping above remains authoritative for the physical location.
+  // Reading both sources is necessary because some reverse proxies preserve
+  // the JSON body but drop the original query string (and vice versa).
   try {
     const url = new URL(req.url);
     const urlStoreHint = sanitizeString(url.searchParams.get("store"), 64)?.toLowerCase() || null;
     const bodyStoreHint = sanitizeString(requestedStoreHint, 64)?.toLowerCase() || null;
-    const suppliedHints = [bodyStoreHint, urlStoreHint]
+    const attemptStoreHint = sanitizeString(persistedStoreHint, 64)?.toLowerCase() || null;
+    const suppliedHints = [attemptStoreHint, bodyStoreHint, urlStoreHint]
       .filter((hint): hint is string => !!hint && isValidSlug(hint));
     const uniqueHints = [...new Set(suppliedHints)];
 
     if (uniqueHints.length > 1) {
-      Logger.warn("Conflicting request store hints ignored", {
+      Logger.warn("Conflicting store hints ignored", {
+        has_attempt_hint: !!attemptStoreHint,
         has_body_hint: !!bodyStoreHint,
         has_url_hint: !!urlStoreHint,
       });
     }
 
     const storeSlug = uniqueHints.length === 1 ? uniqueHints[0] : null;
-    if (storeSlug) {
+    if (storeSlug && isValidSlug(storeSlug)) {
       const { data: store } = await db
         .from("stores")
         .select("id, slug, name, city, is_active, post_auth_redirect_url")
@@ -482,8 +490,13 @@ async function detectStoreFromRequest(
         .maybeSingle();
 
       if (store) {
-        Logger.info("Store detected via request store hint", { store_slug: store.slug });
-        return storeResult(store, bodyStoreHint ? "request_store_hint" : "url_param");
+        Logger.info("Store detected via store hint", { store_slug: store.slug });
+        const source = attemptStoreHint
+          ? "attempt_store_hint"
+          : bodyStoreHint
+          ? "request_store_hint"
+          : "url_param";
+        return storeResult(store, source);
       }
       Logger.warn("Request store hint not found or inactive");
     }
@@ -1674,10 +1687,8 @@ async function handleBootstrap(req: Request): Promise<Response> {
     store: { slug: detected.store_slug, name: detected.store_name, city: detected.store_city },
     consent: consent || null,
     required_fields: {
-      name: { required: true },
-      email: { required: true },
       phone: { required: true },
-      at_least_one_contact: true,
+      cpf: { required: true },
     },
   });
 }
@@ -3010,23 +3021,6 @@ async function handlePortalHtml(_req: Request, url: URL): Promise<Response> {
   return Response.redirect(target.toString(), 302);
 }
 
-/**
- * Deterministic handler for OAuth callbacks (Google/Apple).
- * Ensures session parameters are passed back to the React SPA correctly.
- */
-async function handleOAuthCallback(req: Request): Promise<Response> {
-  const url = new URL(req.url);
-  const target = new URL("https://minasbrasilwifi.com.br/oauth/callback");
-  const allowed = new Set(["code", "error", "error_code", "error_description"]);
-  
-  url.searchParams.forEach((value, key) => {
-    if (allowed.has(key)) target.searchParams.set(key, value);
-  });
-  
-  // The React app will detect the hash/params and complete the sign-in
-  return Response.redirect(target.toString(), 302);
-}
-
 // ========== Client-side telemetry ==========
 async function handleClientEvent(req: Request): Promise<Response> {
   const clientIp = getPublicIp(req) || "unknown";
@@ -3070,7 +3064,7 @@ async function handleClientEvent(req: Request): Promise<Response> {
   return jsonResponse({ ok: true });
 }
 
-// ========== Auth (email + password) handlers ==========
+// ========== Portal identity and legacy auth helpers ==========
 
 interface AuthAuthorizeContext {
   clientMac: string | null;
@@ -3125,7 +3119,7 @@ async function getValidatedAuthContext(
     };
   }
   
-  const val = await validateOAuthAttempt(db, attemptId, resumeToken);
+  const val = await validateAuthAttempt(db, attemptId, resumeToken);
   if (val.status === 'invalid') {
     return { 
       ctx: initialCtx, 
@@ -3168,7 +3162,7 @@ async function authorizeAuthenticatedUser(args: {
   profile: { full_name: string; cpf_digits: string | null; phone_digits: string | null; email: string; cpf_required?: boolean };
   ctx: AuthAuthorizeContext;
   req: Request;
-  authMethod: "password" | "silent" | "google" | "apple";
+  authMethod: "password" | "silent" | "google" | "apple" | "identity";
   traceId: string;
   clientIp: string | null;
   userAgent: string | null;
@@ -3432,10 +3426,11 @@ async function authorizeAuthenticatedUser(args: {
       .select("id")
       .eq("user_id", userId)
       .maybeSingle();
+    const publicEmail = publicProfileEmail(profile.email);
     const leadPayload: Record<string, unknown> = {
       user_id: userId,
       name: profile.full_name,
-      email: profile.email,
+      email: publicEmail,
       phone: profile.phone_digits,
       cpf: profile.cpf_digits,
       client_mac: ctx.clientMac,
@@ -3599,7 +3594,7 @@ function getPasswordResetRedirect(): string {
   return "https://minasbrasilwifi.com.br/reset-password";
 }
 
-async function handleRequestPasswordReset(req: Request): Promise<Response> {
+async function _handleRequestPasswordReset(req: Request): Promise<Response> {
   const db = supabaseAdmin();
   const clientIp = getPublicIp(req);
   const ua = req.headers.get("user-agent") || "";
@@ -3642,7 +3637,250 @@ async function handleRequestPasswordReset(req: Request): Promise<Response> {
   return jsonResponse({ ok: true });
 }
 
-async function handleSignup(req: Request): Promise<Response> {
+const PORTAL_IDENTITY_EMAIL_DOMAIN = "wifi.minasbrasilwifi.com.br";
+
+async function createPortalSessionChallenge(
+  db: ReturnType<typeof supabaseAdmin>,
+  userId: string,
+): Promise<{ token_hash: string } | null> {
+  const { data: userResult, error: userError } = await db.auth.admin.getUserById(userId);
+  let email = userResult?.user?.email || null;
+
+  if (userError || !userResult?.user) {
+    Logger.error("[identity] auth user lookup failed", { code: userError?.code || "AUTH_USER_NOT_FOUND" });
+    return null;
+  }
+
+  if (!email) {
+    email = `portal-${crypto.randomUUID()}@${PORTAL_IDENTITY_EMAIL_DOMAIN}`;
+    const { error: updateError } = await db.auth.admin.updateUserById(userId, {
+      email,
+      email_confirm: true,
+    });
+    if (updateError) {
+      Logger.error("[identity] internal email assignment failed", { code: updateError.code || "AUTH_USER_UPDATE_FAILED" });
+      return null;
+    }
+  }
+
+  // Generate a one-use session challenge without consuming /auth/v1/verify
+  // from the shared Edge Function IP. The browser exchanges it only after the
+  // UniFi authorization result, preserving the existing reusable session.
+  const { data: linkData, error: linkError } = await db.auth.admin.generateLink({
+    type: "magiclink",
+    email,
+  });
+  const tokenHash = linkData?.properties?.hashed_token;
+  if (linkError || !tokenHash) {
+    Logger.error("[identity] session link generation failed", { code: linkError?.code || "SESSION_LINK_FAILED" });
+    return null;
+  }
+
+  return { token_hash: tokenHash };
+}
+
+async function handleIdentity(req: Request): Promise<Response> {
+  const db = supabaseAdmin();
+  const clientIp = getPublicIp(req);
+  const userAgent = req.headers.get("user-agent") || "";
+  const body = await safeParseJson(req);
+  if (!body) return errorResponse("Invalid JSON body");
+  const traceId = getTraceId(req, body);
+
+  const phoneDigits = normalizeBrazilianPhone(body.phone);
+  const cpfDigits = typeof body.cpf === "string" ? body.cpf.replace(/\D/g, "") : "";
+  const { ctx, attemptId, resumeToken, error: authError } = await getValidatedAuthContext(db, body, "identity");
+  if (authError) return authError;
+
+  if (!Validators.phone(phoneDigits)) {
+    return jsonResponse({ error: "Telefone inválido.", code: "invalid_phone" }, 400);
+  }
+  if (!Validators.cpf(cpfDigits)) {
+    return jsonResponse({ error: "CPF inválido.", code: "invalid_cpf" }, 400);
+  }
+
+  try {
+    const identityHash = await sha256Hex(`${cpfDigits}:${phoneDigits}`);
+    const ipLimit = await checkRateLimitDb(db, `identity:ip:${clientIp || "unknown"}`, 300, 20, 900);
+    const identityLimit = await checkRateLimitDb(db, `identity:value:${identityHash}`, 300, 8, 900);
+    if (!ipLimit.allowed || !identityLimit.allowed) {
+      return jsonResponse({ error: "Muitas tentativas. Aguarde alguns minutos.", code: "rate_limited" }, 429);
+    }
+  } catch (rateLimitError) {
+    Logger.error("[identity] rate limiter unavailable", { error: (rateLimitError as Error).message });
+    return jsonResponse({ error: "Serviço temporariamente indisponível.", code: "rate_limit_unavailable" }, 503);
+  }
+
+  logEvent(db, {
+    trace_id: traceId,
+    event_type: "identity_started",
+    step: "form",
+    status: "info",
+    client_ip: clientIp,
+    user_agent: userAgent,
+  });
+
+  let { data: profile, error: profileLookupError } = await db
+    .from("profiles")
+    .select("id, full_name, cpf_digits, phone_digits, email")
+    .eq("cpf_digits", cpfDigits)
+    .maybeSingle();
+
+  if (profileLookupError) {
+    Logger.error("[identity] profile lookup failed", { code: profileLookupError.code || "PROFILE_LOOKUP_FAILED" });
+    return jsonResponse({ error: "Não foi possível validar seus dados.", code: "profile_lookup_failed" }, 500);
+  }
+
+  if (!profile) {
+    const internalEmail = `portal-${crypto.randomUUID()}@${PORTAL_IDENTITY_EMAIL_DOMAIN}`;
+    const { data: created, error: createError } = await db.auth.admin.createUser({
+      email: internalEmail,
+      email_confirm: true,
+      user_metadata: { portal_identity: true },
+    });
+    if (createError || !created.user?.id) {
+      Logger.error("[identity] auth user creation failed", { code: createError?.code || "AUTH_USER_CREATE_FAILED" });
+      return jsonResponse({ error: "Não foi possível iniciar sua sessão.", code: "identity_create_failed" }, 500);
+    }
+    const createdUserId = created.user.id;
+
+    const { data: insertedProfile, error: insertError } = await db
+      .from("profiles")
+      .insert({
+        id: createdUserId,
+        full_name: "Cliente",
+        cpf_digits: cpfDigits,
+        phone_digits: phoneDigits,
+        email: internalEmail,
+        cpf_required: false,
+      })
+      .select("id, full_name, cpf_digits, phone_digits, email")
+      .single();
+
+    if (insertError || !insertedProfile) {
+      try { await db.auth.admin.deleteUser(createdUserId); } catch { /* best-effort rollback */ }
+      const isCpfRace = insertError?.code === "23505" || /cpf_digits/i.test(insertError?.message || "");
+      if (!isCpfRace) {
+        Logger.error("[identity] profile creation failed", { code: insertError?.code || "PROFILE_CREATE_FAILED" });
+        return jsonResponse({ error: "Não foi possível salvar seus dados.", code: "profile_create_failed" }, 500);
+      }
+
+      const racedLookup = await db
+        .from("profiles")
+        .select("id, full_name, cpf_digits, phone_digits, email")
+        .eq("cpf_digits", cpfDigits)
+        .maybeSingle();
+      if (racedLookup.error || !racedLookup.data) {
+        return jsonResponse({ error: "Não foi possível validar seus dados.", code: "profile_race_failed" }, 409);
+      }
+      profile = racedLookup.data;
+    } else {
+      profile = insertedProfile;
+    }
+  }
+
+  const userId = profile.id;
+  const { data: adminRole, error: adminRoleError } = await db
+    .from("user_roles")
+    .select("user_id")
+    .eq("user_id", userId)
+    .eq("role", "admin")
+    .maybeSingle();
+  if (adminRoleError) {
+    Logger.error("[identity] role check failed", { code: adminRoleError.code || "ROLE_CHECK_FAILED" });
+    return jsonResponse({ error: "Serviço temporariamente indisponível.", code: "role_check_failed" }, 503);
+  }
+  if (adminRole) {
+    Logger.warn("[identity] privileged account rejected", { user_id: userId });
+    return jsonResponse({ error: "Use o acesso administrativo para esta conta.", code: "privileged_account" }, 403);
+  }
+
+  if (await getActiveUserBlock(db, userId)) {
+    logEvent(db, {
+      trace_id: traceId,
+      event_type: "blocked_user_denied",
+      step: "form",
+      status: "warning",
+      error_code: "user_blocked",
+      client_ip: clientIp,
+    });
+    return jsonResponse({ error: "Acesso bloqueado. Procure o atendimento.", code: "user_blocked" }, 403);
+  }
+
+  if (!storedPhoneMatches(profile.phone_digits, phoneDigits)) {
+    logEvent(db, {
+      trace_id: traceId,
+      event_type: "identity_mismatch",
+      step: "form",
+      status: "warning",
+      error_code: "identity_mismatch",
+      client_ip: clientIp,
+      user_agent: userAgent,
+    });
+    return jsonResponse({
+      error: "CPF e telefone não correspondem ao cadastro.",
+      code: "identity_mismatch",
+    }, 403);
+  }
+
+  const sessionChallenge = await createPortalSessionChallenge(db, userId);
+  if (!sessionChallenge) {
+    return jsonResponse({ error: "Não foi possível iniciar sua sessão.", code: "session_create_failed" }, 500);
+  }
+
+  const result = await authorizeAuthenticatedUser({
+    db,
+    userId,
+    profile,
+    ctx,
+    req,
+    authMethod: "identity",
+    traceId,
+    clientIp,
+    userAgent,
+    attemptId,
+    resumeToken,
+  });
+
+  if (result.authorized && profile.cpf_digits && profile.phone_digits) {
+    const crmSync = syncWithClubeMais({
+      cpf: profile.cpf_digits,
+      name: profile.full_name || "Cliente",
+      phone: profile.phone_digits,
+      email: publicProfileEmail(profile.email),
+      store_id: result.store_id,
+    }, db, traceId).catch((error) => {
+      Logger.warn("[identity] CRM sync failed", { error: (error as Error).message });
+    });
+    // @ts-ignore Edge Runtime background task API
+    if (typeof EdgeRuntime !== "undefined" && EdgeRuntime?.waitUntil) EdgeRuntime.waitUntil(crmSync);
+  }
+
+  logEvent(db, {
+    session_id: result.session_id,
+    trace_id: traceId,
+    store_id: result.store_id,
+    event_type: result.authorized ? "identity_success" : "identity_failed",
+    step: "form",
+    status: result.authorized ? "success" : "warning",
+    payload: { store_slug: result.store_slug, fail_reason: result.fail_reason },
+    client_ip: clientIp,
+    user_agent: userAgent,
+  });
+
+  return jsonResponse({
+    session_id: result.session_id,
+    authorized: result.authorized,
+    redirect_url: result.redirect_url,
+    fail_reason: result.fail_reason,
+    processing: result.processing || false,
+    replay: result.replay || false,
+    session_token_hash: result.authorized ? sessionChallenge.token_hash : undefined,
+    trace_id: traceId,
+  });
+}
+
+async function _handleSignup(req: Request): Promise<Response> {
   const db = supabaseAdmin();
   const clientIp = getPublicIp(req);
   const ua = req.headers.get("user-agent") || "";
@@ -3815,7 +4053,7 @@ async function handleSignup(req: Request): Promise<Response> {
   });
 }
 
-async function handleLogin(req: Request): Promise<Response> {
+async function _handleLogin(req: Request): Promise<Response> {
   const db = supabaseAdmin();
   const clientIp = getPublicIp(req);
   const ua = req.headers.get("user-agent") || "";
@@ -3954,7 +4192,7 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
   const ctx = validatedCtx;
 
   if (attemptId && resumeToken) {
-    const val = await validateOAuthAttempt(db, attemptId, resumeToken);
+    const val = await validateAuthAttempt(db, attemptId, resumeToken);
     // val won't be invalid here because getValidatedAuthContext already checked it.
     
     // Protection against user_id swap
@@ -4095,7 +4333,7 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
           cpf: profile.cpf_digits!,
           name: profile.full_name!,
           phone: profile.phone_digits!,
-          email: profile.email,
+          email: publicProfileEmail(profile.email),
           store_id: result.store_id || null,
         }, db, traceId);
       } catch (e) {
@@ -4131,7 +4369,7 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
 }
 
 
-async function handleUpdateProfile(req: Request): Promise<Response> {
+async function _handleUpdateProfile(req: Request): Promise<Response> {
   const db = supabaseAdmin();
   const clientIp = getPublicIp(req);
   const ua = req.headers.get("user-agent") || "";
@@ -4314,16 +4552,8 @@ Deno.serve(async (req: Request) => {
     // 2. Public portal endpoints
     if (path === "/bootstrap" && req.method === "GET") return await handleBootstrap(req);
     if (path === "/client-event" && req.method === "POST") return await handleClientEvent(req);
-    if (path === "/login" && req.method === "POST") return await handleLogin(req);
-  if (path === "/oauth/init" && req.method === "POST") return await handleOAuthInit(req);
-  if (path === "/oauth/restart" && req.method === "POST") return await handleOAuthRestart(req);
-  if (path === "/oauth/handoff/create" && req.method === "POST") return await handleOAuthHandoffCreate(req);
-  if (path === "/oauth/handoff/claim" && req.method === "POST") return await handleOAuthHandoffClaim(req);
-
-    if (path === "/oauth/callback") return await handleOAuthCallback(req);
-    if (path === "/update-profile" && req.method === "POST") return await handleUpdateProfile(req);
-    if (path === "/signup" && req.method === "POST") return await handleSignup(req);
-    if (path === "/request-password-reset" && req.method === "POST") return await handleRequestPasswordReset(req);
+    if (path === "/attempt/init" && req.method === "POST") return await handleAttemptInit(req);
+    if (path === "/identify" && req.method === "POST") return await handleIdentity(req);
     if (path === "/authorize-existing" && req.method === "POST") return await handleAuthorizeExisting(req);
 
     // 3. Admin endpoints (requires service_role/admin auth)
@@ -4356,13 +4586,13 @@ Deno.serve(async (req: Request) => {
 });
 
 
-// ========== Authoritative OAuth Transaction Handler ==========
+// ========== Authoritative Captive Attempt Handler ==========
 
 /**
  * Validates attempt tokens against the database.
  * Returns the captive parameters if valid and not expired/consumed.
  */
-async function validateOAuthAttempt(
+async function validateAuthAttempt(
   db: any,
   attemptId: string,
   token: string
@@ -4426,7 +4656,7 @@ async function validateOAuthAttempt(
   return { status, params, attempt };
 }
 
-async function handleOAuthInit(req: Request): Promise<Response> {
+async function handleAttemptInit(req: Request): Promise<Response> {
   const db = supabaseAdmin();
   const clientIp = getPublicIp(req);
   const ua = req.headers.get("user-agent");
@@ -4443,16 +4673,16 @@ async function handleOAuthInit(req: Request): Promise<Response> {
 
   // Rate limit by IP/MAC fail-closed
   try {
-    const rl = await checkRateLimitDb(db, `oauth-init:mac:${clientMac}`, 60, 5, 300);
+    const rl = await checkRateLimitDb(db, `attempt-init:mac:${clientMac}`, 60, 5, 300);
     if (!rl.allowed) return errorResponse("Muitas tentativas. Aguarde alguns minutos.", 429);
   } catch (e) {
-    Logger.error("[oauth-init] Rate limiter error", { error: (e as Error).message });
+    Logger.error("[attempt-init] Rate limiter error", { error: (e as Error).message });
     return errorResponse("Serviço temporariamente indisponível.", 503);
   }
 
-  // Resolve the store before sending the customer through authentication.
-  // This prevents a successful Google/CPF flow from ending in
-  // NO_STORE_CONFIGURED and makes the result survive a browser handoff.
+  // Resolve and persist the store before authentication. The explicit store
+  // may arrive either in the proxied request URL or in the captive params
+  // body; detectStoreFromRequest accepts it only when the supplied hints agree.
   let detected = await detectStoreFromRequest(
     db,
     req,
@@ -4522,7 +4752,7 @@ async function handleOAuthInit(req: Request): Promise<Response> {
     .single();
 
   if (insErr || !attempt?.id) {
-    Logger.error("[oauth-init] insert failed", { code: insErr?.code || "ATTEMPT_INSERT_FAILED" });
+    Logger.error("[attempt-init] insert failed", { code: insErr?.code || "ATTEMPT_INSERT_FAILED" });
     return errorResponse("Erro ao inicializar transação de login.", 500);
   }
 
@@ -4531,158 +4761,5 @@ async function handleOAuthInit(req: Request): Promise<Response> {
     token: token,
     store: { slug: detected.store_slug, name: detected.store_name, city: detected.store_city },
     detection_source: detected.detection_source,
-  });
-}
-
-async function handleOAuthHandoffCreate(req: Request): Promise<Response> {
-  const db = supabaseAdmin();
-  const clientIp = getPublicIp(req);
-  const body = await safeParseJson(req);
-  if (!body) return errorResponse("Requisição inválida (JSON esperado).");
-
-  const attemptId = typeof body.attempt_id === "string" ? body.attempt_id : "";
-  const resumeToken = typeof body.resume_token === "string" ? body.resume_token : "";
-  const validation = await validateOAuthAttempt(db, attemptId, resumeToken);
-  if (validation.status !== "active" || !validation.attempt) {
-    return jsonResponse({ error: "Tentativa inválida ou expirada.", code: "INVALID_ATTEMPT" }, 403);
-  }
-
-  const rateLimit = await checkRateLimitDb(db, `oauth-handoff:${attemptId}`, 60, 3, 300);
-  if (!rateLimit.allowed) return errorResponse("Muitas tentativas. Aguarde alguns minutos.", 429);
-
-  const codeBytes = new Uint8Array(32);
-  crypto.getRandomValues(codeBytes);
-  const code = Array.from(codeBytes).map((byte) => byte.toString(16).padStart(2, "0")).join("");
-  const codeHash = await sha256Hex(code);
-  const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
-
-  const { error } = await db.from("oauth_browser_handoffs").upsert({
-    attempt_id: attemptId,
-    code_hash: codeHash,
-    expires_at: expiresAt,
-    claimed_at: null,
-  }, { onConflict: "attempt_id" });
-  if (error) {
-    Logger.error("[oauth-handoff] create failed", { code: error.code || "HANDOFF_CREATE_FAILED" });
-    return errorResponse("Não foi possível preparar a abertura no navegador.", 500);
-  }
-
-  await db.from("captive_auth_attempts").update({ status: "oauth_redirected" }).eq("id", attemptId);
-  logEvent(db, {
-    trace_id: getTraceId(req, body),
-    store_id: validation.attempt.store_id || null,
-    event_type: "oauth_browser_handoff_created",
-    step: "params",
-    status: "success",
-    client_ip: clientIp,
-    user_agent: req.headers.get("user-agent"),
-  });
-
-  return jsonResponse({
-    handoff_url: `https://minasbrasilwifi.com.br/oauth/continue?handoff=${code}`,
-    expires_at: expiresAt,
-  });
-}
-
-async function handleOAuthHandoffClaim(req: Request): Promise<Response> {
-  const db = supabaseAdmin();
-  const clientIp = getPublicIp(req);
-  const body = await safeParseJson(req);
-  const code = typeof body?.handoff === "string" ? body.handoff.trim() : "";
-  if (!/^[a-f0-9]{64}$/i.test(code)) {
-    return jsonResponse({ error: "Transferência inválida.", code: "HANDOFF_INVALID" }, 400);
-  }
-
-  const codeHash = await sha256Hex(code.toLowerCase());
-  const rateLimit = await checkRateLimitDb(db, `oauth-handoff-claim:${clientIp || "unknown"}`, 60, 10, 300);
-  if (!rateLimit.allowed) return errorResponse("Muitas tentativas. Aguarde alguns minutos.", 429);
-
-  const tokenBytes = new Uint8Array(32);
-  crypto.getRandomValues(tokenBytes);
-  const token = Array.from(tokenBytes).map((byte) => byte.toString(16).padStart(2, "0")).join("");
-  const tokenHash = await sha256Hex(token);
-
-  const { data, error } = await db.rpc("claim_oauth_browser_handoff", {
-    p_code_hash: codeHash,
-    p_new_resume_token_hash: tokenHash,
-  });
-  const claim = Array.isArray(data) ? data[0] : null;
-  if (error || !claim?.attempt_id) {
-    Logger.warn("[oauth-handoff] invalid or expired claim", { code: error?.code || "HANDOFF_CLAIM_FAILED" });
-    return jsonResponse({ error: "Esta transferência expirou ou já foi utilizada.", code: "HANDOFF_EXPIRED" }, 410);
-  }
-
-  logEvent(db, {
-    trace_id: getTraceId(req, body),
-    event_type: "oauth_browser_handoff_claimed",
-    step: "params",
-    status: "success",
-    client_ip: clientIp,
-    user_agent: req.headers.get("user-agent"),
-  });
-
-  return jsonResponse({
-    attempt_id: claim.attempt_id,
-    token,
-    params: {
-      id: claim.client_mac,
-      ap: claim.ap_mac || undefined,
-      ssid: claim.ssid || undefined,
-      store: claim.store_hint || undefined,
-      t: claim.captive_timestamp || undefined,
-      url: claim.requested_redirect_url || undefined,
-    },
-  });
-}
-
-async function handleOAuthRestart(req: Request): Promise<Response> {
-  const db = supabaseAdmin();
-  const clientIp = getPublicIp(req);
-  const body = await safeParseJson(req);
-  
-  if (!body || !body.attempt_id || !body.resume_token) {
-    return errorResponse("Parâmetros attempt_id e resume_token são obrigatórios.", 400);
-  }
-
-  const attemptId = body.attempt_id as string;
-  const resumeToken = body.resume_token as string;
-
-  // 1. Rate Limit fail-closed
-  try {
-    const rl = await checkRateLimitDb(db, `oauth-restart:ip:${clientIp || 'unknown'}`, 60, 3, 300);
-    if (!rl.allowed) return errorResponse("Muitas tentativas de reinício. Aguarde.", 429);
-    
-    const rlMac = await checkRateLimitDb(db, `oauth-restart:attempt:${attemptId}`, 60, 3, 300);
-    if (!rlMac.allowed) return errorResponse("Limite de reinício excedido para esta tentativa.", 429);
-  } catch (e) {
-    Logger.error("[oauth-restart] Rate limiter unavailable", { error: (e as Error).message });
-    return errorResponse("Serviço temporariamente indisponível.", 503);
-  }
-
-  // 2. Executar RPC transacional
-  const { data, error } = await db.rpc("safe_restart_oauth_attempt", {
-    p_attempt_id: attemptId,
-    p_resume_token: resumeToken,
-    p_client_ip: clientIp
-  });
-
-  if (error || !data || data.length === 0) {
-    const msg = error?.message || "Erro ao reiniciar sessão.";
-    Logger.error("[oauth-restart] RPC failed", { code: error?.code || "OAUTH_RESTART_FAILED" });
-    
-    if (msg === 'INVALID_TOKEN' || msg === 'ATTEMPT_NOT_FOUND') {
-      return errorResponse("Transação inválida ou token incorreto.", 403);
-    }
-    if (msg === 'INVALID_STATE_FOR_RESTART') {
-      return errorResponse("Esta sessão não pode ser reiniciada no estado atual.", 400);
-    }
-    
-    return errorResponse("Não foi possível reiniciar a sessão.", 500);
-  }
-
-  const result = data[0];
-  return jsonResponse({
-    attempt_id: result.new_attempt_id,
-    token: result.new_token
   });
 }

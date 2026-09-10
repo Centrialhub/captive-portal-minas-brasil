@@ -18,18 +18,15 @@ export default function PrivacyPolicy() {
 
         <div className="policy-body">
           <p className="policy-intro">
-            Esta Política explica como a Minas Brasil trata dados pessoais quando você usa o Wi-Fi disponibilizado por meio deste Captive Portal, seja pelo cadastro com e-mail e senha, seja pela autenticação com Google.
+            Esta Política explica como a Minas Brasil trata dados pessoais quando você usa o Wi-Fi disponibilizado por meio deste Captive Portal, com identificação por telefone e CPF.
           </p>
 
           <section className="policy-section">
             <h2>1. Dados Pessoais Coletados</h2>
-            <p>Conforme a forma de acesso escolhida, podemos tratar:</p>
+            <p>Para liberar e operar o acesso, podemos tratar:</p>
             <ul>
               <li>
-                <strong>Dados cadastrais:</strong> nome, e-mail, telefone e CPF informado pelo usuário.
-              </li>
-              <li>
-                <strong>Login com Google:</strong> identificador da conta, nome, e-mail verificado, foto de perfil e idioma disponibilizados pelos escopos básicos do OpenID Connect.
+                <strong>Dados de identificação:</strong> telefone e CPF informados pelo usuário.
               </li>
               <li>
                 <strong>Dados técnicos e de acesso:</strong> endereços MAC do dispositivo e do ponto de acesso, endereço IP, SSID, unidade, data e hora, navegador e resultado da autorização da rede.
@@ -39,7 +36,7 @@ export default function PrivacyPolicy() {
               </li>
             </ul>
             <p className="policy-note">
-              <strong>Importante:</strong> não solicitamos acesso a contatos, mensagens ou arquivos do Google Drive. Senhas são processadas pelo serviço de autenticação e não são armazenadas em texto legível pela aplicação.
+              <strong>Importante:</strong> o portal público não solicita senha nem acesso a contas de terceiros.
             </p>
           </section>
 
@@ -72,9 +69,6 @@ export default function PrivacyPolicy() {
                 provedores de autenticação, banco de dados, hospedagem e infraestrutura necessários ao funcionamento do portal;
               </li>
               <li>
-                Google, quando você escolhe essa forma de login;
-              </li>
-              <li>
                 Clube Mais/CRM, quando a integração de relacionamento estiver habilitada;
               </li>
               <li>
@@ -101,7 +95,7 @@ export default function PrivacyPolicy() {
               <li>revogação do consentimento e informação sobre suas consequências.</li>
             </ul>
             <p>
-              A permissão concedida ao Google também pode ser revogada nas configurações de segurança da sua Conta Google. A revogação não elimina automaticamente registros cuja conservação seja necessária por outra base legal.
+              A revogação do consentimento não elimina automaticamente registros cuja conservação seja necessária por outra base legal.
             </p>
           </section>
 
