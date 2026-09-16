@@ -5,7 +5,7 @@ import {
   isSafeRedirect,
   resolvePostAuthRedirect,
 } from "./lib/portal-utils";
-import { getAuthFailureMessage, isRecoverableAuthResult } from "./lib/auth-outcome";
+import { getAuthFailureMessage, isRecoverableAuthResult, runWithAuthRecovery } from "./lib/auth-outcome";
 
 describe("Brazilian identity validation", () => {
   it("rejects repeated or invalid CPFs and accepts a valid checksum", () => {
@@ -57,5 +57,34 @@ describe("authorization outcomes", () => {
 
   it("treats definitive failures as terminal", () => {
     expect(isRecoverableAuthResult({ fail_reason: "UNIFI_ERROR" })).toBe(false);
+  });
+
+  it("recovers a pending authorization without duplicating unbounded requests", async () => {
+    const results = [
+      { processing: true, fail_reason: "PROCESSING_IN_PROGRESS" },
+      { fail_reason: "RETRY_REQUIRED" },
+      { authorized: true },
+    ];
+    let calls = 0;
+
+    const result = await runWithAuthRecovery(async () => results[calls++], {
+      attempts: 3,
+      delayMs: 0,
+      stop: (value) => !!value.authorized,
+    });
+
+    expect(result).toEqual({ authorized: true });
+    expect(calls).toBe(3);
+  });
+
+  it("stops recovery immediately on a terminal failure", async () => {
+    let calls = 0;
+    const result = await runWithAuthRecovery(async () => {
+      calls += 1;
+      return { fail_reason: "CLIENT_NOT_FOUND_ON_CONTROLLER" };
+    }, { attempts: 3, delayMs: 0 });
+
+    expect(result).toEqual({ fail_reason: "CLIENT_NOT_FOUND_ON_CONTROLLER" });
+    expect(calls).toBe(1);
   });
 });

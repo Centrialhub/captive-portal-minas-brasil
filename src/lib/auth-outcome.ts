@@ -29,3 +29,20 @@ export function getAuthFailureMessage(result: unknown): string {
   }
   return "Não foi possível liberar o acesso.";
 }
+
+export async function runWithAuthRecovery<T>(
+  operation: () => Promise<T>,
+  options: { attempts?: number; delayMs?: number; stop?: (result: T) => boolean } = {},
+): Promise<T> {
+  const attempts = Math.max(1, options.attempts ?? 3);
+  const delayMs = Math.max(0, options.delayMs ?? 1000);
+  let result!: T;
+
+  for (let index = 0; index < attempts; index += 1) {
+    result = await operation();
+    if (options.stop?.(result) || !isRecoverableAuthResult(result) || index === attempts - 1) return result;
+    await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+  }
+
+  return result;
+}

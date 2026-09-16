@@ -8,7 +8,7 @@ import {
   Validators,
 } from "./lib/portal-utils";
 import { AttemptTracker } from "./lib/attempt-tracker";
-import { getAuthFailureMessage, isRecoverableAuthResult } from "./lib/auth-outcome";
+import { getAuthFailureMessage, isRecoverableAuthResult, runWithAuthRecovery } from "./lib/auth-outcome";
 import logoMinasBrasil from "./assets/logo-minas-brasil.png";
 import Footer from "./components/Footer";
 import { SuccessView } from "./components/SuccessView";
@@ -76,17 +76,17 @@ export default function App() {
         const attempt = await AttemptTracker.ensureAttempt();
         if (!attempt) throw new Error("Não foi possível criar uma tentativa segura. Tente novamente.");
 
-        const result = await api.authorizeExisting({
-          access_token: accessToken,
-          client_mac: params.client_mac,
-          ap_mac: params.ap_mac,
-          ssid: params.ssid,
-          redirect_url: params.redirect_url,
-          captive_timestamp: params.captive_timestamp,
-          auth_method: "silent",
-          attempt_id: attempt.attempt_id,
-          resume_token: attempt.token,
-        });
+        const result = await runWithAuthRecovery(() => api.authorizeExisting({
+            access_token: accessToken,
+            client_mac: params.client_mac,
+            ap_mac: params.ap_mac,
+            ssid: params.ssid,
+            redirect_url: params.redirect_url,
+            captive_timestamp: params.captive_timestamp,
+            auth_method: "silent",
+            attempt_id: attempt.attempt_id,
+            resume_token: attempt.token,
+          }), { stop: (value: any) => !!value?.authorized || !!value?.needs_cpf });
 
         if (result?.needs_cpf) {
           await supabase.auth.signOut();
@@ -166,7 +166,7 @@ export default function App() {
       const attempt = await AttemptTracker.ensureAttempt();
       if (!attempt) throw new Error("Não foi possível criar uma tentativa segura. Tente novamente.");
 
-      const result = await api.identify({
+      const identifyPayload = {
         phone: phoneDigits,
         cpf: cpfDigits,
         client_mac: params.client_mac,
@@ -177,6 +177,9 @@ export default function App() {
         consent_version: boot.consent?.version || "1.0",
         attempt_id: attempt.attempt_id,
         resume_token: attempt.token,
+      };
+      const result = await runWithAuthRecovery(() => api.identify(identifyPayload), {
+        stop: (value: any) => !!value?.authorized,
       });
 
       if (result?.authorized && result?.session_token_hash) {

@@ -1154,10 +1154,14 @@ async function checkUnifiAuthorizationState(
     
     if (!staRes.ok || !staRes.data) return { state: "inconclusive" };
     
-    // Never infer a different station without AP/SSID context. An absent exact
-    // client is inconclusive and must not trigger another state-changing call.
+    // Never infer a different station without AP/SSID context. When the
+    // controller answered successfully and there is no exact or unique
+    // candidate, the client is conclusively not authorized. Returning
+    // `not_authorized` releases the bounded retry instead of trapping the
+    // attempt forever in recovery_required.
     const pick = pickEffectiveMac(staRes.data, formattedMac, apMac, ssid);
-    if (!pick.mac || pick.candidateCount > 1) return { state: "inconclusive" };
+    if (pick.candidateCount > 1) return { state: "inconclusive" };
+    if (!pick.mac) return { state: "not_authorized" };
     const effectiveMac = pick.mac;
     
     const found = staRes.data.find(s => (s.mac || "").toLowerCase() === effectiveMac);
@@ -1569,6 +1573,8 @@ async function authorizeClient(
   if (result.last_verify_result) auditUpdate.unifi_last_verify_result = result.last_verify_result;
 
   if (result.ok) {
+    const controllerConfirmed = !result.pending_confirmation &&
+      result.last_verify_result?.authorized === true;
     Object.assign(auditUpdate, {
       // When fastReturn ack'd CMD but not yet confirmed, mark as authorized
       // optimistically; the background confirm will downgrade to "failed" if
@@ -1577,6 +1583,7 @@ async function authorizeClient(
       authorized_at: new Date().toISOString(),
       auth_latency_ms: result.latency_ms ?? null,
     });
+    if (controllerConfirmed) auditUpdate.unifi_confirmed_at = new Date().toISOString();
     if (result.effective_mac && result.effective_mac !== clientMac) {
       auditUpdate.original_client_mac = clientMac;
       auditUpdate.client_mac = result.effective_mac;
@@ -1698,6 +1705,10 @@ async function handleBootstrap(req: Request): Promise<Response> {
 async function internalHousekeeping(db: ReturnType<typeof supabaseAdmin>): Promise<Record<string, number>> {
   const now = new Date();
 
+  const { data: staleAttemptRows, error: staleAttemptError } = await db.rpc("expire_stale_auth_attempts");
+  if (staleAttemptError) throw new Error(staleAttemptError.message);
+  const staleAttemptResult = Array.isArray(staleAttemptRows) ? staleAttemptRows[0] : null;
+
   // 1. Delete expired verifications older than 30 days
   const verifCutoff = new Date(now.getTime() - 30 * 86400000).toISOString();
   const { data: expiredVerifData } = await db
@@ -1752,6 +1763,8 @@ async function internalHousekeeping(db: ReturnType<typeof supabaseAdmin>): Promi
     old_sessions: (oldSessionData?.length || 0) + (oldAuthSessionData?.length || 0),
     old_audit_logs: oldAuditData?.length || 0,
     expired_oauth_handoffs: expiredHandoffData?.length || 0,
+    expired_auth_attempts: staleAttemptResult?.expired_attempts || 0,
+    failed_stale_sessions: staleAttemptResult?.failed_sessions || 0,
   };
 }
 
@@ -2948,17 +2961,19 @@ async function previewHousekeeping(db: ReturnType<typeof supabaseAdmin>): Promis
   const sessionCutoff180 = new Date(now.getTime() - 180 * 86400000).toISOString();
   const sessionCutoff365 = new Date(now.getTime() - 365 * 86400000).toISOString();
   const auditCutoff = new Date(now.getTime() - 180 * 86400000).toISOString();
+  const attemptExpiryCutoff = now.toISOString();
 
-  const [verifications, rateLimits, oldSessions, authorizedSessions, auditLogs, oauthHandoffs] = await Promise.all([
+  const [verifications, rateLimits, oldSessions, authorizedSessions, auditLogs, oauthHandoffs, staleAttempts] = await Promise.all([
     db.from("captive_verifications").select("id", { count: "exact", head: true }).lt("expires_at", verifCutoff).in("status", ["pending", "expired", "locked"]),
     db.from("rate_limits").select("key", { count: "exact", head: true }).lt("updated_at", rateLimitCutoff),
     db.from("captive_sessions").select("id", { count: "exact", head: true }).lt("started_at", sessionCutoff180).in("status", ["started", "submitted", "failed"]),
     db.from("captive_sessions").select("id", { count: "exact", head: true }).lt("started_at", sessionCutoff365).eq("status", "authorized"),
     db.from("audit_logs").select("id", { count: "exact", head: true }).lt("created_at", auditCutoff),
     db.from("oauth_browser_handoffs").select("id", { count: "exact", head: true }).lt("expires_at", now.toISOString()),
+    db.from("captive_auth_attempts").select("id", { count: "exact", head: true }).eq("status", "authorizing").lte("expires_at", attemptExpiryCutoff),
   ]);
 
-  const firstError = [verifications, rateLimits, oldSessions, authorizedSessions, auditLogs, oauthHandoffs].find((result) => result.error)?.error;
+  const firstError = [verifications, rateLimits, oldSessions, authorizedSessions, auditLogs, oauthHandoffs, staleAttempts].find((result) => result.error)?.error;
   if (firstError) throw new Error(firstError.message);
   return {
     expired_verifications: verifications.count || 0,
@@ -2966,6 +2981,7 @@ async function previewHousekeeping(db: ReturnType<typeof supabaseAdmin>): Promis
     old_sessions: (oldSessions.count || 0) + (authorizedSessions.count || 0),
     old_audit_logs: auditLogs.count || 0,
     expired_oauth_handoffs: oauthHandoffs.count || 0,
+    expired_auth_attempts: staleAttempts.count || 0,
   };
 }
 
@@ -3286,6 +3302,24 @@ async function authorizeAuthenticatedUser(args: {
 
         const isFinalized = Array.isArray(finalizeRes) && finalizeRes[0]?.finalized;
 
+        if (isFinalized && claim.session_id) {
+          const confirmedAt = new Date().toISOString();
+          const sessionUpdate: Record<string, unknown> = {
+            status: "authorized",
+            fail_reason: null,
+            authorized_at: confirmedAt,
+            unifi_confirmed_at: confirmedAt,
+            last_step: "unifi",
+            last_error_code: null,
+            last_error_message: null,
+          };
+          if (check.effective_mac && check.effective_mac !== ctx.clientMac) {
+            sessionUpdate.original_client_mac = ctx.clientMac;
+            sessionUpdate.client_mac = check.effective_mac;
+          }
+          await db.from("captive_sessions").update(sessionUpdate).eq("id", claim.session_id);
+        }
+
         return {
           session_id: claim.session_id,
           authorized: isFinalized ? (finalizeRes[0]?.authorized ?? false) : false,
@@ -3534,6 +3568,12 @@ async function authorizeAuthenticatedUser(args: {
   // reflect it. Keep the attempt under its existing lease so recovery performs
   // a read-only confirmation instead of sending a second authorization command.
   if (authResult.pending_confirmation && authResult.cmd_accepted_at) {
+    // Polling exhausted its bounded confirmation window. Expire this worker
+    // lease now so the next request performs read-only recovery immediately
+    // instead of waiting 30 seconds.
+    await db.from("captive_auth_attempts").update({
+      lease_expires_at: new Date().toISOString(),
+    }).eq("id", attemptId).eq("lease_owner", leaseOwner).eq("status", "authorizing");
     return {
       session_id: sessionId,
       authorized: false,
@@ -3720,15 +3760,59 @@ async function handleIdentity(req: Request): Promise<Response> {
     user_agent: userAgent,
   });
 
-  let { data: profile, error: profileLookupError } = await db
-    .from("profiles")
-    .select("id, full_name, cpf_digits, phone_digits, email")
-    .eq("cpf_digits", cpfDigits)
-    .maybeSingle();
+  const { data: resolutionRows, error: resolutionError } = await db.rpc("resolve_portal_identity", {
+    p_cpf_digits: cpfDigits,
+    p_phone_digits: phoneDigits,
+  });
+  const resolution = Array.isArray(resolutionRows) ? resolutionRows[0] : null;
 
-  if (profileLookupError) {
-    Logger.error("[identity] profile lookup failed", { code: profileLookupError.code || "PROFILE_LOOKUP_FAILED" });
+  if (resolutionError || !resolution) {
+    Logger.error("[identity] identity resolution failed", { code: resolutionError?.code || "IDENTITY_RESOLUTION_FAILED" });
     return jsonResponse({ error: "Não foi possível validar seus dados.", code: "profile_lookup_failed" }, 500);
+  }
+
+  if (resolution.resolution_status === "ambiguous") {
+    Logger.warn("[identity] legacy identity is ambiguous", { trace_id: traceId });
+    return jsonResponse({
+      error: "Encontramos mais de um cadastro antigo com este telefone. Procure o atendimento para confirmar seus dados.",
+      code: "identity_ambiguous",
+    }, 409);
+  }
+
+  if (resolution.resolution_status === "invalid") {
+    return jsonResponse({ error: "Dados de identificação inválidos.", code: "invalid_identity" }, 400);
+  }
+
+  let profile: {
+    id: string;
+    full_name: string;
+    cpf_digits: string | null;
+    phone_digits: string | null;
+    email: string;
+  } | null = null;
+
+  if (resolution.user_id) {
+    const profileLookup = await db
+      .from("profiles")
+      .select("id, full_name, cpf_digits, phone_digits, email")
+      .eq("id", resolution.user_id)
+      .maybeSingle();
+    if (profileLookup.error || !profileLookup.data) {
+      Logger.error("[identity] resolved profile lookup failed", { code: profileLookup.error?.code || "PROFILE_LOOKUP_FAILED" });
+      return jsonResponse({ error: "Não foi possível validar seus dados.", code: "profile_lookup_failed" }, 500);
+    }
+    profile = profileLookup.data;
+
+    if (resolution.resolution_status === "migrated") {
+      logEvent(db, {
+        trace_id: traceId,
+        event_type: "identity_legacy_migrated",
+        step: "form",
+        status: "success",
+        client_ip: clientIp,
+        user_agent: userAgent,
+      });
+    }
   }
 
   if (!profile) {
@@ -3823,11 +3907,6 @@ async function handleIdentity(req: Request): Promise<Response> {
     }, 403);
   }
 
-  const sessionChallenge = await createPortalSessionChallenge(db, userId);
-  if (!sessionChallenge) {
-    return jsonResponse({ error: "Não foi possível iniciar sua sessão.", code: "session_create_failed" }, 500);
-  }
-
   const result = await authorizeAuthenticatedUser({
     db,
     userId,
@@ -3841,6 +3920,17 @@ async function handleIdentity(req: Request): Promise<Response> {
     attemptId,
     resumeToken,
   });
+
+  let sessionChallenge: { token_hash: string } | null = null;
+  if (result.authorized) {
+    sessionChallenge = await createPortalSessionChallenge(db, userId);
+    if (!sessionChallenge) {
+      // Wi-Fi authorization is already confirmed and must not be reported as
+      // failed merely because the reusable browser session could not be
+      // minted. The user keeps internet access and can identify again later.
+      Logger.warn("[identity] authorized without browser session challenge", { trace_id: traceId });
+    }
+  }
 
   if (result.authorized && profile.cpf_digits && profile.phone_digits) {
     const crmSync = syncWithClubeMais({
@@ -3875,7 +3965,7 @@ async function handleIdentity(req: Request): Promise<Response> {
     fail_reason: result.fail_reason,
     processing: result.processing || false,
     replay: result.replay || false,
-    session_token_hash: result.authorized ? sessionChallenge.token_hash : undefined,
+    session_token_hash: result.authorized ? sessionChallenge?.token_hash : undefined,
     trace_id: traceId,
   });
 }

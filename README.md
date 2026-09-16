@@ -30,6 +30,11 @@ corresponder ao telefone armazenado; o cadastro não é sobrescrito durante a
 autenticação. Após a liberação, o navegador troca um desafio de uso único por
 uma sessão persistida. O OAuth e o login público por e-mail/senha não são expostos.
 
+Perfis legados ainda sem CPF passam por migração progressiva e atômica: quando
+o telefone informado identifica exatamente um perfil incompleto, o CPF é
+anexado ao usuário existente em vez de criar uma conta duplicada. Telefones
+ambíguos exigem revisão humana e nunca são associados automaticamente.
+
 ## Banco
 
 As migrations são forward-only. Antes de publicar, aplique a migration mais
@@ -46,6 +51,13 @@ tentativa exclusivos do ambiente de teste. A migration
 A migration `20260824200934_consolidate_read_policies.sql` combina as regras
 de proprietário e administrador, evitando avaliações RLS duplicadas sem expor
 sessões anônimas a usuários autenticados.
+
+A migration `20260916025709_harden_portal_identity_and_authorization.sql`
+adiciona a resolução transacional dos perfis legados e a expiração consistente
+de tentativas de autorização presas. Na integração UniFi, `rc=ok` continua
+sendo tratado apenas como aceite do comando; o sucesso depende da confirmação
+posterior da estação. Tentativas inconclusivas usam recuperação de leitura e
+repetição limitada, sem loops ou comandos concorrentes sem limite.
 
 As migrations `20260824211705_admin_configuration_contract.sql` e
 `20260824215556_admin_operations_and_user_controls.sql` completam o contrato

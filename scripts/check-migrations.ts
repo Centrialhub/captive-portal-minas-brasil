@@ -38,6 +38,10 @@ const captiveHardeningMigration = readFileSync(
   join(root, "supabase/migrations/20260826202326_harden_captive_flow_and_oauth_handoff.sql"),
   "utf8",
 );
+const hardenedPortalMigration = readFileSync(
+  join(root, "supabase/migrations/20260916025709_harden_portal_identity_and_authorization.sql"),
+  "utf8",
+);
 const duplicateMigration = readFileSync(
   join(root, "supabase/migrations/20260822221520_cbf3ebe4-1d29-4c1a-83e3-818255bc0eb0.sql"),
   "utf8",
@@ -86,7 +90,12 @@ const requirements: Array<[string, boolean]> = [
   ["UniFi idempotency is scoped by store and MAC", /unifi_auth:store:\$\{storeId\}:mac:\$\{clientMac\.toUpperCase\(\)\}/.test(edgeFunction) && /\.eq\("store_id", storeId\)/.test(edgeFunction)],
   ["absent-station fallback requires a server-verified AP/store binding", /allowPortalMacFallback/.test(edgeFunction) && /mappedAp\?\.store_id === storeId/.test(edgeFunction) && /reason=PORTAL_MAC_FALLBACK/.test(edgeFunction) && /CLIENT_NOT_FOUND_ON_CONTROLLER/.test(edgeFunction)],
   ["store discovery caches only the controller-observed AP", /normalizeMac\(station\.ap_mac\)/.test(edgeFunction) && !/normalizeMac\(station\.ap_mac \|\| apMacHint\)/.test(edgeFunction)],
+  ["admin controller URL writes require HTTPS", (edgeFunction.match(/sanitizeHttpUrl\(body\.unifi_controller_url, \{ httpsOnly: true \}\)/g) || []).length === 2],
   ["troubleshooting exposes diagnostics, trace events, and audit", /handleAdminDiagnostics/.test(edgeFunction) && /portal_events/.test(edgeFunction) && /handleAdminAudit/.test(edgeFunction)],
+  ["legacy identity migration is atomic and service-role-only", /pg_advisory_xact_lock/.test(hardenedPortalMigration) && /SECURITY INVOKER/.test(hardenedPortalMigration) && /REVOKE ALL ON FUNCTION public\.resolve_portal_identity/.test(hardenedPortalMigration) && /TO service_role/.test(hardenedPortalMigration)],
+  ["stale authorization cleanup keeps attempts and sessions consistent", /expire_stale_auth_attempts/.test(hardenedPortalMigration) && /ATTEMPT_EXPIRED/.test(hardenedPortalMigration) && /failed_sessions/.test(hardenedPortalMigration)],
+  ["confirmed controller authorization is persisted", /unifi_confirmed_at/.test(edgeFunction) && /RECOVERED_ALREADY_AUTHORIZED/.test(edgeFunction)],
+  ["pending controller results become immediately recoverable", /lease_expires_at: new Date\(\)\.toISOString\(\)/.test(edgeFunction) && /check\.state === 'not_authorized'/.test(edgeFunction)],
   ["manual housekeeping is preview-first and explicitly confirmed", /body\.dry_run !== false/.test(edgeFunction) && /EXCLUIR DADOS EXPIRADOS/.test(edgeFunction) && /previewHousekeeping/.test(edgeFunction)],
   ["readiness reports degraded dependencies", /path === "\/ready"/.test(edgeFunction) && /ready \? 200 : 503/.test(edgeFunction)],
 ];

@@ -29,7 +29,7 @@ const migrationContents = readdirSync(join(root, "supabase", "migrations"))
 const checks: Array<[string, boolean]> = [
   ["attempt capability tokens stay out of browser URLs", !/(attempt_id|resume_token)[^\n]*history\.(pushState|replaceState)/.test(contents["src/App.tsx"])],
   ["frontend has no private Supabase auth API calls", !/_notifyAllChannels/.test(contents["src/App.tsx"])],
-  ["public portal exposes only phone and CPF identity", /api\.identify\(\{/.test(contents["src/App.tsx"]) && !/signInWithOAuth|google_oauth|oauth\/callback/.test(contents["src/App.tsx"])],
+  ["public portal exposes only phone and CPF identity", /api\.identify\((?:\{|identifyPayload)/.test(contents["src/App.tsx"]) && /phone:\s*phoneDigits/.test(contents["src/App.tsx"]) && /cpf:\s*cpfDigits/.test(contents["src/App.tsx"]) && !/signInWithOAuth|google_oauth|oauth\/callback/.test(contents["src/App.tsx"])],
   ["auth sessions are never brokered to preview editors", !/postMessage\([^\n]*(access_token|refresh_token|session|value)/i.test(Object.values(contents).join("\n"))],
   ["UniFi credentials come from runtime secrets", /Deno\.env\.get\("UNIFI_PASSWORD"\)/.test(contents["supabase/functions/captive-portal/index.ts"])],
   ["frontend does not force the matriz route", !/store\s*=\s*["']matriz["']/.test(contents["src/lib/api.ts"])],
