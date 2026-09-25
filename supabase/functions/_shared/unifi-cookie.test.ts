@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   extractCsrfFromToken,
   isLikelyExpiredSessionResponse,
@@ -6,6 +6,8 @@ import {
   serializeCookieJar,
   splitCombinedSetCookie,
 } from "./unifi-cookie";
+
+afterEach(() => vi.useRealTimers());
 
 describe("UniFi cookie contract", () => {
   it("preserves Expires commas while splitting multiple cookies", () => {
@@ -47,5 +49,32 @@ describe("UniFi cookie contract", () => {
     expect(isLikelyExpiredSessionResponse(403, false)).toBe(true);
     expect(isLikelyExpiredSessionResponse(404, false)).toBe(false);
     expect(isLikelyExpiredSessionResponse(502, false)).toBe(false);
+  });
+
+  it.each([
+    { attributes: "Max-Age=0; Expires=Thu, 01 Jan 2099 00:00:00 GMT", retained: false },
+    { attributes: "Max-Age=60; Expires=Thu, 01 Jan 1970 00:00:00 GMT", retained: true },
+    { attributes: "Max-Age=invalid; Expires=Thu, 01 Jan 1970 00:00:00 GMT", retained: false },
+    { attributes: "Max-Age=60; Max-Age=invalid; Expires=Thu, 01 Jan 1970 00:00:00 GMT", retained: true },
+    { attributes: "Max-Age=60; Max-Age=0", retained: false },
+    { attributes: "mAx-AgE=-1", retained: false },
+    { attributes: "Expires=not-a-date", retained: true },
+  ])("applies valid expiry attributes and Max-Age precedence: $attributes", ({ attributes, retained }) => {
+    const jar = mergeSetCookieValues({ unifises: "old", unifi_controller: "povao" }, [`unifises=new; ${attributes}`]);
+    expect(jar.unifises).toBe(retained ? "new" : undefined);
+    expect(jar.unifi_controller).toBe("povao");
+  });
+
+  it("stops serializing a cookie when its future lifetime ends and carries expiry across merges", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(Date.parse("2026-09-25T00:00:00Z"));
+    const first = mergeSetCookieValues({}, ["unifises=short-lived; Max-Age=1", "unifi_controller=povao"]);
+    const merged = mergeSetCookieValues(first, ["csrf_token=csrf"]);
+    expect(serializeCookieJar(merged)).toContain("unifises=short-lived");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(serializeCookieJar(merged)).toBe("unifi_controller=povao; csrf_token=csrf");
+    const expired = mergeSetCookieValues(merged, []);
+    expect(expired.unifises).toBeUndefined();
+    const renewed = mergeSetCookieValues(merged, ["unifises=renewed-session"]);
+    expect(serializeCookieJar(renewed)).toContain("unifises=renewed-session");
   });
 });

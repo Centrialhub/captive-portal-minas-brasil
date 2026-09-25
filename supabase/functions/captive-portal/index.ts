@@ -2,12 +2,29 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.4";
 import { crypto } from "https://deno.land/std@0.177.0/crypto/mod.ts";
 import {
   extractCsrfFromToken,
-  isLikelyExpiredSessionResponse,
   mergeResponseCookies,
   serializeCookieJar,
   type UnifiCookieJar,
 } from "../_shared/unifi-cookie.ts";
 import { normalizeBrazilianPhone, storedPhoneMatches } from "../_shared/identity.ts";
+import { drainAuthorization, reconcileAuthorization, requiredRpc, withOperationDeadline, type AuthOperation } from "../_shared/durable-auth.ts";
+import {
+  canonicalUnifiMac,
+  exactUnifiEvidence,
+  fetchUnifiResponse,
+  fetchUnifiStationsStrict,
+  parseUnifiEnvelope,
+  sendUnifiAuthorizeOnce,
+  type UnifiStation,
+  type UnifiCommandResult,
+  type UnifiAuthorizationEvidence,
+} from "../_shared/unifi-authorization.ts";
+import {
+  DEFAULT_MAX_DAILY_ACCESSES,
+  hasReachedDailyAccessLimit,
+  normalizeDailyAccessLimit,
+  startOfDayInTimeZoneIso,
+} from "../_shared/daily-access.ts";
 
 
 // ========== Constants ==========
@@ -28,7 +45,6 @@ const UNIFI_PROXY_ORIGIN = "https://unifiproxy.minasbrasilwifi.com.br";
 const UNIFI_TIMEOUT_MS = 10_000;
 const UNIFI_DISCOVERY_LOGIN_TIMEOUT_MS = 3_000;
 const UNIFI_DISCOVERY_STATIONS_TIMEOUT_MS = 3_000;
-const UNIFI_RETRY_COUNT = 1;
 const unifiAuthModeValue = (Deno.env.get("UNIFI_AUTH_MODE") || "legacy").toLowerCase();
 const UNIFI_AUTH_MODE = unifiAuthModeValue === "auto" || unifiAuthModeValue === "unifi-os"
   ? unifiAuthModeValue
@@ -109,12 +125,21 @@ function supabaseAuth(authHeader: string) {
 function jsonResponse(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
+    headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
   });
 }
 
 function errorResponse(message: string, status = 400) {
   return jsonResponse({ error: message }, status);
+}
+
+function rateLimitedResponse(blockedUntil: string | null, fallbackSeconds = 60) {
+  const seconds = Math.max(1, Math.ceil(blockedUntil
+    ? (new Date(blockedUntil).getTime() - Date.now()) / 1000 : fallbackSeconds));
+  const response = jsonResponse({ error: "Muitas tentativas. Aguarde para tentar novamente.",
+    code: "rate_limited", retry_after_ms: seconds * 1000 }, 429);
+  response.headers.set("Retry-After", String(seconds));
+  return response;
 }
 
 function canonicalUnifiControllerUrl(slug: string): string {
@@ -245,11 +270,14 @@ async function syncWithClubeMais(lead: {
   };
 
   const t0 = Date.now();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8_000);
   try {
     const res = await fetch(CLUBEMAIS_API_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
+      signal: controller.signal,
     });
 
     const status = res.status;
@@ -267,6 +295,8 @@ async function syncWithClubeMais(lead: {
   } catch (err: any) {
     Logger.error("[clubemais] sync exception", { trace_id: traceId, error: err.message });
     return { ok: false, error: "NETWORK_ERROR" };
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -369,10 +399,9 @@ function logEvent(db: ReturnType<typeof supabaseAdmin>, args: LogEventArgs): voi
     client_ip: args.client_ip || null,
     user_agent: args.user_agent ? args.user_agent.slice(0, 500) : null,
   };
-  db.from("portal_events").insert(row).then(
-    () => {},
-    (e) => Logger.warn("[logEvent] insert failed", { error: (e as Error)?.message }),
-  );
+  const writes: PromiseLike<unknown>[] = [db.from("portal_events").insert(row).then(({ error }) => {
+    if (error) Logger.warn("[logEvent] insert failed", { code: error.code });
+  })];
 
   if (args.session_id) {
     const patch: Record<string, unknown> = {
@@ -384,11 +413,15 @@ function logEvent(db: ReturnType<typeof supabaseAdmin>, args: LogEventArgs): voi
       if (args.error_code) patch.last_error_code = args.error_code;
       if (args.error_message) patch.last_error_message = args.error_message.slice(0, 500);
     }
-    db.from("captive_sessions").update(patch).eq("id", args.session_id).then(
-      () => {},
-      (e) => Logger.warn("[logEvent] session patch failed", { error: (e as any)?.message }),
-    );
+    writes.push(db.from("captive_sessions").update(patch).eq("id", args.session_id).then(({ error }) => {
+      if (error) Logger.warn("[logEvent] session patch failed", { code: error.code });
+    }));
   }
+  const task = Promise.all(writes).catch((error) => Logger.warn("[logEvent] write failed", { error: String(error) }));
+  // Critical authorization events are transactional in the operation RPC.
+  // This only extends the lifetime of supplementary browser/diagnostic events.
+  // @ts-ignore Supabase Edge Runtime API
+  if (typeof EdgeRuntime !== "undefined") EdgeRuntime.waitUntil(task);
 }
 
 // ========== Detect Store ==========
@@ -653,7 +686,7 @@ async function checkRateLimitDb(
 
     if (error) {
       Logger.warn("Rate limit RPC error", { error: error.message });
-      return { allowed: true, remaining: maxHits, blocked_until: null };
+      throw new Error("RATE_LIMIT_UNAVAILABLE");
     }
 
     const result = typeof data === "string" ? JSON.parse(data) : data;
@@ -664,7 +697,7 @@ async function checkRateLimitDb(
     };
   } catch (e) {
     Logger.warn("Rate limit check failed", { error: (e as Error).message });
-    return { allowed: true, remaining: maxHits, blocked_until: null };
+    throw new Error("RATE_LIMIT_UNAVAILABLE");
   }
 }
 
@@ -771,159 +804,82 @@ async function unifiTryLogin(
   username?: string, password?: string,
   timeoutMs = UNIFI_TIMEOUT_MS,
 ): Promise<{ ok: boolean; cookies?: UnifiCookieJar; csrfToken?: string; error?: string; isUnifiOs?: boolean }> {
-   const effectiveUser = username || UNIFI_USERNAME;
-   const effectivePass = password || UNIFI_PASSWORD;
-   
-   if (!effectiveUser || !effectivePass) {
-     throw new Error("UNIFI_SECRET_NOT_CONFIGURED");
-   }
-  const ac = new AbortController();
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-
-  // Derive base URL (strip /api/login or /api/auth/login) for warm-up GET + Referer
+  const effectiveUser = username || UNIFI_USERNAME;
+  const effectivePass = password || UNIFI_PASSWORD;
+  if (!effectiveUser || !effectivePass) return { ok: false, error: "UNIFI_SECRET_NOT_CONFIGURED" };
+  const deadlineAt = Date.now() + Math.max(0, timeoutMs);
   const baseUrl = loginUrl.replace(/\/api\/(auth\/)?login$/, "");
-
-  // Minimal headers — UniFi legacy controllers reject Origin/Referer as CSRF (returns 403).
-  // Tested manually: payload {username,password} with Content-Type only → HTTP 200.
-  const baseHeaders: Record<string, string> = {
-    "Content-Type": "application/json",
-    "Accept": "application/json",
+  const transport = httpClient ? { client: httpClient } : {};
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json", Accept: "application/json",
     "User-Agent": "Mozilla/5.0 (compatible; CaptivePortal/1.0)",
   };
-
+  let cookieJar: UnifiCookieJar = {};
   try {
-    // ---- Warm-up GET to capture initial session cookies (JSESSIONID/csrf_token) ----
-    let cookieJar: UnifiCookieJar = {};
-    let warmupCsrf = "";
-    let warmTimer: ReturnType<typeof setTimeout> | undefined;
+    // Routing cookies are needed by the proxy. Warm-up shares the login budget.
     try {
-      const warmAc = new AbortController();
-      warmTimer = setTimeout(() => warmAc.abort(), timeoutMs);
-      const warmOpts: Record<string, unknown> = {
-        method: "GET",
-        headers: { "User-Agent": baseHeaders["User-Agent"], "Accept": "*/*" },
-        signal: warmAc.signal,
-        redirect: "manual",
-      };
-      if (httpClient) warmOpts.client = httpClient;
-      const warmRes = await fetch(`${baseUrl}/`, warmOpts as RequestInit);
-      warmupCsrf = warmRes.headers.get("x-csrf-token") || "";
-      cookieJar = mergeResponseCookies(cookieJar, warmRes.headers);
-      await warmRes.body?.cancel().catch(() => {});
-      Logger.info(`[UniFi] Warmup GET ${baseUrl}/: HTTP ${warmRes.status}`);
-    } catch (e) {
-      Logger.info(`[UniFi] Warmup GET failed (non-fatal): ${(e as Error).message}`);
-    } finally {
-      if (warmTimer !== undefined) clearTimeout(warmTimer);
+      const warm = await fetchUnifiResponse(
+        `${baseUrl}/`, { ...transport, method: "GET", headers } as RequestInit,
+        Math.min(deadlineAt, Date.now() + 1_000),
+      );
+      cookieJar = mergeResponseCookies(cookieJar, warm.headers);
+      const csrf = warm.headers.get("x-csrf-token");
+      if (csrf) headers["X-CSRF-Token"] = csrf;
+    } catch { /* Login can still succeed without a warm-up response. */ }
+    const cookies = serializeCookieJar(cookieJar);
+    if (cookies) headers.Cookie = cookies;
+    const response = await fetchUnifiResponse(loginUrl, {
+      ...transport, method: "POST", headers,
+      body: JSON.stringify({ username: effectiveUser, password: effectivePass, remember: false, strict: true }),
+    } as RequestInit, deadlineAt);
+    if (!response.ok) return { ok: false, error: `UNIFI_LOGIN_HTTP_${response.status}` };
+    if (!response.headers.get("content-type")?.toLowerCase().includes("application/json")) {
+      return { ok: false, error: "UNIFI_LOGIN_INVALID_ENVELOPE" };
     }
-
-    // ---- POST login ----
-    const headers: Record<string, string> = { ...baseHeaders };
-    const warmupCookies = serializeCookieJar(cookieJar);
-    if (warmupCookies) headers["Cookie"] = warmupCookies;
-    if (warmupCsrf) headers["X-CSRF-Token"] = warmupCsrf;
-
-    const payload = {
-      username: effectiveUser,
-      password: effectivePass,
-      remember: false,
-      strict: true,
+    let loginBody: unknown;
+    try { loginBody = JSON.parse(response.body); }
+    catch { return { ok: false, error: "UNIFI_LOGIN_INVALID_ENVELOPE" }; }
+    if (!loginBody || typeof loginBody !== "object" || Array.isArray(loginBody)) {
+      return { ok: false, error: "UNIFI_LOGIN_INVALID_ENVELOPE" };
+    }
+    const envelope = parseUnifiEnvelope(response.body);
+    const isOsEndpoint = /\/api\/auth\/login$/.test(loginUrl);
+    // UniFi OS has its own object response. Legacy login requires the standard
+    // envelope, and neither endpoint may override an explicit error with cookies.
+    if ((!isOsEndpoint || "meta" in loginBody) && envelope?.rc !== "ok") {
+      return { ok: false, error: "UNIFI_LOGIN_REJECTED" };
+    }
+    cookieJar = mergeResponseCookies(cookieJar, response.headers);
+    const csrf = response.headers.get("x-csrf-token") || cookieJar.csrf_token;
+    if (cookieJar.TOKEN) return {
+      ok: true, cookies: cookieJar, isUnifiOs: true,
+      csrfToken: csrf || extractCsrfFromToken(cookieJar.TOKEN) || undefined,
     };
-
-    Logger.info(`[UniFi] Login attempt: ${loginUrl} (custom client: ${!!httpClient}, warm cookies: ${warmupCookies ? "yes" : "no"})`);
-    timeout = setTimeout(() => ac.abort(), timeoutMs);
-    const fetchOpts: Record<string, unknown> = {
-      method: "POST",
-      headers,
-      body: JSON.stringify(payload),
-      signal: ac.signal,
-      redirect: "manual",
-    };
-    if (httpClient) fetchOpts.client = httpClient;
-    const res = await fetch(loginUrl, fetchOpts as RequestInit);
-    clearTimeout(timeout);
-    timeout = undefined;
-
-    const respCsrf = res.headers.get("x-csrf-token") || "";
-    const respServer = res.headers.get("server") || "";
-    cookieJar = mergeResponseCookies(cookieJar, res.headers);
-    Logger.info(`[UniFi] Login response ${loginUrl}: HTTP ${res.status} | server="${respServer}"`);
-
-    // UniFi controllers often return 302/303 after successful login — treat 2xx and 3xx as potential success
-    if (res.status >= 400) {
-      await res.body?.cancel().catch(() => {});
-      Logger.info(`[UniFi] Login failed (HTTP ${res.status})`);
-      return { ok: false, error: `Login HTTP ${res.status}` };
-    }
-
-    // UniFi OS returns TOKEN; legacy returns unifises (+ csrf_token). Keep the
-    // routing cookie emitted by the external proxy alongside auth cookies.
-    const token = cookieJar.TOKEN;
-    if (token) {
-      await res.body?.cancel().catch(() => {});
-      return {
-        ok: true,
-        cookies: cookieJar,
-        csrfToken: respCsrf || cookieJar.csrf_token || extractCsrfFromToken(token) || undefined,
-        isUnifiOs: true,
-      };
-    }
-    if (cookieJar.unifises) {
-      await res.body?.cancel().catch(() => {});
-      return {
-        ok: true,
-        cookies: cookieJar,
-        csrfToken: respCsrf || cookieJar.csrf_token || undefined,
-        isUnifiOs: false,
-      };
-    }
-
-    await res.body?.cancel().catch(() => {});
-    return { ok: false, error: "Login succeeded but no auth cookie/token returned" };
-  } catch (err) {
-    if (timeout !== undefined) clearTimeout(timeout);
-    const msg = (err as Error).name === "AbortError"
-      ? `Login timeout after ${timeoutMs}ms`
-      : (err as Error).message;
-    return { ok: false, error: msg };
-  }
+    if (cookieJar.unifises) return { ok: true, cookies: cookieJar, isUnifiOs: false, csrfToken: csrf || undefined };
+    return { ok: false, error: "UNIFI_LOGIN_NO_AUTH_COOKIE" };
+  } catch { return { ok: false, error: "UNIFI_LOGIN_UNAVAILABLE" }; }
 }
 
-/**
- * Login to UniFi controller — tries UniFi OS endpoint first, then legacy.
- */
 async function unifiLogin(
   baseUrl: string, httpClient: Deno.HttpClient | null,
   username?: string, password?: string,
   timeoutMs = UNIFI_TIMEOUT_MS,
 ): Promise<{ ok: boolean; cookies?: UnifiCookieJar; csrfToken?: string; isUnifiOs?: boolean; error?: string }> {
+  const deadlineAt = Date.now() + Math.max(0, timeoutMs);
   if (UNIFI_AUTH_MODE === "legacy") {
-    const result = await unifiTryLogin(`${baseUrl}/api/login`, httpClient, username, password, timeoutMs);
-    if (result.ok) Logger.info("UniFi login succeeded via legacy endpoint");
-    return result;
+    return await unifiTryLogin(`${baseUrl}/api/login`, httpClient, username, password, deadlineAt - Date.now());
   }
-
   if (UNIFI_AUTH_MODE === "unifi-os") {
-    const result = await unifiTryLogin(`${baseUrl}/api/auth/login`, httpClient, username, password, timeoutMs);
-    if (result.ok) Logger.info("UniFi login succeeded via UniFi OS endpoint");
-    return result;
+    return await unifiTryLogin(`${baseUrl}/api/auth/login`, httpClient, username, password, deadlineAt - Date.now());
   }
-
-  // Auto mode is intended only for migrations between controller families.
-  const osResult = await unifiTryLogin(`${baseUrl}/api/auth/login`, httpClient, username, password, timeoutMs);
-  if (osResult.ok) {
-    Logger.info("UniFi login succeeded via UniFi OS endpoint");
-    return osResult;
-  }
-
-  // Always try legacy /api/login as fallback
-  Logger.info("UniFi OS endpoint failed; trying legacy login", { error: osResult.error?.slice(0, 100) });
-  const legacyResult = await unifiTryLogin(`${baseUrl}/api/login`, httpClient, username, password, timeoutMs);
-  if (legacyResult.ok) {
-    Logger.info("UniFi login succeeded via legacy endpoint");
-    return legacyResult;
-  }
-  return { ok: false, error: `OS: ${osResult.error} | Legacy: ${legacyResult.error}` };
+  // Login negotiation does not issue an authorization command. Both endpoints
+  // share one deadline; the external command never falls back after a send.
+  const osResult = await unifiTryLogin(
+    `${baseUrl}/api/auth/login`, httpClient, username, password,
+    Math.min(2_000, Math.max(0, deadlineAt - Date.now()) / 2),
+  );
+  if (osResult.ok) return osResult;
+  return await unifiTryLogin(`${baseUrl}/api/login`, httpClient, username, password, Math.max(0, deadlineAt - Date.now()));
 }
 
 function buildUnifiHeaders(
@@ -939,728 +895,289 @@ function buildUnifiHeaders(
   return headers;
 }
 
-// Polling backoff for /stat/sta confirmation (~3s total across 3 attempts).
-// Captive assistants typically time out around 5-10s, so we keep this short
-// and rely on the hotspot fallback redirect for the final handshake.
-const VERIFY_BACKOFF_MS = [400, 800, 1500, 2500];
-// RESEND_AFTER_ATTEMPT removed as it was unused
-
-interface UnifiStation {
-  mac?: string;
-  ap_mac?: string;
-  essid?: string;
-  authorized?: boolean;
-  is_guest?: boolean;
-  ip?: string;
-  hostname?: string;
-  assoc_time?: number;
-  use_fixedip?: boolean;
-  [k: string]: unknown;
-}
-
 type UnifiAuthOptions = {
   apMac?: string | null;
   ssid?: string | null;
+  /** APs mapped to the same store by the server; never accepted from the browser. */
+  trustedApMacs?: readonly string[];
   minutes?: number;
-  // The portal MAC may be absent from /stat/sta while the client is still in
-  // the pre-authorization captive state. Only enable this fallback after the
-  // AP MAC has been verified server-side as belonging to the same store.
   allowPortalMacFallback?: boolean;
-  // When true, return ok as soon as the controller acknowledges the
-  // authorize-guest command (CMD_ACCEPTED), and continue /stat/sta polling
-  // in the background. Lets the client get a response in ~700ms instead of
-  // ~2.5s, preventing iOS/Android CNA from closing the window before we
-  // render the success screen.
-  fastReturn?: boolean;
+  deadlineAt?: number;
 };
 
 type UnifiAuthResult = {
   ok: boolean;
   error?: string;
-  reason?: string; // standardized fail_reason code
-  effective_mac?: string; // MAC actually authorized (may differ from input)
+  reason?: string;
+  effective_mac?: string;
   ap_mac_used?: string | null;
   latency_ms?: number;
-  cmd_accepted_at?: string; // ISO when controller accepted authorize-guest
-  last_verify_result?: Record<string, unknown>; // diagnostic snapshot
-  weak_signal?: boolean; // station has IP/is_guest/recentAssoc but authorized!=true
+  cmd_accepted_at?: string;
+  command_sent_at?: string;
+  command_outcome?: "accepted" | "rejected" | "unknown";
+  last_verify_result?: Record<string, unknown>;
+  weak_signal?: boolean;
   station_lookup_fallback?: boolean;
-  pending_confirmation?: boolean; // set when fastReturn=true and CMD accepted
-  confirm?: Promise<UnifiAuthResult>; // resolves with the final polling result
+  pending_confirmation?: boolean;
+  confirm?: Promise<UnifiAuthResult>;
 };
-
-function isJsonContentType(res: Response): boolean {
-  const ct = res.headers.get("content-type") || "";
-  return ct.toLowerCase().includes("application/json");
-}
 
 async function unifiFetchStations(
   staUrl: string, headers: Record<string, string>, httpClient: Deno.HttpClient | null,
   timeoutMs = 5_000,
 ): Promise<{ ok: boolean; sessionExpired?: boolean; data?: UnifiStation[]; error?: string }> {
-  const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(), timeoutMs);
-  try {
-    const res = await fetch(staUrl, {
-      method: "GET",
-      headers,
-      signal: ac.signal,
-      ...(httpClient ? { client: httpClient } : {}),
-    } as RequestInit);
-    clearTimeout(t);
-    const jsonResponse = isJsonContentType(res);
-    if (!res.ok) {
-      await res.text().catch(() => "");
-      return {
-        ok: false,
-        sessionExpired: isLikelyExpiredSessionResponse(res.status, jsonResponse),
-        error: `/stat/sta HTTP ${res.status}`,
-      };
-    }
-    if (!jsonResponse) {
-      await res.text().catch(() => "");
-      return { ok: false, sessionExpired: true, error: "/stat/sta returned non-JSON (cookie likely expired)" };
-    }
-    const list = await res.json().catch(() => null) as { data?: UnifiStation[] } | null;
-    return { ok: true, data: Array.isArray(list?.data) ? list!.data! : [] };
-  } catch (err) {
-    clearTimeout(t);
-    return { ok: false, error: (err as Error).name === "AbortError" ? "/stat/sta timeout" : (err as Error).message };
-  }
+  return await fetchUnifiStationsStrict(staUrl, {
+    headers, ...(httpClient ? { client: httpClient } : {}),
+  } as RequestInit, Date.now() + Math.max(0, timeoutMs));
 }
 
-/**
- * Picks the MAC the controller actually sees for this client.
- * Causa #1: MAC randomization mitigation.
- *  1. Exact match on portalMac → use it.
- *  2. Otherwise, look for unauthorized stations on same ap_mac/ssid, recent assoc_time → if exactly one, use it.
- */
-function pickEffectiveMac(
-  stations: UnifiStation[],
-  portalMacFormatted: string, // aa:bb:cc:dd:ee:ff
-  apMac?: string | null,
-  ssid?: string | null,
-): { mac: string | null; remapped: boolean; candidateCount: number } {
-  const target = portalMacFormatted.toLowerCase();
-  const exact = stations.find((s) => (s.mac || "").toLowerCase() === target);
-  if (exact) return { mac: target, remapped: false, candidateCount: 1 };
-
-  // Strict remap window: only if exactly 1 unauthorized candidate on the
-  // same AP+SSID in the last 2 minutes. UniFi's `id` URL param is the source
-  // of truth; remapping is only a last-resort fallback.
-  const apNorm = (apMac || "").toLowerCase().replace(/[^a-f0-9]/g, "");
-  const cutoff = Math.floor(Date.now() / 1000) - 2 * 60;
-  const candidates = stations.filter((s) => {
-    if (s.authorized === true) return false;
-    if (apNorm) {
-      const sa = (s.ap_mac || "").toLowerCase().replace(/[^a-f0-9]/g, "");
-      if (!sa || sa !== apNorm) return false;
-    }
-    if (ssid && s.essid && s.essid !== ssid) return false;
-    if (typeof s.assoc_time === "number" && s.assoc_time < cutoff) return false;
-    return true;
-  });
-
-  if (candidates.length === 1 && candidates[0].mac) {
-    return { mac: candidates[0].mac.toLowerCase(), remapped: true, candidateCount: 1 };
-  }
-  return { mac: null, remapped: false, candidateCount: candidates.length };
-}
-
-/**
- * Send authorize-guest command. Returns parsed result + cookie/header diagnostics.
- * Causa #11: detects HTML response (expired cookie) so caller can re-login.
- */
-async function unifiSendAuthorizeCmd(
-  url: string, headers: Record<string, string>, httpClient: Deno.HttpClient | null,
-  payload: Record<string, unknown>,
-): Promise<{ ok: boolean; status: number; sessionExpired?: boolean; rcOk?: boolean; rcMsg?: string; error?: string; raw?: string }> {
-  const ac = new AbortController();
-  const timeout = setTimeout(() => ac.abort(), UNIFI_TIMEOUT_MS);
-  try {
-    const fetchOpts: Record<string, unknown> = {
-      method: "POST",
-      headers,
-      body: JSON.stringify(payload),
-      signal: ac.signal,
-      redirect: "manual",
-    };
-    if (httpClient) fetchOpts.client = httpClient;
-    const res = await fetch(url, fetchOpts as RequestInit);
-    clearTimeout(timeout);
-    const text = await res.text();
-    const jsonResponse = isJsonContentType(res);
-
-    if (!res.ok) {
-      return {
-        ok: false,
-        status: res.status,
-        sessionExpired: isLikelyExpiredSessionResponse(res.status, jsonResponse),
-        error: `HTTP ${res.status}: ${text.slice(0, 200)}`,
-        raw: text,
-      };
-    }
-    if (!jsonResponse) {
-      return { ok: false, status: res.status, sessionExpired: true, error: "non-JSON response (cookie likely expired)", raw: text };
-    }
-    let parsed: { meta?: { rc?: string; msg?: string } } | null = null;
-    try { parsed = JSON.parse(text); } catch {
-      return { ok: false, status: res.status, error: `JSON parse failed: ${text.slice(0, 120)}`, raw: text };
-    }
-    const rcOk = parsed?.meta?.rc === "ok";
-    return { ok: true, status: res.status, rcOk, rcMsg: parsed?.meta?.msg, raw: text };
-  } catch (err) {
-    clearTimeout(timeout);
-    return {
-      ok: false, status: 0,
-      error: (err as Error).name === "AbortError" ? `Timeout after ${UNIFI_TIMEOUT_MS}ms` : (err as Error).message,
-    };
-  }
-}
-
-/**
- * Authorize a guest MAC via UniFi controller with all 5 mitigations:
- *  - (1) MAC remapping for randomized clients
- *  - (7) Bounded polling with backoff; accepted commands are never re-emitted
- *  - (9) Explicit minutes parameter with fallback
- *  - (11) Session-expired detection with re-login
- *  - (12) ap_mac in payload (auto-discovered if missing)
- */
-async function checkUnifiAuthorizationState(
-  controllerUrl: string,
-  siteId: string,
-  mac: string,
-  username?: string,
-  password?: string,
-  apMac?: string | null,
-  ssid?: string | null,
-): Promise<{ state: "authorized" | "not_authorized" | "inconclusive"; effective_mac?: string }> {
+function unifiNetworkEndpoint(controllerUrl: string, siteId: string, isUnifiOs: boolean): string {
   const parsed = new URL(controllerUrl);
   const baseUrl = (parsed.origin + parsed.pathname).replace(/\/+$/, "");
-  const httpClient = createUnifiHttpClient();
-  
-  try {
-    const login = await unifiLogin(baseUrl, httpClient, username, password);
-    if (!login.ok) return { state: "inconclusive" };
-    
-    const headers = buildUnifiHeaders(login);
-    
-    const staUrl = login.isUnifiOs 
-      ? `${parsed.origin}/proxy/network/api/s/${siteId}/stat/sta`
-      : `${baseUrl}/api/s/${siteId}/stat/sta`;
-      
-    const formattedMac = mac.replace(/(.{2})(?=.)/g, "$1:").toLowerCase();
-    const staRes = await unifiFetchStations(staUrl, headers, httpClient);
-    
-    if (!staRes.ok || !staRes.data) return { state: "inconclusive" };
-    
-    // Never infer a different station without AP/SSID context. When the
-    // controller answered successfully and there is no exact or unique
-    // candidate, the client is conclusively not authorized. Returning
-    // `not_authorized` releases the bounded retry instead of trapping the
-    // attempt forever in recovery_required.
-    const pick = pickEffectiveMac(staRes.data, formattedMac, apMac, ssid);
-    if (pick.candidateCount > 1) return { state: "inconclusive" };
-    if (!pick.mac) return { state: "not_authorized" };
-    const effectiveMac = pick.mac;
-    
-    const found = staRes.data.find(s => (s.mac || "").toLowerCase() === effectiveMac);
-    if (found) {
-      return { 
-        state: found.authorized ? "authorized" : "not_authorized",
-        effective_mac: effectiveMac.replace(/:/g, "").toUpperCase()
-      };
-    }
-    
-    return { state: "not_authorized" };
-  } catch (err) {
-    Logger.error("[unifi-check] failed", { error: err });
-    return { state: "inconclusive" };
-  } finally {
-    try { httpClient?.close(); } catch (_) { /* ignore close error */ }
-  }
+  return isUnifiOs
+    ? `${parsed.origin}/proxy/network/api/s/${encodeURIComponent(siteId)}`
+    : `${baseUrl}/api/s/${encodeURIComponent(siteId)}`;
 }
 
-async function unifiAuthorizeByMac(
+/** A single observation. Absence is unknown; another MAC is never substituted. */
+async function unifiCheckAuthorizationOnly(
   controllerUrl: string, siteId: string, clientMac: string,
   username?: string, password?: string,
   options: UnifiAuthOptions = {},
-): Promise<UnifiAuthResult> {
-  const startedAt = Date.now();
-  const parsed = new URL(controllerUrl);
-  const baseUrl = (parsed.origin + parsed.pathname).replace(/\/+$/, "");
+): Promise<UnifiAuthorizationEvidence> {
+  const deadlineAt = Math.min(options.deadlineAt ?? Infinity, Date.now() + 14_000);
+  const mac = canonicalUnifiMac(clientMac);
+  const inconclusive = (reason: string): UnifiAuthorizationEvidence => ({
+    state: "inconclusive", found: null, authorized: null, effective_mac: mac || "",
+    reason, evidence: { observed_at: new Date().toISOString(), reason, exact_mac: true },
+  });
+  if (!mac) return inconclusive("INVALID_MAC_ADDRESS");
   const httpClient = createUnifiHttpClient();
-
-  const desiredMinutes = Math.max(5, Math.min(1440, options.minutes ?? 1440));
-
-  let closed = false;
-  const closeClient = () => { if (!closed) { closed = true; try { httpClient?.close(); } catch { /* ignore */ } } };
-
   try {
-    // Step 1: Fresh login
-    let login = await unifiLogin(baseUrl, httpClient, username, password);
-    if (!login.ok) { closeClient(); return { ok: false, reason: "UNIFI_LOGIN_FAILED", error: `UniFi login failed: ${login.error}` }; }
-    let headers = buildUnifiHeaders(login);
-
-    const origin = parsed.origin;
-    const stamgrUrls = login.isUnifiOs
-      ? [`${origin}/proxy/network/api/s/${siteId}/cmd/stamgr`, `${baseUrl}/api/s/${siteId}/cmd/stamgr`]
-      : [`${baseUrl}/api/s/${siteId}/cmd/stamgr`];
-
-    const formattedMac = clientMac.replace(/(.{2})(?=.)/g, "$1:").toLowerCase();
-
-    // Step 2: Pre-fetch stations (causa #1 + #12)
-    const staUrl0 = stamgrUrls[0].replace("/cmd/stamgr", "/stat/sta");
-    let stationsRes = await unifiFetchStations(staUrl0, headers, httpClient);
-    if (stationsRes.sessionExpired) {
-      Logger.warn("[unifi-auth] reason=UNIFI_SESSION_EXPIRED phase=pre-stations action=re-login");
-      login = await unifiLogin(baseUrl, httpClient, username, password);
-      if (login.ok) { headers = buildUnifiHeaders(login); stationsRes = await unifiFetchStations(staUrl0, headers, httpClient); }
-    }
-    if (!stationsRes.ok || !stationsRes.data) {
-      closeClient();
-      return {
-        ok: false,
-        reason: "UNIFI_STATION_LOOKUP_FAILED",
-        error: stationsRes.error || "Não foi possível confirmar o cliente na controladora.",
-        latency_ms: Date.now() - startedAt,
-      };
-    }
-    const stations = stationsRes.data;
-
-    const pick = pickEffectiveMac(stations, formattedMac, options.apMac, options.ssid);
-    let effectiveMac = pick.mac;
-    let stationLookupFallback = false;
-    if (!effectiveMac) {
-      if (pick.candidateCount > 1) {
-        closeClient();
-        Logger.warn("[unifi-auth] reason=MAC_RANDOMIZATION_AMBIGUOUS", { candidates: pick.candidateCount, ap_mac: options.apMac || null });
-        return {
-          ok: false,
-          reason: "MAC_RANDOMIZATION_AMBIGUOUS",
-          error: "Múltiplos dispositivos não autorizados foram encontrados neste ponto de acesso. Reconecte-se à rede e tente novamente.",
-          latency_ms: Date.now() - startedAt,
-        };
-      }
-      if (options.allowPortalMacFallback && options.apMac) {
-        // The AP/store binding was checked against store_access_points by
-        // authorizeClient. The controller command remains authoritative: if
-        // this MAC is truly unknown, stamgr rejects it and no access is opened.
-        effectiveMac = formattedMac;
-        stationLookupFallback = true;
-        Logger.warn("[unifi-auth] reason=PORTAL_MAC_FALLBACK", {
-          ap_mac: options.apMac,
-          ssid: options.ssid || null,
-          stations_seen: stations.length,
-        });
-      } else {
-        closeClient();
-        Logger.warn("[unifi-auth] reason=CLIENT_NOT_FOUND_ON_CONTROLLER", { ap_mac: options.apMac || null, ssid: options.ssid || null });
-        return {
-          ok: false,
-          reason: "CLIENT_NOT_FOUND_ON_CONTROLLER",
-          error: "O dispositivo não foi localizado na controladora desta unidade.",
-          latency_ms: Date.now() - startedAt,
-        };
-      }
-    }
-
-    const selectedStation = stations.find((s) => (s.mac || "").toLowerCase() === effectiveMac);
-    let apMacForPayload = selectedStation?.ap_mac || options.apMac || null;
-
-    if (pick.remapped) {
-      Logger.info(`[unifi-auth] reason=MAC_REMAPPED_OK portal=${formattedMac} controller=${effectiveMac} ap=${apMacForPayload || "?"}`);
-    }
-
-    if (!apMacForPayload) {
-      const found = stations.find((s) => (s.mac || "").toLowerCase() === effectiveMac);
-      if (found?.ap_mac) {
-        apMacForPayload = found.ap_mac;
-        Logger.info(`[unifi-auth] reason=AP_MAC_DISCOVERED ap=${apMacForPayload}`);
-      } else {
-        Logger.info(`[unifi-auth] reason=AP_MAC_MISSING_FALLBACK mac=${effectiveMac}`);
-      }
-    }
-
-    // Step 3: Send authorize-guest with minutes + ap_mac (causa #9 + #12)
-    const buildPayload = (mins: number): Record<string, unknown> => {
-      const p: Record<string, unknown> = { cmd: "authorize-guest", mac: effectiveMac, minutes: mins };
-      if (apMacForPayload) p.ap_mac = apMacForPayload.toLowerCase();
-      return p;
-    };
-
-    let activeUrl = "";
-    let lastError = "";
-    let cmdSentAt = 0;
-    let cmdAcceptedAtIso: string | undefined;
-    let usedMinutes = desiredMinutes;
-    let policyOverride = false;
-
-    const sendOnce = async (mins: number): Promise<boolean> => {
-      for (const url of stamgrUrls) {
-        let cmd = await unifiSendAuthorizeCmd(url, headers, httpClient, buildPayload(mins));
-        if (cmd.sessionExpired) {
-          Logger.warn("[unifi-auth] reason=UNIFI_SESSION_EXPIRED phase=cmd action=re-login");
-          login = await unifiLogin(baseUrl, httpClient, username, password);
-          if (login.ok) { headers = buildUnifiHeaders(login); cmd = await unifiSendAuthorizeCmd(url, headers, httpClient, buildPayload(mins)); }
-        }
-        if (cmd.ok && cmd.rcOk) {
-          activeUrl = url;
-          cmdSentAt = Math.floor(Date.now() / 1000);
-          cmdAcceptedAtIso = new Date().toISOString();
-          Logger.info(`[unifi-auth] reason=CMD_ACCEPTED url=${url} mac=${effectiveMac} ap=${apMacForPayload || "-"} minutes=${mins}`);
-          return true;
-        }
-        if (cmd.ok && !cmd.rcOk) {
-          lastError = `rc!=ok msg=${cmd.rcMsg || "none"}`;
-          if (!policyOverride && /authoriz|reject|policy|limit|timeout/i.test(cmd.rcMsg || "")) {
-            return false;
-          }
-          continue;
-        }
-        if (cmd.status === 404) { lastError = cmd.error || "404"; continue; }
-        lastError = cmd.error || `HTTP ${cmd.status}`;
-      }
-      return false;
-    };
-
-    let accepted = await sendOnce(usedMinutes);
-    if (!accepted && /msg=/i.test(lastError) && !policyOverride) {
-      Logger.warn("[unifi-auth] reason=SITE_POLICY_OVERRIDE", { retry_minutes: 15, previous_minutes: usedMinutes, error: lastError });
-      policyOverride = true;
-      usedMinutes = 15;
-      accepted = await sendOnce(usedMinutes);
-    }
-    if (!accepted) {
-      closeClient();
-      return {
-        ok: false,
-        reason: "UNIFI_CMD_REJECTED",
-        error: lastError || "command rejected",
-        latency_ms: Date.now() - startedAt,
-        station_lookup_fallback: stationLookupFallback,
-      };
-    }
-
-    // Step 4: Polling extracted into closure so we can run it in the
-    // background when fastReturn is set.
-    const pollConfirmation = async (): Promise<UnifiAuthResult> => {
-      const staUrl = activeUrl.replace("/cmd/stamgr", "/stat/sta");
-      let verifyError = "controller did not confirm authorized client";
-      let weakSignal = false;
-      let lastVerifySnapshot: Record<string, unknown> = { mac: effectiveMac, found: false };
-
-      try {
-        for (let attempt = 1; attempt <= VERIFY_BACKOFF_MS.length; attempt++) {
-          let staRes = await unifiFetchStations(staUrl, headers, httpClient);
-          if (staRes.sessionExpired) {
-            Logger.warn(`[unifi-auth] reason=UNIFI_SESSION_EXPIRED phase=poll`, { attempt });
-            login = await unifiLogin(baseUrl, httpClient, username, password);
-            if (login.ok) { headers = buildUnifiHeaders(login); staRes = await unifiFetchStations(staUrl, headers, httpClient); }
-          }
-          if (staRes.ok && staRes.data) {
-            const found = staRes.data.find((s) => (s.mac || "").toLowerCase() === effectiveMac);
-            if (found) {
-              const hasIp = !!found.ip;
-              const recentAssoc = typeof found.assoc_time === "number" && found.assoc_time >= cmdSentAt - 2;
-              const ms = Date.now() - startedAt;
-              lastVerifySnapshot = {
-                mac: effectiveMac, found: true,
-                authorized: found.authorized === true,
-                is_guest: !!found.is_guest,
-                ip: found.ip || null,
-                essid: found.essid || null,
-                ap_mac: found.ap_mac || null,
-                assoc_time: found.assoc_time || null,
-                recent_assoc: recentAssoc,
-                attempt, latency_ms: ms,
-              };
-              if (found.authorized === true) {
-                Logger.info(`[unifi-auth] reason=AUTH_CONFIRMED mac=${effectiveMac} ap=${found.ap_mac || "-"} ip=${found.ip || "-"} attempts=${attempt} ms=${ms}`);
-                return {
-                  ok: true, effective_mac: effectiveMac.replace(/:/g, "").toUpperCase(),
-                  ap_mac_used: apMacForPayload, latency_ms: ms,
-                  cmd_accepted_at: cmdAcceptedAtIso,
-                  last_verify_result: { ...lastVerifySnapshot, verify_error: null },
-                  station_lookup_fallback: stationLookupFallback,
-                };
-              }
-              if (hasIp && recentAssoc && found.is_guest) {
-                weakSignal = true;
-                verifyError = `WEAK_SIGNAL_ONLY: station has IP/is_guest/recentAssoc but authorized!=true (mac=${effectiveMac} ip=${found.ip})`;
-              } else {
-                verifyError = `MAC ${effectiveMac} found but authorized=${String(found.authorized)} ip=${found.ip || "-"}`;
-              }
-            } else {
-              lastVerifySnapshot = { mac: effectiveMac, found: false, total_stations: staRes.data.length, attempt };
-              verifyError = `MAC ${effectiveMac} not in /stat/sta (total=${staRes.data.length})`;
-            }
-          } else if (staRes.error) {
-            verifyError = staRes.error;
-            lastVerifySnapshot = { mac: effectiveMac, found: false, sta_error: staRes.error, attempt };
-          }
-          Logger.warn("[unifi-auth] poll not confirmed", { attempt, total_attempts: VERIFY_BACKOFF_MS.length, error: verifyError });
-
-          if (attempt < VERIFY_BACKOFF_MS.length) {
-            await new Promise((r) => setTimeout(r, VERIFY_BACKOFF_MS[attempt - 1]));
-          }
-        }
-
-        return {
-          ok: false,
-          reason: "UNIFI_200_BUT_NOT_CONFIRMED",
-          error: verifyError,
-          effective_mac: effectiveMac.replace(/:/g, "").toUpperCase(),
-          ap_mac_used: apMacForPayload,
-          latency_ms: Date.now() - startedAt,
-          cmd_accepted_at: cmdAcceptedAtIso,
-          last_verify_result: { ...lastVerifySnapshot, verify_error: verifyError },
-          weak_signal: weakSignal,
-          station_lookup_fallback: stationLookupFallback,
-        };
-      } finally {
-        closeClient();
-      }
-    };
-
-    if (options.fastReturn) {
-      // Return immediately on CMD_ACCEPTED; polling continues in background.
-      return {
-        ok: true,
-        effective_mac: effectiveMac.replace(/:/g, "").toUpperCase(),
-        ap_mac_used: apMacForPayload,
-        latency_ms: Date.now() - startedAt,
-        cmd_accepted_at: cmdAcceptedAtIso,
-        pending_confirmation: true,
-        station_lookup_fallback: stationLookupFallback,
-        confirm: pollConfirmation(),
-      };
-    }
-
-    return await pollConfirmation();
-  } catch (err) {
-    closeClient();
-    throw err;
-  }
+    const parsed = new URL(controllerUrl);
+    const baseUrl = (parsed.origin + parsed.pathname).replace(/\/+$/, "");
+    const login = await unifiLogin(
+      baseUrl, httpClient, username, password, Math.min(4_000, Math.max(0, deadlineAt - Date.now())),
+    );
+    if (!login.ok) return inconclusive(login.error || "UNIFI_LOGIN_FAILED");
+    const stations = await fetchUnifiStationsStrict(
+      `${unifiNetworkEndpoint(controllerUrl, siteId, !!login.isUnifiOs)}/stat/sta`,
+      { headers: buildUnifiHeaders(login), ...(httpClient ? { client: httpClient } : {}) } as RequestInit,
+      deadlineAt,
+    );
+    if (!stations.ok || !stations.data) return inconclusive(stations.error || "UNIFI_STATIONS_UNAVAILABLE");
+    return exactUnifiEvidence(stations.data, mac, options);
+  } catch { return inconclusive("UNIFI_OBSERVATION_UNAVAILABLE"); }
+  finally { try { httpClient?.close(); } catch { /* no effect on evidence */ } }
 }
 
+/**
+ * Prepare/login, observe the exact station, then send at most one command.
+ * Callers persist a fenced send intent first. Unknown never implies rejection.
+ */
+async function unifiAuthorizeCommandOnly(
+  controllerUrl: string, siteId: string, clientMac: string,
+  username?: string, password?: string,
+  options: UnifiAuthOptions = {},
+): Promise<UnifiCommandResult> {
+  const startedAt = Date.now();
+  const deadlineAt = Math.min(options.deadlineAt ?? Infinity, startedAt + 14_000);
+  const mac = canonicalUnifiMac(clientMac);
+  const unsent = (reason: string, retryable = true): UnifiCommandResult => ({
+    status: "unknown", command_sent: false, retryable, reason,
+    effective_mac: mac || "", latency_ms: Date.now() - startedAt,
+  });
+  if (!mac || (options.apMac && !canonicalUnifiMac(options.apMac))) return unsent("INVALID_MAC_ADDRESS", false);
+  const httpClient = createUnifiHttpClient();
+  try {
+    const parsed = new URL(controllerUrl);
+    const baseUrl = (parsed.origin + parsed.pathname).replace(/\/+$/, "");
+    const login = await unifiLogin(
+      baseUrl, httpClient, username, password, Math.min(4_000, Math.max(0, deadlineAt - Date.now())),
+    );
+    if (!login.ok) return unsent(login.error || "UNIFI_LOGIN_FAILED");
+    const networkUrl = unifiNetworkEndpoint(controllerUrl, siteId, !!login.isUnifiOs);
+    const init = { headers: buildUnifiHeaders(login), ...(httpClient ? { client: httpClient } : {}) } as RequestInit;
+    const stations = await fetchUnifiStationsStrict(
+      `${networkUrl}/stat/sta`, init, Math.min(deadlineAt, Date.now() + 3_000),
+    );
+    if (!stations.ok || !stations.data) return unsent(stations.error || "UNIFI_STATIONS_UNAVAILABLE");
+    const observation = exactUnifiEvidence(stations.data, mac, options);
+    if (observation.state === "authorized") return {
+      status: "accepted", command_sent: false, retryable: false, reason: "ALREADY_AUTHORIZED",
+      effective_mac: mac, latency_ms: Date.now() - startedAt, evidence: observation.evidence,
+    };
+    const trustedFallback = observation.reason === "CLIENT_NOT_OBSERVED" &&
+      options.allowPortalMacFallback === true && !!canonicalUnifiMac(options.apMac);
+    if (observation.state !== "not_authorized" && !trustedFallback) {
+      return { ...unsent(observation.reason || "UNIFI_OBSERVATION_INCONCLUSIVE"), evidence: observation.evidence };
+    }
+    const exactStation = stations.data.find(station => canonicalUnifiMac(station.mac) === mac);
+    const previousCookies = login.cookies || {};
+    const currentCookies = mergeResponseCookies(previousCookies, stations.headers!);
+    const tokenChanged = currentCookies.TOKEN !== previousCookies.TOKEN;
+    const csrfCookieChanged = currentCookies.csrf_token !== previousCookies.csrf_token;
+    const responseCsrf = stations.headers!.get("x-csrf-token");
+    // A newly rotated TOKEN must not reuse CSRF from the previous token. An
+    // explicit response header takes precedence; unchanged sessions retain their
+    // established CSRF value when the station response does not replace it.
+    const currentCsrf = responseCsrf || (tokenChanged
+      ? (currentCookies.TOKEN && extractCsrfFromToken(currentCookies.TOKEN)) ||
+        (csrfCookieChanged ? currentCookies.csrf_token : undefined)
+      : csrfCookieChanged ? currentCookies.csrf_token : login.csrfToken);
+    if (!(login.isUnifiOs ? currentCookies.TOKEN : currentCookies.unifises)) {
+      return unsent("UNIFI_SESSION_EXPIRED_DURING_PREFLIGHT");
+    }
+    const result = await sendUnifiAuthorizeOnce(
+      `${networkUrl}/cmd/stamgr`, { ...init, headers: buildUnifiHeaders({ ...login, cookies: currentCookies, csrfToken: currentCsrf || undefined }) }, mac,
+      // Exact station evidence already validated this AP, including permitted
+      // roaming within the server's store mapping. Never target a stale AP.
+      { apMac: exactStation?.ap_mac || options.apMac, minutes: options.minutes },
+      deadlineAt,
+    );
+    return { ...result, latency_ms: Date.now() - startedAt,
+      evidence: { ...observation.evidence, ...result.evidence, portal_mac_fallback: trustedFallback } };
+  } catch { return unsent("UNIFI_PREPARATION_UNAVAILABLE"); }
+  finally { try { httpClient?.close(); } catch { /* no effect on result */ } }
+}
+
+/** Compatibility adapter for existing callers, using the same exact evidence. */
+async function checkUnifiAuthorizationState(
+  controllerUrl: string, siteId: string, mac: string,
+  username?: string, password?: string,
+  apMac?: string | null, ssid?: string | null,
+): Promise<UnifiAuthorizationEvidence> {
+  return await unifiCheckAuthorizationOnly(controllerUrl, siteId, mac, username, password, { apMac, ssid });
+}
+
+/** Legacy interface with one command and one read, sharing a 14-second budget. */
 async function unifiAuthorizeWithRetry(
   controllerUrl: string, siteId: string, mac: string,
   username?: string, password?: string,
   options: UnifiAuthOptions = {},
 ): Promise<UnifiAuthResult & { attempts: number }> {
-  let last: UnifiAuthResult = { ok: false, error: "Unknown error" };
-  for (let attempt = 0; attempt <= UNIFI_RETRY_COUNT; attempt++) {
-    last = await unifiAuthorizeByMac(controllerUrl, siteId, mac, username, password, options);
-    if (last.ok) return { ...last, attempts: attempt + 1 };
-    // rc=ok means the controller has already accepted the state-changing
-    // command. Never send it again merely because read-after-write polling was
-    // inconclusive; the attempt recovery path will perform a read-only check.
-    if (last.cmd_accepted_at) return { ...last, pending_confirmation: true, attempts: attempt + 1 };
-    // Don't retry user-actionable errors (e.g., randomization ambiguity)
-    if (last.reason === "MAC_RANDOMIZATION_AMBIGUOUS") return { ...last, attempts: attempt + 1 };
-    if (attempt < UNIFI_RETRY_COUNT) await new Promise((r) => setTimeout(r, 1000));
-  }
-  return { ...last, attempts: UNIFI_RETRY_COUNT + 1 };
+  const startedAt = Date.now();
+  const bounded = { ...options, deadlineAt: Math.min(options.deadlineAt ?? Infinity, startedAt + 14_000) };
+  const command = await unifiAuthorizeCommandOnly(controllerUrl, siteId, mac, username, password, bounded);
+  const common = {
+    effective_mac: command.effective_mac, ap_mac_used: command.ap_mac_used,
+    cmd_accepted_at: command.accepted_at, command_sent_at: command.command_sent_at,
+    command_outcome: command.status, attempts: command.command_sent ? 1 : 0,
+    station_lookup_fallback: command.evidence?.portal_mac_fallback === true,
+  };
+  if (command.status === "rejected") return { ...common, ok: false, reason: command.reason, latency_ms: Date.now() - startedAt };
+  if (command.status === "unknown") return {
+    ...common, ok: false, pending_confirmation: true,
+    reason: command.reason, latency_ms: Date.now() - startedAt,
+  };
+  if (command.reason === "ALREADY_AUTHORIZED") return {
+    ...common, ok: true, last_verify_result: command.evidence, latency_ms: Date.now() - startedAt,
+  };
+  const observed = await unifiCheckAuthorizationOnly(controllerUrl, siteId, mac, username, password, bounded);
+  return {
+    ...common, ok: observed.state === "authorized",
+    pending_confirmation: observed.state !== "authorized",
+    reason: observed.state === "authorized" ? undefined : "UNIFI_CONFIRMATION_PENDING",
+    last_verify_result: { ...observed.evidence, verify_error: observed.reason || null },
+    latency_ms: Date.now() - startedAt,
+  };
 }
 
 async function authorizeClient(
   db: ReturnType<typeof supabaseAdmin>,
   storeId: string | null, storeSlug: string, clientMac: string | null, sessionId: string, clientIp: string,
-  context: { apMac?: string | null; ssid?: string | null; fastReturn?: boolean } = {},
-): Promise<{ ok: boolean; reason?: string; userMessage?: string; cmd_accepted_at?: string; last_verify_result?: Record<string, unknown> | null; pending_confirmation?: boolean; confirm?: Promise<UnifiAuthResult> }> {
-  if (!storeId) {
-    await db.from("captive_sessions").update({ status: "failed", fail_reason: "NO_STORE_CONFIGURED" }).eq("id", sessionId);
-    return { ok: false, reason: "NO_STORE_CONFIGURED" };
-  }
-
-  const { data: store } = await db
-    .from("stores")
-    .select("unifi_controller_url, unifi_site_id")
-    .eq("id", storeId)
-    .maybeSingle();
-
-  if (!store?.unifi_controller_url) {
-    await db.from("captive_sessions").update({ status: "failed", fail_reason: "UNIFI_NOT_CONFIGURED" }).eq("id", sessionId);
-    await db.from("audit_logs").insert({
-      store_id: storeId, entity: "session", entity_id: sessionId,
-      action: "fail", meta: { reason: "UNIFI_NOT_CONFIGURED", store_slug: storeSlug, ip: clientIp },
+  context: { apMac?: string | null; ssid?: string | null } = {},
+): Promise<UnifiAuthResult & { userMessage?: string }> {
+  // Legacy stores share the safe transport. Every critical write must succeed;
+  // an uncertain persistence result is recovered through a controller read.
+  const persist = async (patch: Record<string, unknown>, action: string, meta: Record<string, unknown>) => {
+    const { data, error } = await db.from("captive_sessions").update(patch).eq("id", sessionId).select("id").single();
+    if (error || !data?.id) throw new Error("AUTHORIZATION_PERSISTENCE_UNCERTAIN");
+    const { error: auditError } = await db.from("audit_logs").insert({
+      store_id: storeId, entity: "session", entity_id: sessionId, action, meta,
     });
-    return { ok: false, reason: "UNIFI_NOT_CONFIGURED" };
-  }
+    if (auditError) throw new Error("AUTHORIZATION_PERSISTENCE_UNCERTAIN");
+  };
+  const fail = async (reason: string): Promise<UnifiAuthResult> => {
+    await persist({ status: "failed", fail_reason: reason }, "fail", { reason, store_slug: storeSlug });
+    return { ok: false, reason };
+  };
+  if (!storeId) return await fail("NO_STORE_CONFIGURED");
+  const { data: store, error: storeError } = await db.from("stores")
+    .select("unifi_controller_url, unifi_site_id").eq("id", storeId).maybeSingle();
+  if (storeError) throw new Error("AUTHORIZATION_PERSISTENCE_UNCERTAIN");
+  if (!store?.unifi_controller_url) return await fail("UNIFI_NOT_CONFIGURED");
+  if (!UNIFI_USERNAME || !UNIFI_PASSWORD) return await fail("UNIFI_CREDENTIALS_MISSING");
+  if (!clientMac || !canonicalUnifiMac(clientMac)) return await fail("INVALID_MAC_ADDRESS");
 
-  const storeUser = UNIFI_USERNAME;
-  const storePass = UNIFI_PASSWORD;
-
-  if (!storeUser || !storePass) {
-    await db.from("captive_sessions").update({ status: "failed", fail_reason: "UNIFI_CREDENTIALS_MISSING" }).eq("id", sessionId);
-    return { ok: false, reason: "UNIFI_CREDENTIALS_MISSING" };
-  }
-
-  if (!clientMac || !isValidMac(clientMac)) {
-    await db.from("captive_sessions").update({ status: "failed", fail_reason: "INVALID_MAC_ADDRESS" }).eq("id", sessionId);
-    return { ok: false, reason: "INVALID_MAC_ADDRESS" };
-  }
-
-  // Store-scoped MAC idempotency lock. The same private MAC may legitimately
-  // appear in a different store and must be authorized on that controller.
   const lock = await db.rpc("rate_limit_hit", {
     p_key: `unifi_auth:store:${storeId}:mac:${clientMac.toUpperCase()}`,
-    p_window_seconds: 15,
-    p_max_hits: 1,
-    p_block_seconds: 0,
+    p_window_seconds: 15, p_max_hits: 1, p_block_seconds: 0,
   });
-
-  if (lock.data?.allowed === false) {
-    Logger.warn("[authorize] duplicate concurrent request suppressed", { session_id: sessionId });
-    // If there's a very recent successful auth (last 30s), just return success
-    const { data: recentAuth } = await db
-      .from("captive_sessions")
-      .select("id, status, unifi_cmd_accepted_at, authorized_at")
-      .eq("store_id", storeId)
-      .eq("client_mac", clientMac.toUpperCase())
-      .eq("status", "authorized")
-      .gte("authorized_at", new Date(Date.now() - 30 * 1000).toISOString())
-      .maybeSingle();
-
-    if (recentAuth) {
-      Logger.info("[authorize] recent authorization reused", { session_id: sessionId });
-      return { ok: true, cmd_accepted_at: recentAuth.unifi_cmd_accepted_at };
-    }
-
-    return { ok: false, reason: "RATE_LIMIT_HIT", userMessage: "Liberação em processamento. Aguarde alguns segundos." };
+  if (lock.error || !lock.data) throw new Error("AUTHORIZATION_PERSISTENCE_UNCERTAIN");
+  if (lock.data.allowed === false) {
+    await persist({ status: "submitted", fail_reason: "WAITING_FOR_DEVICE_OPERATION" },
+      "authorize_waiting", { reason: "DEVICE_OPERATION_IN_PROGRESS" });
+    // A rate limit is not a terminal controller result or proof of success.
+    return { ok: false, reason: "PROCESSING_IN_PROGRESS", pending_confirmation: true,
+      userMessage: "Liberação em processamento. Aguarde alguns segundos." };
   }
 
-  const { data: settings } = await db
-    .from("global_settings")
-    .select("session_duration_minutes")
-    .eq("id", 1)
-    .maybeSingle();
+  const { data: settings, error: settingsError } = await db.from("global_settings")
+    .select("session_duration_minutes, max_daily_accesses").eq("id", 1).maybeSingle();
+  if (settingsError) throw new Error("AUTHORIZATION_PERSISTENCE_UNCERTAIN");
   const desiredMinutes = settings?.session_duration_minutes ?? 60;
+  const maxDailyAccesses = normalizeDailyAccessLimit(settings?.max_daily_accesses);
+  if (maxDailyAccesses > 0) {
+    const dailyWindowStart = startOfDayInTimeZoneIso();
+    const { count: authorizedToday, error: dailyCountError } = await db.from("captive_sessions")
+      .select("id", { count: "exact", head: true }).eq("client_mac", clientMac.toUpperCase())
+      .eq("status", "authorized").gte("authorized_at", dailyWindowStart);
+    if (dailyCountError) throw new Error("AUTHORIZATION_PERSISTENCE_UNCERTAIN");
+    if (hasReachedDailyAccessLimit(authorizedToday || 0, maxDailyAccesses)) {
+      const reason = "DAILY_ACCESS_LIMIT_REACHED";
+      await persist({ status: "failed", fail_reason: reason }, "daily_access_denied", {
+        mac: clientMac.toUpperCase(), authorized_today: authorizedToday || 0,
+        max_daily_accesses: maxDailyAccesses, window_start: dailyWindowStart, time_zone: "America/Sao_Paulo",
+      });
+      return { ok: false, reason, userMessage: "O limite diário de acessos deste dispositivo foi atingido." };
+    }
+  }
 
-  // A controller may omit a not-yet-authorized captive client from /stat/sta.
-  // Permit a direct command with the portal-provided MAC only when the AP was
-  // independently mapped to this exact store in our server-side registry.
-  const normalizedApMac = normalizeMac(context.apMac);
+  const normalizedApMac = canonicalUnifiMac(context.apMac);
   let allowPortalMacFallback = false;
   if (normalizedApMac) {
-    const { data: mappedAp, error: mappedApError } = await db
-      .from("store_access_points")
-      .select("store_id")
-      .eq("ap_mac", normalizedApMac)
-      .maybeSingle();
-    allowPortalMacFallback = !mappedApError && mappedAp?.store_id === storeId;
-    if (mappedApError) {
-      Logger.warn("[authorize] AP trust lookup failed", { code: mappedApError.code || "AP_LOOKUP_FAILED" });
-    }
+    const { data: mappedAp, error: mappedApError } = await db.from("store_access_points")
+      .select("store_id").eq("ap_mac", normalizedApMac).maybeSingle();
+    if (mappedApError) throw new Error("AUTHORIZATION_PERSISTENCE_UNCERTAIN");
+    allowPortalMacFallback = mappedAp?.store_id === storeId;
   }
-
-  const siteId = store.unifi_site_id || "default";
   const result = await unifiAuthorizeWithRetry(
-    store.unifi_controller_url, siteId, clientMac, storeUser, storePass,
-    {
-      apMac: normalizedApMac,
-      ssid: context.ssid || null,
-      minutes: desiredMinutes,
-      fastReturn: !!context.fastReturn,
-      allowPortalMacFallback,
-    },
+    store.unifi_controller_url, store.unifi_site_id || "default", clientMac, UNIFI_USERNAME, UNIFI_PASSWORD,
+    { apMac: normalizedApMac, ssid: context.ssid || null, minutes: desiredMinutes, allowPortalMacFallback },
   );
-
-  // Persist UniFi audit columns regardless of outcome
-  const auditUpdate: Record<string, unknown> = {};
-  if (result.cmd_accepted_at) auditUpdate.unifi_cmd_accepted_at = result.cmd_accepted_at;
-  if (result.last_verify_result) auditUpdate.unifi_last_verify_result = result.last_verify_result;
-
-  if (result.ok) {
-    const controllerConfirmed = !result.pending_confirmation &&
-      result.last_verify_result?.authorized === true;
-    Object.assign(auditUpdate, {
-      // When fastReturn ack'd CMD but not yet confirmed, mark as authorized
-      // optimistically; the background confirm will downgrade to "failed" if
-      // /stat/sta doesn't see the MAC.
-      status: "authorized",
-      authorized_at: new Date().toISOString(),
-      auth_latency_ms: result.latency_ms ?? null,
-    });
-    if (controllerConfirmed) auditUpdate.unifi_confirmed_at = new Date().toISOString();
-    if (result.effective_mac && result.effective_mac !== clientMac) {
-      auditUpdate.original_client_mac = clientMac;
-      auditUpdate.client_mac = result.effective_mac;
-    }
-    await db.from("captive_sessions").update(auditUpdate).eq("id", sessionId);
-    await db.from("audit_logs").insert({
-      store_id: storeId, entity: "session", entity_id: sessionId,
-      action: "authorize",
-      meta: {
-        mac: result.effective_mac || clientMac,
-        ap_mac: result.ap_mac_used || context.apMac || null,
-        store_slug: storeSlug, ip: clientIp,
-        attempts: result.attempts, latency_ms: result.latency_ms,
-        pending_confirmation: !!result.pending_confirmation,
-        station_lookup_fallback: !!result.station_lookup_fallback,
-      },
-    });
-    return {
-      ok: true,
-      cmd_accepted_at: result.cmd_accepted_at,
-      last_verify_result: result.last_verify_result || null,
-      pending_confirmation: !!result.pending_confirmation,
-      confirm: result.confirm,
-    };
-  } else if (result.pending_confirmation && result.cmd_accepted_at) {
-    Object.assign(auditUpdate, {
-      status: "submitted",
-      fail_reason: "UNIFI_CONFIRMATION_PENDING",
-      auth_latency_ms: result.latency_ms ?? null,
-    });
-    await db.from("captive_sessions").update(auditUpdate).eq("id", sessionId);
-    await db.from("audit_logs").insert({
-      store_id: storeId, entity: "session", entity_id: sessionId,
-      action: "authorize_pending",
-      meta: {
-        reason: result.reason,
-        mac: result.effective_mac || clientMac,
-        ap_mac: result.ap_mac_used || context.apMac || null,
-        store_slug: storeSlug,
-        attempts: result.attempts,
-        latency_ms: result.latency_ms,
-      },
-    });
-    return {
-      ok: false,
-      reason: "PROCESSING_IN_PROGRESS",
-      cmd_accepted_at: result.cmd_accepted_at,
-      last_verify_result: result.last_verify_result || null,
-      pending_confirmation: true,
-    };
-  } else {
-    const failReason = (result.reason || result.error || "UNKNOWN").slice(0, 500);
-    Object.assign(auditUpdate, {
-      status: "failed",
-      fail_reason: failReason,
-      auth_latency_ms: result.latency_ms ?? null,
-    });
-    await db.from("captive_sessions").update(auditUpdate).eq("id", sessionId);
-    await db.from("audit_logs").insert({
-      store_id: storeId, entity: "session", entity_id: sessionId,
-      action: "fail",
-      meta: {
-        reason: result.reason, error: result.error,
-        mac: clientMac, ap_mac: context.apMac || null,
-        store_slug: storeSlug, ip: clientIp,
-        attempts: result.attempts, latency_ms: result.latency_ms,
-        weak_signal: result.weak_signal || false,
-        station_lookup_fallback: !!result.station_lookup_fallback,
-      },
-    });
-    const userMessage = result.reason === "MAC_RANDOMIZATION_AMBIGUOUS" ? result.error : undefined;
-    return {
-      ok: false, reason: result.reason, userMessage,
-      cmd_accepted_at: result.cmd_accepted_at,
-      last_verify_result: result.last_verify_result || null,
-    };
+  const patch: Record<string, unknown> = { auth_latency_ms: result.latency_ms ?? null };
+  if (result.command_sent_at) patch.unifi_authorize_called_at = result.command_sent_at;
+  if (result.cmd_accepted_at) patch.unifi_cmd_accepted_at = result.cmd_accepted_at;
+  if (result.last_verify_result) patch.unifi_last_verify_result = result.last_verify_result;
+  const meta = {
+    mac: clientMac, ap_mac: result.ap_mac_used || context.apMac || null,
+    store_slug: storeSlug, ip: clientIp, attempts: result.attempts,
+    latency_ms: result.latency_ms, reason: result.reason,
+    command_outcome: result.command_outcome, station_lookup_fallback: !!result.station_lookup_fallback,
+  };
+  if (result.ok && result.last_verify_result?.authorized === true) {
+    const confirmedAt = new Date().toISOString();
+    await persist({ ...patch, status: "authorized", fail_reason: null,
+      authorized_at: confirmedAt, unifi_confirmed_at: confirmedAt }, "authorize", meta);
+    return result;
   }
+  if (result.pending_confirmation || result.command_outcome === "unknown" || result.command_outcome === "accepted") {
+    await persist({ ...patch, status: "submitted", fail_reason: "UNIFI_CONFIRMATION_PENDING" }, "authorize_pending", meta);
+    return { ...result, ok: false, reason: "PROCESSING_IN_PROGRESS", pending_confirmation: true };
+  }
+  await persist({ ...patch, status: "failed", fail_reason: result.reason || "UNIFI_COMMAND_REJECTED" }, "fail", meta);
+  return result;
 }
 
 /**
@@ -2075,7 +1592,7 @@ async function handleAdminSettings(req: Request): Promise<Response> {
   if (req.method === "GET") {
     const { data, error } = await db
       .from("global_settings")
-      .select("session_duration_minutes, updated_at")
+      .select("session_duration_minutes, max_daily_accesses, updated_at")
       .eq("id", 1)
       .maybeSingle();
 
@@ -2083,6 +1600,7 @@ async function handleAdminSettings(req: Request): Promise<Response> {
 
     return jsonResponse({
       session_duration_minutes: data?.session_duration_minutes ?? 1440,
+      max_daily_accesses: data?.max_daily_accesses ?? DEFAULT_MAX_DAILY_ACCESSES,
       updated_at: data?.updated_at || null,
     });
   }
@@ -2091,24 +1609,39 @@ async function handleAdminSettings(req: Request): Promise<Response> {
     const body = await safeParseJson(req);
     if (!body) return errorResponse("JSON inválido");
 
-    const duration = Number(body.session_duration_minutes);
-    if (!Number.isInteger(duration) || duration < 1 || duration > 43200) {
-      return errorResponse("session_duration_minutes deve ser um número inteiro entre 1 e 43200");
+    const updates: Record<string, number> = {};
+    if (Object.prototype.hasOwnProperty.call(body, "session_duration_minutes")) {
+      const duration = Number(body.session_duration_minutes);
+      if (!Number.isInteger(duration) || duration < 1 || duration > 43200) {
+        return errorResponse("session_duration_minutes deve ser um número inteiro entre 1 e 43200");
+      }
+      updates.session_duration_minutes = duration;
     }
+
+    if (Object.prototype.hasOwnProperty.call(body, "max_daily_accesses")) {
+      const maxDailyAccesses = Number(body.max_daily_accesses);
+      if (!Number.isInteger(maxDailyAccesses) || maxDailyAccesses < 0 || maxDailyAccesses > 100) {
+        return errorResponse("max_daily_accesses deve ser um número inteiro entre 0 e 100");
+      }
+      updates.max_daily_accesses = maxDailyAccesses;
+    }
+
+    const fields = Object.keys(updates);
+    if (fields.length === 0) return errorResponse("Informe ao menos uma configuração para atualizar");
 
     const { data, error } = await db
       .from("global_settings")
-      .update({ session_duration_minutes: duration })
+      .update(updates)
       .eq("id", 1)
-      .select("session_duration_minutes, updated_at")
+      .select("session_duration_minutes, max_daily_accesses, updated_at")
       .single();
 
     if (error) return errorResponse(error.message, 500);
 
     await writeAdminAudit(db, req, userId, "global_settings", "update", {
       meta: {
-        fields: ["session_duration_minutes"],
-        session_duration_minutes: duration,
+        fields,
+        ...updates,
       },
     });
 
@@ -2527,7 +2060,7 @@ async function handleAdminDiagnostics(req: Request, url: URL): Promise<Response>
     db.from("stores")
       .select("id, slug, name, city, is_active, unifi_controller_url, unifi_site_id, post_auth_redirect_url")
       .order("name"),
-    db.from("global_settings").select("session_duration_minutes, updated_at").eq("id", 1).maybeSingle(),
+    db.from("global_settings").select("session_duration_minutes, max_daily_accesses, updated_at").eq("id", 1).maybeSingle(),
     db.from("consent_versions").select("id, version, created_at").eq("is_active", true).maybeSingle(),
     sessionQuery,
   ]);
@@ -3046,10 +2579,17 @@ async function handleClientEvent(req: Request): Promise<Response> {
   const body = await safeParseJson(req);
   if (!body) return errorResponse("Invalid JSON body");
 
-  const sessionId = isValidUUID(body.session_id) ? (body.session_id as string) : null;
+  const requestedSessionId = isValidUUID(body.session_id) ? (body.session_id as string) : null;
+  let sessionId: string | null = null;
+  if (requestedSessionId && isValidUUID(body.attempt_id) && typeof body.resume_token === "string") {
+    const state = await readOperation(db, body.attempt_id as string, body.resume_token);
+    if (state.session_id === requestedSessionId && !["invalid_capability", "capability_expired", "receipt_stale"].includes(state.disposition)) {
+      sessionId = requestedSessionId;
+    }
+  }
   const eventName = (Validators.string(body.event, 64) || "client_event").toLowerCase();
-  const step = (Validators.string(body.step, 32) || "client") as any;
-  const status = (Validators.string(body.status, 16) || "info") as any;
+  const step = "client" as const;
+  const status = ["info", "success", "warning", "error"].includes(String(body.status)) ? body.status as any : "info";
   const errorCode = Validators.string(body.error_code, 64);
   const errorMessage = Validators.string(body.error_message, 500);
   const traceId = Validators.string(body.trace_id, 64) || getTraceId(req, body);
@@ -3060,7 +2600,11 @@ async function handleClientEvent(req: Request): Promise<Response> {
 
   let payload: Record<string, unknown> | null = null;
   if (body.payload && typeof body.payload === "object" && !Array.isArray(body.payload)) {
-    payload = body.payload as Record<string, unknown>;
+    const source = body.payload as Record<string, unknown>;
+    payload = Object.fromEntries(["attempt_id", "operation_id", "online", "source", "reason", "duration_ms",
+      "state", "outcome", "mode", "kind", "http_status", "code"]
+      .filter((key) => typeof source[key] === "string" || typeof source[key] === "boolean" || typeof source[key] === "number")
+      .map((key) => [key, typeof source[key] === "string" ? String(source[key]).slice(0, 100) : source[key]]));
   }
 
   // Fire and forget logging
@@ -3075,6 +2619,8 @@ async function handleClientEvent(req: Request): Promise<Response> {
     payload,
     client_ip: clientIp,
     user_agent: ua,
+    session_patch: sessionId && eventName === "redirect_started"
+      ? { redirect_served_at: new Date().toISOString() } : undefined,
   });
 
   return jsonResponse({ ok: true });
@@ -3172,7 +2718,23 @@ async function getValidatedAuthContext(
  * 1. Uses a server-authoritative transactional claim (attempt_id).
  * 2. If a session is already completed, returns the cached result.
  */
-async function authorizeAuthenticatedUser(args: {
+interface PortalAuthorizationResult {
+  session_id: string | null;
+  authorized: boolean;
+  redirect_url: string;
+  fail_reason?: string;
+  replay?: boolean;
+  processing?: boolean;
+  status?: string;
+  operation_id?: string;
+  retry_after_ms?: number;
+  deadline_at?: string;
+  server_now?: string;
+  store_slug: string;
+  store_id: string | null;
+}
+
+type PortalAuthorizationArgs = {
   db: ReturnType<typeof supabaseAdmin>;
   userId: string;
   profile: { full_name: string; cpf_digits: string | null; phone_digits: string | null; email: string; cpf_required?: boolean };
@@ -3184,16 +2746,272 @@ async function authorizeAuthenticatedUser(args: {
   userAgent: string | null;
   attemptId: string | null;
   resumeToken: string | null;
-}): Promise<{
-  session_id: string | null;
-  authorized: boolean;
-  redirect_url: string;
-  fail_reason?: string;
-  replay?: boolean;
-  processing?: boolean;
-  store_slug: string;
-  store_id: string | null;
-}> {
+};
+
+function publicOperationResult(result: Record<string, any>): Record<string, unknown> {
+  return {
+    server_now: new Date().toISOString(),
+    session_id: result.session_id || null,
+    authorized: result.authorized === true,
+    processing: result.processing === true,
+    status: typeof result.status === "string" ? result.status : undefined,
+    operation_id: typeof result.operation_id === "string" ? result.operation_id : undefined,
+    retry_after_ms: typeof result.retry_after_ms === "number" ? result.retry_after_ms : undefined,
+    deadline_at: typeof result.deadline_at === "string" ? result.deadline_at : undefined,
+    redirect_url: result.redirect_url || DEFAULT_REDIRECT_URL,
+    fail_reason: result.fail_reason || undefined,
+    replay: result.replay === true,
+  };
+}
+
+async function runAuthorizationWorker(db: ReturnType<typeof supabaseAdmin>, operationId?: string, deadlineAt?: number) {
+  return await (operationId ? reconcileAuthorization : drainAuthorization)(db, {
+    afterConfirmed: (operation) => {
+      const sync = (async () => {
+        if (!operation.user_id) return;
+        const { data: profile, error } = await db.from("profiles")
+          .select("cpf_digits, phone_digits, full_name, email").eq("id", operation.user_id).single();
+        if (error) throw new Error("CRM_PROFILE_LOOKUP_FAILED");
+        if (profile?.cpf_digits && profile?.phone_digits) await syncWithClubeMais({
+          cpf: profile.cpf_digits, phone: profile.phone_digits, name: profile.full_name || "Cliente",
+          email: publicProfileEmail(profile.email), store_id: operation.store_id,
+        }, db);
+      })().catch((error) => Logger.warn("[authorization] CRM sync failed", { error: String(error) }));
+      // @ts-ignore Supabase Edge Runtime API
+      if (typeof EdgeRuntime !== "undefined") EdgeRuntime.waitUntil(sync);
+    },
+    send: async (operation: AuthOperation) => {
+      // Only this preparation region can prove that no adapter/POST began.
+      // Keep adapter exceptions outside it: their effects may be unknown.
+      let trustedApMacs: string[];
+      let deadlineAt: number;
+      const preparationDeadline = Math.min(Date.parse(operation.lease_expires_at),
+        operation.execution_deadline_at ?? Infinity,
+        operation.deadline_at ? Date.parse(operation.deadline_at) : Infinity) - 16_000;
+      try {
+        if (!operation.user_id) throw new Error("OPERATION_USER_MISSING");
+        const block = await withOperationDeadline(() => getActiveUserBlock(db, operation.user_id!),
+          preparationDeadline, "BLOCK_LOOKUP_TIMEOUT");
+        const { data: privileged, error: roleError } = await withOperationDeadline(signal => db.from("user_roles")
+          .select("user_id").eq("user_id", operation.user_id!).eq("role", "admin").abortSignal(signal).maybeSingle(),
+          preparationDeadline, "ROLE_LOOKUP_TIMEOUT");
+        if (roleError) throw new Error("OPERATION_ROLE_LOOKUP_FAILED");
+        if (block || privileged) return { status: "rejected" as const, command_sent: false,
+          effective_mac: operation.client_mac, reason: block ? "USER_BLOCKED" : "PRIVILEGED_ACCOUNT",
+          evidence: { explicit_rejection: true, command_sent: false } };
+        // Configuration changes cannot redirect a queued command to another
+        // controller. The immutable intent is checked again at its boundary.
+        const { data: store, error } = await withOperationDeadline(signal => db.from("stores")
+          .select("slug, is_active, unifi_controller_url, unifi_site_id").eq("id", operation.store_id).abortSignal(signal).single(),
+          preparationDeadline, "STORE_LOOKUP_TIMEOUT");
+        if (error) throw new Error("STORE_LOOKUP_FAILED");
+        if (!store?.is_active || store.slug !== "povao" ||
+            store.unifi_controller_url !== operation.controller_key ||
+            (store.unifi_site_id || "default") !== operation.site_id) {
+          return { status: "rejected" as const, command_sent: false,
+            reason: "OPERATION_CONFIGURATION_CHANGED", effective_mac: operation.client_mac,
+            evidence: { explicit_rejection: true, command_sent: false } };
+        }
+        const { data: aps, error: apError } = await withOperationDeadline(signal => db.from("store_access_points")
+          .select("ap_mac").eq("store_id", operation.store_id).abortSignal(signal), preparationDeadline, "AP_LOOKUP_TIMEOUT");
+        if (apError) throw new Error("AP_LOOKUP_FAILED");
+        trustedApMacs = (aps || []).map((ap) => normalizeMac(ap.ap_mac))
+          .filter((mac): mac is string => !!mac);
+        deadlineAt = Math.min(Date.parse(operation.lease_expires_at) - 2_000,
+          operation.deadline_at ? Date.parse(operation.deadline_at) : Infinity,
+          operation.execution_deadline_at ? operation.execution_deadline_at - 2_000 : Infinity);
+        if (!Number.isFinite(deadlineAt) || deadlineAt - Date.now() < 14_000) {
+          throw new Error("PREPARATION_BUDGET_EXHAUSTED");
+        }
+      } catch (error) {
+        const knownCodes = new Set(["OPERATION_USER_MISSING", "OPERATION_ROLE_LOOKUP_FAILED",
+          "STORE_LOOKUP_FAILED", "AP_LOOKUP_FAILED", "PREPARATION_BUDGET_EXHAUSTED"]);
+        const code = error instanceof Error && knownCodes.has(error.message) ? error.message : "OPERATION_PREPARATION_FAILED";
+        return { status: "unknown" as const, command_sent: false, retryable: true,
+          reason: code, effective_mac: operation.client_mac, evidence: { command_sent: false } };
+      }
+      return await unifiAuthorizeCommandOnly(operation.controller_key, operation.site_id,
+        operation.client_mac, UNIFI_USERNAME, UNIFI_PASSWORD, {
+          apMac: operation.ap_mac, ssid: String(operation.command.ssid || "") || null,
+          trustedApMacs,
+          minutes: Number(operation.command.minutes),
+          allowPortalMacFallback: !!operation.ap_mac && trustedApMacs.includes(normalizeMac(operation.ap_mac) || ""),
+          deadlineAt,
+        });
+    },
+    verify: async (operation: AuthOperation) => {
+      const preparationDeadline = Math.min(Date.parse(operation.lease_expires_at),
+        operation.execution_deadline_at ?? Infinity) - 16_000;
+      const { data: aps, error } = await withOperationDeadline(signal => db.from("store_access_points")
+        .select("ap_mac").eq("store_id", operation.store_id).abortSignal(signal), preparationDeadline, "AP_LOOKUP_TIMEOUT");
+      if (error) throw new Error("AP_LOOKUP_FAILED");
+      return await unifiCheckAuthorizationOnly(
+        operation.controller_key, operation.site_id, operation.client_mac,
+        UNIFI_USERNAME, UNIFI_PASSWORD, {
+          apMac: operation.ap_mac, ssid: String(operation.command.ssid || "") || null,
+          trustedApMacs: (aps || []).map((ap) => normalizeMac(ap.ap_mac))
+            .filter((mac): mac is string => !!mac),
+          deadlineAt: Math.min(Date.parse(operation.lease_expires_at) - 2_000,
+            operation.execution_deadline_at ? operation.execution_deadline_at - 2_000 : Infinity),
+        });
+    },
+  }, { owner: `durable-${crypto.randomUUID()}`, operationId, limit: operationId ? 1 : 4,
+    deadlineAt: deadlineAt ?? (operationId ? Date.now() + 20_000 : undefined) });
+}
+
+async function readOperation(db: ReturnType<typeof supabaseAdmin>, attemptId: string, token: string) {
+  return await requiredRpc(db, "get_captive_auth_operation", {
+    p_attempt_id: attemptId, p_resume_token: token,
+  }, { deadlineAt: Date.now() + 3000 }) as Record<string, any>;
+}
+
+function authorizationDispositionError(value: Record<string, any>) {
+  if (value.disposition === "capability_expired" || value.disposition === "receipt_stale") {
+    return { status: 410, body: { error: "Identifique-se novamente para consultar seu acesso.", code: "attempt_expired" } };
+  }
+  if (value.disposition === "invalid_capability") {
+    return { status: 401, body: { error: "Tentativa inválida.", code: "invalid_attempt" } };
+  }
+  if (value.disposition === "state_inconsistent") {
+    return { status: 503, body: { error: "A confirmação precisa ser conciliada. Tente novamente em instantes.",
+      code: "AUTHORIZATION_STATE_INCONSISTENT", retry_after_ms: 5000 } };
+  }
+  return null;
+}
+
+function authorizationFailureResponse(error: unknown): Response | null {
+  const known = error as { authorizationFailure?: ReturnType<typeof authorizationDispositionError>;
+    rpcName?: string; rpcReason?: string };
+  let failure = known?.authorizationFailure;
+  if (!failure && known?.rpcName === "join_captive_auth_operation") {
+    const disposition = ["ATTEMPT_EXPIRED", "AUTHORIZATION_RECEIPT_STALE"].includes(known.rpcReason || "") ? "capability_expired"
+      : ["INVALID_RESUME_TOKEN", "ATTEMPT_NOT_FOUND"].includes(known.rpcReason || "") ? "invalid_capability" : null;
+    if (disposition) failure = authorizationDispositionError({ disposition });
+  }
+  return failure ? jsonResponse(failure.body, failure.status) : null;
+}
+
+async function persistPortalLead(args: PortalAuthorizationArgs, storeId: string) {
+  const { db, profile, userId, ctx } = args;
+  const { data: consent, error: consentError } = await db.from("consent_versions")
+    .select("version").eq("is_active", true).maybeSingle();
+  if (consentError) throw new Error("CONSENT_LOOKUP_FAILED");
+  const { data: existing, error: lookupError } = await db.from("leads")
+    .select("id").eq("user_id", userId).maybeSingle();
+  if (lookupError) throw new Error("LEAD_LOOKUP_FAILED");
+  const payload = { user_id: userId, name: profile.full_name,
+    email: publicProfileEmail(profile.email), phone: profile.phone_digits, cpf: profile.cpf_digits,
+    client_mac: ctx.clientMac, last_seen_at: new Date().toISOString(),
+    last_seen_store_id: storeId, store_id: storeId };
+  const { error } = existing?.id
+    ? await db.from("leads").update(payload).eq("id", existing.id)
+    : await db.from("leads").insert({ ...payload, first_seen_at: new Date().toISOString(),
+      consented_at: new Date().toISOString(), consent_version: consent?.version || "unavailable" });
+  if (error) throw new Error(`LEAD_WRITE_${error.code}`);
+}
+
+async function authorizeDurably(args: PortalAuthorizationArgs, storeId: string, storeSlug: string,
+  redirectUrl: string): Promise<PortalAuthorizationResult> {
+  const { db, attemptId, resumeToken, ctx } = args;
+  const fallback = { session_id: null, authorized: false, redirect_url: redirectUrl,
+    store_id: storeId, store_slug: storeSlug };
+  if (!attemptId || !resumeToken || !ctx.clientMac) return { ...fallback, fail_reason: "MISSING_ATTEMPT_TOKENS" };
+  const { data: store, error: storeError } = await db.from("stores")
+    .select("unifi_controller_url, unifi_site_id, is_active").eq("id", storeId).single();
+  if (storeError) throw new Error("STORE_LOOKUP_FAILED");
+  if (!store?.is_active || store.unifi_controller_url !== canonicalUnifiControllerUrl(storeSlug)) {
+    return { ...fallback, fail_reason: "UNIFI_NOT_CONFIGURED" };
+  }
+  const { data: settings, error: settingsError } = await db.from("global_settings")
+    .select("session_duration_minutes, max_daily_accesses").eq("id", 1).single();
+  if (settingsError || !settings) throw new Error("AUTHORIZATION_SETTINGS_UNAVAILABLE");
+  const desiredMinutes = Math.max(1, Math.min(Number(settings.session_duration_minutes) || 40, 1440));
+  // The database evaluates the daily limit under the same device lock as join,
+  // so two simultaneous attempts cannot bypass it or charge reuse twice.
+  const associationKey = await sha256Hex(JSON.stringify([
+    storeId, ctx.clientMac, ctx.apMac, ctx.ssid, ctx.captiveTimestamp,
+  ]));
+  const joined = await requiredRpc(db, "join_captive_auth_operation", {
+    p_attempt_id: attemptId, p_session_id: null, p_user_id: args.userId, p_store_id: storeId,
+    p_controller_key: store.unifi_controller_url, p_site_id: store.unifi_site_id || "default",
+    p_client_mac: ctx.clientMac, p_ap_mac: ctx.apMac, p_association_key: associationKey,
+    p_redirect_url: redirectUrl, p_resume_token: resumeToken,
+    p_command: { minutes: desiredMinutes, ssid: ctx.ssid,
+      max_daily_accesses: normalizeDailyAccessLimit(settings.max_daily_accesses),
+      daily_window_start: startOfDayInTimeZoneIso() },
+    p_session: { auth_method: args.authMethod, trace_id: args.traceId,
+      user_agent: args.userAgent?.slice(0, 500) || null, client_ip: args.clientIp,
+      captive_timestamp: ctx.captiveTimestamp, ssid: ctx.ssid },
+  }, { deadlineAt: Date.now() + 5000 }) as Record<string, any>;
+  const joinError = authorizationDispositionError(joined);
+  if (joinError) throw Object.assign(new Error(joinError.body.code), { authorizationFailure: joinError });
+  if (joined.disposition === "context_conflict") {
+    return { ...fallback, status: "rejected", processing: false,
+      fail_reason: "DEVICE_CONTEXT_CONFLICT" };
+  }
+  if (joined.disposition === "daily_limit") return { ...fallback, fail_reason: "DAILY_ACCESS_LIMIT_REACHED" };
+  if (joined.disposition === "unconfirmed_cooldown") return { ...fallback,
+    status: "expired_unconfirmed", processing: false, fail_reason: "AUTHORIZATION_UNCONFIRMED",
+    retry_after_ms: Number(joined.retry_after_ms) || 30_000 };
+  if (!joined.operation?.id) throw new Error(`OPERATION_JOIN_${joined.disposition || "FAILED"}`);
+  const leadTask = persistPortalLead(args, storeId).catch((error) => {
+    Logger.warn("[authorization] lead persistence failed", { error: String(error), attempt_id: attemptId });
+  });
+  // @ts-ignore Supabase Edge Runtime API
+  if (typeof EdgeRuntime !== "undefined") EdgeRuntime.waitUntil(leadTask);
+  // One bounded pass improves the common case. The durable outbox and cron
+  // continue independently if the request/browser/runtime disappears now.
+  const work = await runAuthorizationWorker(db, joined.operation.id);
+  if (work.errors.length) Logger.warn("[authorization] deferred to reconciler", { errors: work.errors });
+  const state = await readOperation(db, attemptId, resumeToken);
+  const stateError = authorizationDispositionError(state);
+  if (stateError) throw Object.assign(new Error(stateError.body.code), { authorizationFailure: stateError });
+  return { ...fallback, ...publicOperationResult(state) } as PortalAuthorizationResult;
+}
+
+async function handleAttemptStatus(req: Request): Promise<Response> {
+  const body = await safeParseJson(req);
+  const attemptId = typeof body?.attempt_id === "string" ? body.attempt_id : "";
+  const token = typeof body?.token === "string" ? body.token : "";
+  if (!isValidUUID(attemptId) || token.length < 32 || token.length > 256) {
+    return jsonResponse({ error: "Tentativa inválida.", code: "invalid_attempt" }, 401);
+  }
+  const db = supabaseAdmin();
+  let state = await readOperation(db, attemptId, token);
+  const initialError = authorizationDispositionError(state);
+  if (initialError) return jsonResponse(initialError.body, initialError.status);
+  if (state.processing && state.operation_id) {
+    const work = await runAuthorizationWorker(db, state.operation_id);
+    if (work.errors.length) Logger.warn("[authorization] status recovery deferred", { errors: work.errors });
+    state = await readOperation(db, attemptId, token);
+  }
+  const finalError = authorizationDispositionError(state);
+  if (finalError) return jsonResponse(finalError.body, finalError.status);
+  let challenge: { token_hash: string } | null = null;
+  if (state.authorized === true && state.user_id) {
+    challenge = await claimPortalSessionChallenge(db, attemptId, token);
+  }
+  return jsonResponse({ ...publicOperationResult(state), session_token_hash: challenge?.token_hash });
+}
+
+async function handleAuthorizationReconcile(req: Request): Promise<Response> {
+  const deadlineAt = Date.now() + 50_000;
+  const token = req.headers.get("x-captive-worker-token") || "";
+  if (token.length < 32 || token.length > 256) return errorResponse("Unauthorized", 401);
+  const db = supabaseAdmin();
+  const allowed = await requiredRpc(db, "authorize_captive_auth_worker", { p_token: token },
+    { deadlineAt: Math.min(deadlineAt - 2000, Date.now() + 3000) });
+  if (allowed !== true) return errorResponse("Unauthorized", 401);
+  const result = await runAuthorizationWorker(db, undefined, deadlineAt - 2000);
+  const { error: heartbeatError } = await withOperationDeadline(signal => db.rpc("finish_captive_auth_worker",
+    { p_failed_count: result.errors.length }).abortSignal(signal), deadlineAt, "WORKER_HEARTBEAT_TIMEOUT");
+  if (heartbeatError) throw new Error("WORKER_HEARTBEAT_FAILED");
+  if (result.errors.length) Logger.error("[authorization-worker] incomplete pass", { errors: result.errors });
+  return jsonResponse({ claimed: result.claimed, applied: result.applied, failed: result.errors.length },
+    result.errors.length ? 503 : 200);
+}
+
+async function authorizeAuthenticatedUser(args: PortalAuthorizationArgs): Promise<PortalAuthorizationResult> {
   const { db, userId, profile, ctx, req, authMethod, traceId, clientIp, userAgent, attemptId, resumeToken } = args;
 
 
@@ -3204,6 +3022,12 @@ async function authorizeAuthenticatedUser(args: {
   }
   const storeSlug = detected.store_slug;
   const storeId = detected.store_id;
+
+  // All entry points, including clients with the old cached JS, enter the same
+  // durable coordinator for the active beta. Other stores retain their path.
+  if (storeSlug === "povao" && storeId) {
+    return await authorizeDurably(args, storeId, storeSlug, detected.redirect_url || DEFAULT_REDIRECT_URL);
+  }
 
   if (attemptId && storeId) {
     await db.from("captive_auth_attempts").update({
@@ -3503,7 +3327,7 @@ async function authorizeAuthenticatedUser(args: {
   try {
     authResult = await authorizeClient(
       db, storeId, storeSlug, ctx.clientMac, sessionId, clientIp || "",
-      { apMac: ctx.apMac, ssid: ctx.ssid, fastReturn: false },
+      { apMac: ctx.apMac, ssid: ctx.ssid },
     );
   } catch (err: any) {
     const errorMsg = err?.message || String(err);
@@ -3532,7 +3356,7 @@ async function authorizeAuthenticatedUser(args: {
     const isAmbiguous = normalizedError.includes("fetch") ||
       normalizedError.includes("timeout") ||
       normalizedError.includes("network") ||
-      normalizedError.includes("connection");
+      normalizedError.includes("connection") || normalizedError.includes("persistence_uncertain");
 
     if (!isAmbiguous) {
       const { data: finalizeFailure, error: finalizeFailureError } = await db.rpc("finalize_auth_attempt", {
@@ -3567,12 +3391,12 @@ async function authorizeAuthenticatedUser(args: {
   // The controller accepted the command, but the station endpoint did not yet
   // reflect it. Keep the attempt under its existing lease so recovery performs
   // a read-only confirmation instead of sending a second authorization command.
-  if (authResult.pending_confirmation && authResult.cmd_accepted_at) {
+  if (authResult.pending_confirmation) {
     // Polling exhausted its bounded confirmation window. Expire this worker
     // lease now so the next request performs read-only recovery immediately
     // instead of waiting 30 seconds.
     await db.from("captive_auth_attempts").update({
-      lease_expires_at: new Date().toISOString(),
+      lease_expires_at: new Date(Date.now() + (authResult.cmd_accepted_at ? 0 : 15_000)).toISOString(),
     }).eq("id", attemptId).eq("lease_owner", leaseOwner).eq("status", "authorizing");
     return {
       session_id: sessionId,
@@ -3592,7 +3416,9 @@ async function authorizeAuthenticatedUser(args: {
     p_authorized: !!authResult.ok,
     p_redirect_url: finalRedirect,
     p_fail_reason: authResult.ok ? null : (authResult.reason || "AUTHORIZE_FAILED"),
-    p_result_code: authResult.ok ? "SUCCESS" : "UNIFI_ERROR"
+    p_result_code: authResult.ok
+      ? "SUCCESS"
+      : authResult.reason === "DAILY_ACCESS_LIMIT_REACHED" ? "DAILY_LIMIT" : "UNIFI_ERROR"
   });
 
   const finalRecord = Array.isArray(finalizeRes) ? finalizeRes[0] : null;
@@ -3679,12 +3505,54 @@ async function _handleRequestPasswordReset(req: Request): Promise<Response> {
 
 const PORTAL_IDENTITY_EMAIL_DOMAIN = "wifi.minasbrasilwifi.com.br";
 
+async function boundedPortalSessionChallenge(db: ReturnType<typeof supabaseAdmin>, userId: string,
+  deadlineAt = Date.now() + 1500) {
+  const remaining = deadlineAt - Date.now();
+  if (remaining <= 0) return null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const challenge = await Promise.race([
+      createPortalSessionChallenge(db, userId, deadlineAt).catch(() => null),
+      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), remaining); }),
+    ]);
+    return Date.now() < deadlineAt ? challenge : null;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+async function claimPortalSessionChallenge(db: ReturnType<typeof supabaseAdmin>, attemptId: string, token: string) {
+  const deadlineAt = Date.now() + 1500;
+  let active = true;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const challenge = await Promise.race([
+      (async () => {
+        const { data: userId, error } = await db.rpc("claim_captive_auth_challenge", {
+          p_attempt_id: attemptId, p_resume_token: token,
+        });
+        if (error || !userId || !active || Date.now() >= deadlineAt) return null;
+        return await boundedPortalSessionChallenge(db, userId, deadlineAt);
+      })(),
+      new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), 1500); }),
+    ]);
+    return active && Date.now() < deadlineAt ? challenge : null;
+  } catch {
+    return null; // Reusable browser login is optional after network confirmation.
+  } finally {
+    active = false;
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 async function createPortalSessionChallenge(
   db: ReturnType<typeof supabaseAdmin>,
   userId: string,
+  deadlineAt = Infinity,
 ): Promise<{ token_hash: string } | null> {
   const { data: userResult, error: userError } = await db.auth.admin.getUserById(userId);
   let email = userResult?.user?.email || null;
+  if (Date.now() >= deadlineAt) return null;
 
   if (userError || !userResult?.user) {
     Logger.error("[identity] auth user lookup failed", { code: userError?.code || "AUTH_USER_NOT_FOUND" });
@@ -3706,11 +3574,13 @@ async function createPortalSessionChallenge(
   // Generate a one-use session challenge without consuming /auth/v1/verify
   // from the shared Edge Function IP. The browser exchanges it only after the
   // UniFi authorization result, preserving the existing reusable session.
+  if (Date.now() >= deadlineAt) return null;
   const { data: linkData, error: linkError } = await db.auth.admin.generateLink({
     type: "magiclink",
     email,
   });
   const tokenHash = linkData?.properties?.hashed_token;
+  if (Date.now() >= deadlineAt) return null;
   if (linkError || !tokenHash) {
     Logger.error("[identity] session link generation failed", { code: linkError?.code || "SESSION_LINK_FAILED" });
     return null;
@@ -3732,6 +3602,18 @@ async function handleIdentity(req: Request): Promise<Response> {
   const { ctx, attemptId, resumeToken, error: authError } = await getValidatedAuthContext(db, body, "identity");
   if (authError) return authError;
 
+  // Cached portal versions may repeat identify. An already admitted capability
+  // follows its operation without charging the identity limiter or resending.
+  if (attemptId && resumeToken) {
+    const existing = await readOperation(db, attemptId, resumeToken);
+    if (existing.operation_id) {
+      return await handleAttemptStatus(new Request(req.url, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ attempt_id: attemptId, token: resumeToken }),
+      }));
+    }
+  }
+
   if (!Validators.phone(phoneDigits)) {
     return jsonResponse({ error: "Telefone inválido.", code: "invalid_phone" }, 400);
   }
@@ -3744,7 +3626,7 @@ async function handleIdentity(req: Request): Promise<Response> {
     const ipLimit = await checkRateLimitDb(db, `identity:ip:${clientIp || "unknown"}`, 300, 20, 900);
     const identityLimit = await checkRateLimitDb(db, `identity:value:${identityHash}`, 300, 8, 900);
     if (!ipLimit.allowed || !identityLimit.allowed) {
-      return jsonResponse({ error: "Muitas tentativas. Aguarde alguns minutos.", code: "rate_limited" }, 429);
+      return rateLimitedResponse(ipLimit.blocked_until || identityLimit.blocked_until, 300);
     }
   } catch (rateLimitError) {
     Logger.error("[identity] rate limiter unavailable", { error: (rateLimitError as Error).message });
@@ -3923,7 +3805,9 @@ async function handleIdentity(req: Request): Promise<Response> {
 
   let sessionChallenge: { token_hash: string } | null = null;
   if (result.authorized) {
-    sessionChallenge = await createPortalSessionChallenge(db, userId);
+    sessionChallenge = result.operation_id && attemptId && resumeToken
+      ? await claimPortalSessionChallenge(db, attemptId, resumeToken)
+      : await boundedPortalSessionChallenge(db, userId);
     if (!sessionChallenge) {
       // Wi-Fi authorization is already confirmed and must not be reported as
       // failed merely because the reusable browser session could not be
@@ -3932,7 +3816,7 @@ async function handleIdentity(req: Request): Promise<Response> {
     }
   }
 
-  if (result.authorized && profile.cpf_digits && profile.phone_digits) {
+  if (result.authorized && !result.operation_id && profile.cpf_digits && profile.phone_digits) {
     const crmSync = syncWithClubeMais({
       cpf: profile.cpf_digits,
       name: profile.full_name || "Cliente",
@@ -3950,7 +3834,7 @@ async function handleIdentity(req: Request): Promise<Response> {
     session_id: result.session_id,
     trace_id: traceId,
     store_id: result.store_id,
-    event_type: result.authorized ? "identity_success" : "identity_failed",
+    event_type: result.authorized ? "identity_success" : result.processing ? "identity_pending" : "identity_failed",
     step: "form",
     status: result.authorized ? "success" : "warning",
     payload: { store_slug: result.store_slug, fail_reason: result.fail_reason },
@@ -3964,8 +3848,13 @@ async function handleIdentity(req: Request): Promise<Response> {
     redirect_url: result.redirect_url,
     fail_reason: result.fail_reason,
     processing: result.processing || false,
+    status: result.status,
+    operation_id: result.operation_id,
+    retry_after_ms: result.retry_after_ms,
+    deadline_at: result.deadline_at,
     replay: result.replay || false,
     session_token_hash: result.authorized ? sessionChallenge?.token_hash : undefined,
+    server_now: new Date().toISOString(),
     trace_id: traceId,
   });
 }
@@ -4291,6 +4180,13 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
       return jsonResponse({ error: "Esta tentativa pertence a outro usuário.", code: "forbidden_attempt" }, 403);
     }
 
+    if (val.attempt.auth_operation_id) {
+      return await handleAttemptStatus(new Request(req.url, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ attempt_id: attemptId, token: resumeToken }),
+      }));
+    }
+
     // Replay a previously persisted result without a new controller command.
     if (val.status === 'completed') {
       Logger.info("[auth] Replay detected; reusing persisted result", { attempt_id: attemptId });
@@ -4325,7 +4221,7 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
   if (ctx.clientMac) {
     const rlMac = await checkRateLimitDb(db, `authexisting:mac:${ctx.clientMac}`, 60, 20, 60);
     if (!rlMac.allowed) {
-      return jsonResponse({ error: "Muitas tentativas. Aguarde.", code: "rate_limited" }, 429);
+      return rateLimitedResponse(rlMac.blocked_until);
     }
   }
 
@@ -4416,7 +4312,7 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
 
 
   // Background sync with CRM on authenticated login success (if lead is complete)
-  if (result.authorized && profile?.cpf_digits && profile?.full_name && profile?.phone_digits) {
+  if (result.authorized && !result.operation_id && profile?.cpf_digits && profile?.full_name && profile?.phone_digits) {
     const bgSync = (async () => {
       try {
         await syncWithClubeMais({
@@ -4439,7 +4335,7 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
 
   logEvent(db, {
     session_id: result.session_id, trace_id: traceId,
-    event_type: result.authorized ? "silent_login_success" : "silent_login_failed",
+    event_type: result.authorized ? "silent_login_success" : result.processing ? "silent_login_pending" : "silent_login_failed",
     step: "form", status: result.authorized ? "success" : "warning",
     payload: { store_slug: result.store_slug, fail_reason: result.fail_reason, auth_method: authMethod }, client_ip: clientIp,
   });
@@ -4454,6 +4350,11 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
     auth_method: authMethod,
     replay: result.replay || false,
     processing: result.processing || false,
+    status: result.status,
+    operation_id: result.operation_id,
+    retry_after_ms: result.retry_after_ms,
+    deadline_at: result.deadline_at,
+    server_now: new Date().toISOString(),
     trace_id: traceId,
   });
 }
@@ -4581,7 +4482,6 @@ async function _handleUpdateProfile(req: Request): Promise<Response> {
 
 
 function isValidUUID(id: unknown): boolean { return Validators.uuid(id); }
-function isValidMac(mac: string | null): boolean { return Validators.mac(mac) !== null; }
 function sanitizeString(s: unknown, maxLen: number): string | null { return Validators.string(s, maxLen); }
 function normalizeMac(mac: unknown): string | null { return Validators.mac(mac); }
 function isValidEmail(email: string): boolean { return Validators.email(email); }
@@ -4602,7 +4502,7 @@ Deno.serve(async (req: Request) => {
 
   try {
     // 1. System/Health endpoints
-    if (path === "/health") return jsonResponse({ status: "ok" });
+    if (path === "/health") return jsonResponse({ status: "ok", authorization_contract: "durable-v1", beta_stores: ["povao"] });
     if (path === "/ready") {
       const readyDb = supabaseAdmin();
       const { error: databaseError } = await readyDb
@@ -4618,14 +4518,38 @@ Deno.serve(async (req: Request) => {
         store.unifi_controller_url !== canonicalUnifiControllerUrl(store.slug) ||
         !store.unifi_site_id
       );
+      const [{ data: worker, error: workerError }, { count: activeOperations, error: operationError },
+        { count: overdueOperations, error: overdueError }, { count: recoveryFailures, error: recoveryError }] = await Promise.all([
+        readyDb.from("captive_auth_worker_config")
+          .select("enabled,sends_enabled,last_tick_at,last_dispatch_at,last_worker_finished_at,last_worker_failed_count,last_error_code")
+          .eq("singleton", true).maybeSingle(),
+        readyDb.from("captive_auth_operations").select("id", { count: "exact", head: true })
+          .in("status", ["queued", "sending", "verifying"]),
+        readyDb.from("captive_auth_operations").select("id", { count: "exact", head: true })
+          .in("status", ["queued", "sending", "verifying"])
+          .or(`verification_deadline.lt.${new Date(Date.now() - 30_000).toISOString()},and(verification_deadline.is.null,created_at.lt.${new Date(Date.now() - 120_000).toISOString()})`),
+        readyDb.from("captive_auth_recovery_failures").select("operation_id", { count: "exact", head: true }),
+      ]);
+      const tickHealthy = !!worker?.last_tick_at && Date.now() - Date.parse(worker.last_tick_at) < 35_000;
+      const dispatchUnanswered = !!worker?.last_dispatch_at &&
+        Date.parse(worker.last_dispatch_at) > Date.parse(worker.last_worker_finished_at || "1970-01-01") &&
+        Date.now() - Date.parse(worker.last_dispatch_at) > 30_000;
+      const reconcilerHealthy = !workerError && !operationError && !overdueError && !recoveryError && !recoveryFailures &&
+        worker?.enabled === true && worker.sends_enabled === true && tickHealthy &&
+        !worker.last_error_code && !overdueOperations &&
+        (!(activeOperations || 0) || (!dispatchUnanswered && !worker.last_worker_failed_count));
       const checks = {
         database: !databaseError,
         unifi_credentials: !!UNIFI_USERNAME && !!UNIFI_PASSWORD,
         controller_configuration: !storesError && invalidStores.length === 0 && (activeStores?.length || 0) > 0,
         invalid_controller_stores: invalidStores.map((store) => store.slug),
         cron_secret: !!CRON_SECRET,
+        authorization_reconciler: reconcilerHealthy,
+        authorization_active_operations: activeOperations ?? null,
+        authorization_overdue_operations: overdueOperations ?? null,
+        authorization_recovery_failures: recoveryFailures ?? null,
       };
-      const ready = checks.database && checks.unifi_credentials && checks.controller_configuration;
+      const ready = checks.database && checks.unifi_credentials && checks.controller_configuration && reconcilerHealthy;
       return jsonResponse({ status: ready ? "ready" : "degraded", checks }, ready ? 200 : 503);
     }
 
@@ -4643,6 +4567,7 @@ Deno.serve(async (req: Request) => {
     if (path === "/bootstrap" && req.method === "GET") return await handleBootstrap(req);
     if (path === "/client-event" && req.method === "POST") return await handleClientEvent(req);
     if (path === "/attempt/init" && req.method === "POST") return await handleAttemptInit(req);
+    if (path === "/attempt/status" && req.method === "POST") return await handleAttemptStatus(req);
     if (path === "/identify" && req.method === "POST") return await handleIdentity(req);
     if (path === "/authorize-existing" && req.method === "POST") return await handleAuthorizeExisting(req);
 
@@ -4667,10 +4592,13 @@ Deno.serve(async (req: Request) => {
 
     // 4. System endpoints
     if (path === "/cron/housekeeping" && req.method === "POST") return await handleCronHousekeeping(req);
+    if (path === "/cron/auth-reconcile" && req.method === "POST") return await handleAuthorizationReconcile(req);
 
     return errorResponse("Not found", 404);
   } catch (err) {
     Logger.error("Unhandled error", { error: err });
+    const authorizationResponse = authorizationFailureResponse(err);
+    if (authorizationResponse) return authorizationResponse;
     return errorResponse("Internal server error", 500);
   }
 });
@@ -4715,9 +4643,8 @@ async function validateAuthAttempt(
   }
 
   if (attempt.status === 'expired' || new Date(attempt.expires_at) < new Date()) {
-    if (attempt.status !== 'expired') {
-      await db.from("captive_auth_attempts").update({ status: 'expired' }).eq("id", attemptId);
-    }
+    // Expiring a browser capability must never cancel or regress a committed
+    // operation (or a completed result). The reconciler owns its lifetime.
     return { status: 'invalid', error: "Esta tentativa expirou. Inicie o processo novamente." };
   }
 
@@ -4764,7 +4691,7 @@ async function handleAttemptInit(req: Request): Promise<Response> {
   // Rate limit by IP/MAC fail-closed
   try {
     const rl = await checkRateLimitDb(db, `attempt-init:mac:${clientMac}`, 60, 5, 300);
-    if (!rl.allowed) return errorResponse("Muitas tentativas. Aguarde alguns minutos.", 429);
+    if (!rl.allowed) return rateLimitedResponse(rl.blocked_until);
   } catch (e) {
     Logger.error("[attempt-init] Rate limiter error", { error: (e as Error).message });
     return errorResponse("Serviço temporariamente indisponível.", 503);
@@ -4849,7 +4776,9 @@ async function handleAttemptInit(req: Request): Promise<Response> {
   return jsonResponse({
     attempt_id: attempt.id,
     token: token,
+    expires_at: expiresAt.toISOString(),
     store: { slug: detected.store_slug, name: detected.store_name, city: detected.store_city },
+    server_now: new Date().toISOString(),
     detection_source: detected.detection_source,
   });
 }

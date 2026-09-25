@@ -1,0 +1,235 @@
+{
+  "triggers": [
+    {
+      "table_name": "captive_auth_attempts",
+      "rls_enabled": true,
+      "rls_forced": false,
+      "tgname": "protect_attempt_user_id_trigger",
+      "trigger_definition": "CREATE TRIGGER protect_attempt_user_id_trigger BEFORE UPDATE ON public.captive_auth_attempts FOR EACH ROW EXECUTE FUNCTION protect_attempt_user_id()",
+      "function_schema": "public",
+      "proname": "protect_attempt_user_id",
+      "function_definition": "CREATE OR REPLACE FUNCTION public.protect_attempt_user_id()\n RETURNS trigger\n LANGUAGE plpgsql\n SET search_path TO 'public'\nAS $function$\nBEGIN\n    IF OLD.user_id IS NOT NULL AND NEW.user_id IS NOT NULL AND OLD.user_id <> NEW.user_id THEN\n        RAISE EXCEPTION 'user_id cannot be changed once associated';\n    END IF;\n    RETURN NEW;\nEND;\n$function$\n"
+    },
+    {
+      "table_name": "captive_sessions",
+      "rls_enabled": true,
+      "rls_forced": false,
+      "tgname": "link_session_to_attempt_trigger",
+      "trigger_definition": "CREATE TRIGGER link_session_to_attempt_trigger AFTER INSERT ON public.captive_sessions FOR EACH ROW EXECUTE FUNCTION link_session_to_attempt()",
+      "function_schema": "public",
+      "proname": "link_session_to_attempt",
+      "function_definition": "CREATE OR REPLACE FUNCTION public.link_session_to_attempt()\n RETURNS trigger\n LANGUAGE plpgsql\n SECURITY DEFINER\n SET search_path TO 'public'\nAS $function$\nBEGIN\n    IF NEW.attempt_id IS NOT NULL THEN\n        UPDATE public.captive_auth_attempts \n        SET captive_session_id = NEW.id \n        WHERE id = NEW.attempt_id AND captive_session_id IS NULL;\n    END IF;\n    RETURN NEW;\nEND;\n$function$\n"
+    },
+    {
+      "table_name": "captive_sessions",
+      "rls_enabled": true,
+      "rls_forced": false,
+      "tgname": "trg_normalize_session_mac",
+      "trigger_definition": "CREATE TRIGGER trg_normalize_session_mac BEFORE INSERT OR UPDATE ON public.captive_sessions FOR EACH ROW EXECUTE FUNCTION normalize_session_mac()",
+      "function_schema": "public",
+      "proname": "normalize_session_mac",
+      "function_definition": "CREATE OR REPLACE FUNCTION public.normalize_session_mac()\n RETURNS trigger\n LANGUAGE plpgsql\n SET search_path TO 'public'\nAS $function$\nBEGIN\n  NEW.client_mac = public.normalize_mac(NEW.client_mac);\n  NEW.ap_mac = public.normalize_mac(NEW.ap_mac);\n  RETURN NEW;\nEND;\n$function$\n"
+    },
+    {
+      "table_name": "captive_sessions",
+      "rls_enabled": true,
+      "rls_forced": false,
+      "tgname": "update_captive_sessions_updated_at",
+      "trigger_definition": "CREATE TRIGGER update_captive_sessions_updated_at BEFORE UPDATE ON public.captive_sessions FOR EACH ROW EXECUTE FUNCTION update_updated_at_column()",
+      "function_schema": "public",
+      "proname": "update_updated_at_column",
+      "function_definition": "CREATE OR REPLACE FUNCTION public.update_updated_at_column()\n RETURNS trigger\n LANGUAGE plpgsql\n SET search_path TO 'public'\nAS $function$\nBEGIN\n  NEW.updated_at = now();\n  RETURN NEW;\nEND;\n$function$\n"
+    }
+  ],
+  "constraints": [
+    {
+      "jsonb_build_object": {
+        "indexes": [
+          {
+            "indexdef": "CREATE UNIQUE INDEX captive_auth_attempts_pkey ON public.captive_auth_attempts USING btree (id)",
+            "indexname": "captive_auth_attempts_pkey",
+            "tablename": "captive_auth_attempts"
+          },
+          {
+            "indexdef": "CREATE UNIQUE INDEX captive_auth_attempts_resume_token_hash_unique ON public.captive_auth_attempts USING btree (resume_token_hash)",
+            "indexname": "captive_auth_attempts_resume_token_hash_unique",
+            "tablename": "captive_auth_attempts"
+          },
+          {
+            "indexdef": "CREATE UNIQUE INDEX captive_auth_attempts_session_id_unique_idx ON public.captive_auth_attempts USING btree (captive_session_id) WHERE (captive_session_id IS NOT NULL)",
+            "indexname": "captive_auth_attempts_session_id_unique_idx",
+            "tablename": "captive_auth_attempts"
+          },
+          {
+            "indexdef": "CREATE INDEX idx_auth_attempts_client_mac ON public.captive_auth_attempts USING btree (client_mac)",
+            "indexname": "idx_auth_attempts_client_mac",
+            "tablename": "captive_auth_attempts"
+          },
+          {
+            "indexdef": "CREATE INDEX idx_auth_attempts_status ON public.captive_auth_attempts USING btree (status)",
+            "indexname": "idx_auth_attempts_status",
+            "tablename": "captive_auth_attempts"
+          },
+          {
+            "indexdef": "CREATE INDEX idx_captive_auth_attempts_expires_at ON public.captive_auth_attempts USING btree (expires_at)",
+            "indexname": "idx_captive_auth_attempts_expires_at",
+            "tablename": "captive_auth_attempts"
+          },
+          {
+            "indexdef": "CREATE INDEX idx_captive_auth_attempts_store_id ON public.captive_auth_attempts USING btree (store_id)",
+            "indexname": "idx_captive_auth_attempts_store_id",
+            "tablename": "captive_auth_attempts"
+          },
+          {
+            "indexdef": "CREATE INDEX idx_captive_auth_attempts_user_id ON public.captive_auth_attempts USING btree (user_id)",
+            "indexname": "idx_captive_auth_attempts_user_id",
+            "tablename": "captive_auth_attempts"
+          },
+          {
+            "indexdef": "CREATE UNIQUE INDEX captive_sessions_pkey ON public.captive_sessions USING btree (id)",
+            "indexname": "captive_sessions_pkey",
+            "tablename": "captive_sessions"
+          },
+          {
+            "indexdef": "CREATE UNIQUE INDEX idx_captive_sessions_attempt_id_unique ON public.captive_sessions USING btree (attempt_id) WHERE (attempt_id IS NOT NULL)",
+            "indexname": "idx_captive_sessions_attempt_id_unique",
+            "tablename": "captive_sessions"
+          },
+          {
+            "indexdef": "CREATE INDEX idx_captive_sessions_last_step ON public.captive_sessions USING btree (last_step)",
+            "indexname": "idx_captive_sessions_last_step",
+            "tablename": "captive_sessions"
+          },
+          {
+            "indexdef": "CREATE INDEX idx_captive_sessions_mac_status_auth ON public.captive_sessions USING btree (client_mac, status, authorized_at DESC) WHERE (client_mac IS NOT NULL)",
+            "indexname": "idx_captive_sessions_mac_status_auth",
+            "tablename": "captive_sessions"
+          },
+          {
+            "indexdef": "CREATE INDEX idx_captive_sessions_started_at ON public.captive_sessions USING btree (started_at DESC)",
+            "indexname": "idx_captive_sessions_started_at",
+            "tablename": "captive_sessions"
+          },
+          {
+            "indexdef": "CREATE INDEX idx_captive_sessions_store_started ON public.captive_sessions USING btree (store_id, started_at DESC)",
+            "indexname": "idx_captive_sessions_store_started",
+            "tablename": "captive_sessions"
+          },
+          {
+            "indexdef": "CREATE INDEX idx_captive_sessions_trace_id ON public.captive_sessions USING btree (trace_id)",
+            "indexname": "idx_captive_sessions_trace_id",
+            "tablename": "captive_sessions"
+          },
+          {
+            "indexdef": "CREATE INDEX idx_captive_sessions_user_id ON public.captive_sessions USING btree (user_id)",
+            "indexname": "idx_captive_sessions_user_id",
+            "tablename": "captive_sessions"
+          },
+          {
+            "indexdef": "CREATE INDEX idx_sessions_client_mac ON public.captive_sessions USING btree (client_mac) WHERE (client_mac IS NOT NULL)",
+            "indexname": "idx_sessions_client_mac",
+            "tablename": "captive_sessions"
+          },
+          {
+            "indexdef": "CREATE INDEX idx_sessions_status ON public.captive_sessions USING btree (status)",
+            "indexname": "idx_sessions_status",
+            "tablename": "captive_sessions"
+          }
+        ],
+        "policies": [
+          {
+            "cmd": "SELECT",
+            "qual": "((( SELECT auth.uid() AS uid) = user_id) OR ( SELECT has_role(( SELECT auth.uid() AS uid), 'admin'::app_role) AS has_role))",
+            "roles": [
+              "authenticated"
+            ],
+            "tablename": "captive_sessions",
+            "policyname": "Authenticated users can read permitted sessions",
+            "schemaname": "public",
+            "with_check": null
+          }
+        ],
+        "constraints": [
+          {
+            "conname": "captive_auth_attempts_captive_session_id_fkey",
+            "contype": "f",
+            "definition": "FOREIGN KEY (captive_session_id) REFERENCES captive_sessions(id)",
+            "table_name": "captive_auth_attempts"
+          },
+          {
+            "conname": "captive_auth_attempts_expiration_check",
+            "contype": "c",
+            "definition": "CHECK ((expires_at > created_at))",
+            "table_name": "captive_auth_attempts"
+          },
+          {
+            "conname": "captive_auth_attempts_pkey",
+            "contype": "p",
+            "definition": "PRIMARY KEY (id)",
+            "table_name": "captive_auth_attempts"
+          },
+          {
+            "conname": "captive_auth_attempts_resume_token_hash_format",
+            "contype": "c",
+            "definition": "CHECK ((resume_token_hash ~ '^[a-f0-9]{64}$'::text))",
+            "table_name": "captive_auth_attempts"
+          },
+          {
+            "conname": "captive_auth_attempts_resume_token_hash_unique",
+            "contype": "u",
+            "definition": "UNIQUE (resume_token_hash)",
+            "table_name": "captive_auth_attempts"
+          },
+          {
+            "conname": "captive_auth_attempts_status_check",
+            "contype": "c",
+            "definition": "CHECK ((status = ANY (ARRAY['created'::text, 'oauth_redirected'::text, 'callback_received'::text, 'awaiting_cpf'::text, 'authorizing'::text, 'authorized'::text, 'failed'::text, 'expired'::text, 'cancelled'::text])))",
+            "table_name": "captive_auth_attempts"
+          },
+          {
+            "conname": "captive_auth_attempts_store_id_fkey",
+            "contype": "f",
+            "definition": "FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE SET NULL",
+            "table_name": "captive_auth_attempts"
+          },
+          {
+            "conname": "captive_auth_attempts_user_id_fkey",
+            "contype": "f",
+            "definition": "FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE SET NULL",
+            "table_name": "captive_auth_attempts"
+          },
+          {
+            "conname": "captive_sessions_pkey",
+            "contype": "p",
+            "definition": "PRIMARY KEY (id)",
+            "table_name": "captive_sessions"
+          },
+          {
+            "conname": "captive_sessions_store_id_fkey",
+            "contype": "f",
+            "definition": "FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE CASCADE",
+            "table_name": "captive_sessions"
+          },
+          {
+            "conname": "captive_sessions_user_id_fkey",
+            "contype": "f",
+            "definition": "FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE SET NULL",
+            "table_name": "captive_sessions"
+          },
+          {
+            "conname": "fk_captive_sessions_attempt",
+            "contype": "f",
+            "definition": "FOREIGN KEY (attempt_id) REFERENCES captive_auth_attempts(id) ON DELETE RESTRICT",
+            "table_name": "captive_sessions"
+          }
+        ],
+        "session_statuses": [
+          "started",
+          "submitted",
+          "authorized",
+          "failed"
+        ]
+      }
+    }
+  ]
+}

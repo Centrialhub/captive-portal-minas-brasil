@@ -50,6 +50,18 @@ const edgeFunction = readFileSync(
   join(root, "supabase/functions/captive-portal/index.ts"),
   "utf8",
 );
+const durableMigration = readFileSync(
+  join(root, "supabase/migrations/20260925164858_durable_captive_auth_operations.sql"),
+  "utf8",
+);
+const durableCoordinator = readFileSync(
+  join(root, "supabase/functions/_shared/durable-auth.ts"),
+  "utf8",
+);
+const unifiAdapter = readFileSync(
+  join(root, "supabase/functions/_shared/unifi-authorization.ts"),
+  "utf8",
+);
 const concurrencyGate = readFileSync(
   join(root, "scripts/verify-concurrency.mjs"),
   "utf8",
@@ -70,9 +82,10 @@ const requirements: Array<[string, boolean]> = [
   ["edge claim passes the resume token", /p_resume_token:\s*resumeToken/.test(edgeFunction)],
   ["lease ownership is unique per invocation", /const leaseOwner = `worker-\$\{crypto\.randomUUID\(\)\}`/.test(edgeFunction)],
   ["ambiguous controller errors remain recoverable", /isAmbiguous \? "PROCESSING_IN_PROGRESS"/.test(edgeFunction)],
-  ["admin contract keeps operational settings in the captive backend", /ADD COLUMN IF NOT EXISTS session_duration_minutes/.test(adminContractMigration) && /CHECK \(session_duration_minutes BETWEEN 1 AND 43200\)/.test(adminContractMigration)],
+  ["admin contract keeps operational settings in the captive backend", /ADD COLUMN IF NOT EXISTS session_duration_minutes/.test(adminContractMigration) && /CHECK \(session_duration_minutes BETWEEN 1 AND 43200\)/.test(adminContractMigration) && /ADD COLUMN IF NOT EXISTS max_daily_accesses/.test(adminContractMigration) && /CHECK \(max_daily_accesses BETWEEN 0 AND 100\)/.test(adminContractMigration)],
   ["admin contract preserves lead acquisition timestamps", /ADD COLUMN IF NOT EXISTS first_seen_at/.test(adminContractMigration) && /ADD COLUMN IF NOT EXISTS last_seen_at/.test(adminContractMigration) && /ALTER COLUMN last_seen_at SET NOT NULL/.test(adminContractMigration)],
-  ["admin settings updates are validated and audited", /Number\.isInteger\(duration\)/.test(edgeFunction) && /writeAdminAudit\(db, req, userId, "global_settings", "update"/.test(edgeFunction) && /session_duration_minutes: duration/.test(edgeFunction)],
+  ["admin settings updates are validated and audited", /Number\.isInteger\(duration\)/.test(edgeFunction) && /Number\.isInteger\(maxDailyAccesses\)/.test(edgeFunction) && /writeAdminAudit\(db, req, userId, "global_settings", "update"/.test(edgeFunction) && /\.update\(updates\)/.test(edgeFunction)],
+  ["daily access limit is enforced from global settings", /select\("session_duration_minutes, max_daily_accesses"\)/.test(edgeFunction) && /hasReachedDailyAccessLimit/.test(edgeFunction) && /DAILY_ACCESS_LIMIT_REACHED/.test(edgeFunction) && /daily_access_denied/.test(edgeFunction)],
   ["marketing exports are consent-aware and audited", /audience === "marketing"/.test(edgeFunction) && /lead\.consented_at/.test(edgeFunction) && /writeAdminAudit\(db, req, userId, "lead", "export_csv"/.test(edgeFunction)],
   ["marketing exports exclude sensitive network and identity fields", /\? \["nome", "email", "telefone", "loja"/.test(edgeFunction) && /query = query\.eq\("marketing_status", "eligible"\)/.test(edgeFunction) && /exportRows = \(data \|\| \[\]\)\.filter/.test(edgeFunction)],
   ["user blocks are RLS-protected and service-role-only", /CREATE TABLE IF NOT EXISTS public\.user_blocks/.test(adminOperationsMigration) && /ENABLE ROW LEVEL SECURITY/.test(adminOperationsMigration) && /REVOKE ALL ON TABLE public\.user_blocks FROM PUBLIC, anon, authenticated/.test(adminOperationsMigration)],
@@ -88,14 +101,19 @@ const requirements: Array<[string, boolean]> = [
   ["browser handoffs are one-time, RLS protected, and service-role-only", /CREATE TABLE IF NOT EXISTS public\.oauth_browser_handoffs/.test(captiveHardeningMigration) && /claimed_at IS NOT NULL/.test(captiveHardeningMigration) && /ENABLE ROW LEVEL SECURITY/.test(captiveHardeningMigration) && /claim_oauth_browser_handoff\(TEXT, TEXT\)[\s\S]*TO service_role/.test(captiveHardeningMigration)],
   ["admin controller URLs are derived from the store slug", /canonicalUnifiControllerUrl\(slug\)/.test(edgeFunction) && /canonicalUnifiControllerUrl\(effectiveSlug\)/.test(edgeFunction)],
   ["UniFi idempotency is scoped by store and MAC", /unifi_auth:store:\$\{storeId\}:mac:\$\{clientMac\.toUpperCase\(\)\}/.test(edgeFunction) && /\.eq\("store_id", storeId\)/.test(edgeFunction)],
-  ["absent-station fallback requires a server-verified AP/store binding", /allowPortalMacFallback/.test(edgeFunction) && /mappedAp\?\.store_id === storeId/.test(edgeFunction) && /reason=PORTAL_MAC_FALLBACK/.test(edgeFunction) && /CLIENT_NOT_FOUND_ON_CONTROLLER/.test(edgeFunction)],
+  ["absent-station fallback requires an explicit server-verified AP/store binding", /allowPortalMacFallback/.test(edgeFunction) && /mappedAp\?\.store_id === storeId/.test(edgeFunction) && /options\.allowPortalMacFallback === true/.test(edgeFunction) && /CLIENT_NOT_OBSERVED/.test(edgeFunction)],
   ["store discovery caches only the controller-observed AP", /normalizeMac\(station\.ap_mac\)/.test(edgeFunction) && !/normalizeMac\(station\.ap_mac \|\| apMacHint\)/.test(edgeFunction)],
   ["admin controller URL writes require HTTPS", (edgeFunction.match(/sanitizeHttpUrl\(body\.unifi_controller_url, \{ httpsOnly: true \}\)/g) || []).length === 2],
   ["troubleshooting exposes diagnostics, trace events, and audit", /handleAdminDiagnostics/.test(edgeFunction) && /portal_events/.test(edgeFunction) && /handleAdminAudit/.test(edgeFunction)],
   ["legacy identity migration is atomic and service-role-only", /pg_advisory_xact_lock/.test(hardenedPortalMigration) && /SECURITY INVOKER/.test(hardenedPortalMigration) && /REVOKE ALL ON FUNCTION public\.resolve_portal_identity/.test(hardenedPortalMigration) && /TO service_role/.test(hardenedPortalMigration)],
   ["stale authorization cleanup keeps attempts and sessions consistent", /expire_stale_auth_attempts/.test(hardenedPortalMigration) && /ATTEMPT_EXPIRED/.test(hardenedPortalMigration) && /failed_sessions/.test(hardenedPortalMigration)],
   ["confirmed controller authorization is persisted", /unifi_confirmed_at/.test(edgeFunction) && /RECOVERED_ALREADY_AUTHORIZED/.test(edgeFunction)],
-  ["pending controller results become immediately recoverable", /lease_expires_at: new Date\(\)\.toISOString\(\)/.test(edgeFunction) && /check\.state === 'not_authorized'/.test(edgeFunction)],
+  ["beta authorization uses durable operations with a separate status endpoint", /storeSlug === "povao"[\s\S]*authorizeDurably\(args/.test(edgeFunction) && /path === "\/attempt\/status"/.test(edgeFunction) && /join_captive_auth_operation/.test(edgeFunction)],
+  ["durable claims fence writes and never automatically repeat a send", /lease_version/.test(durableMigration) && /stale_lease/.test(durableMigration) && /CASE WHEN o\.status='queued' THEN 'send' ELSE 'verify' END/.test(durableMigration) && /send_count=CASE WHEN v_action='send' THEN 1 ELSE send_count END/.test(durableMigration)],
+  ["database watchdog expires uncertainty without claiming a controller rejection", /expire_captive_auth_operations/.test(durableMigration) && /expired_unconfirmed/.test(durableMigration) && /EXPLICIT_REJECTION_REQUIRED/.test(durableMigration)],
+  ["confirmation atomically projects to session, attempt and audit", /sync_captive_auth_operation/.test(durableMigration) && /UPDATE public\.captive_auth_attempts/.test(durableMigration) && /UPDATE public\.captive_sessions/.test(durableMigration) && /auth_operation_/.test(durableMigration)],
+  ["only exact station evidence can confirm the operation", /exactUnifiEvidence/.test(unifiAdapter) && /station\.authorized !== "boolean"/.test(unifiAdapter) && /CONFIRMATION_MAC_MISMATCH/.test(durableCoordinator) && !/function pickEffectiveMac/.test(edgeFunction)],
+  ["unknown POST outcomes are preserved and response bodies share the deadline", /UNIFI_COMMAND_OUTCOME_UNKNOWN/.test(unifiAdapter) && /const body = await response\.text\(\)/.test(unifiAdapter) && /Promise\.race/.test(unifiAdapter) && /deadlineAt/.test(edgeFunction)],
   ["manual housekeeping is preview-first and explicitly confirmed", /body\.dry_run !== false/.test(edgeFunction) && /EXCLUIR DADOS EXPIRADOS/.test(edgeFunction) && /previewHousekeeping/.test(edgeFunction)],
   ["readiness reports degraded dependencies", /path === "\/ready"/.test(edgeFunction) && /ready \? 200 : 503/.test(edgeFunction)],
 ];
