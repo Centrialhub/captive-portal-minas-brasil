@@ -1,5 +1,7 @@
 # Correção da autorização do beta Povoão — 25/09/2026
 
+> **Atualização após testes sintéticos adicionais:** a bateria ampliada encontrou 18 grupos de problemas e terminou com 213 aprovações e 30 reprovações. A validação para a próxima publicação está reprovada; corrigir os achados antes de implantar o frontend. Este documento preserva o histórico da implantação anterior. O resultado vigente está em [testes-sinteticos-povao-2026-09-25.md](testes-sinteticos-povao-2026-09-25.md).
+
 ## Escopo e conclusão
 
 Correção da coordenação entre portal, banco e UniFi para o beta `povao`. As falhas externas de `drive` e `joao23` permanecem fora do escopo informado pelo responsável.
@@ -47,7 +49,7 @@ O advisor de segurança não apontou nova exposição das tabelas: as cinco tabe
 
 Ordem: migration durável → Edge Function compatível → configuração do worker → frontend. O novo frontend depende de `expires_at` no init e de `/attempt/status`.
 
-**É necessária nova implantação do frontend; o frontend ainda não foi publicado nesta tarefa.** O deploy deve compilar o commit da correção usando o Dockerfile do repositório, com as variáveis públicas já configuradas no EasyPanel. O frontend público ainda informa SHA `90b0767af59b9490fb3191601ac2796886ee72c2`. Banco e backend já estão preparados para ele; clientes com o bundle anterior também recebem o estado durável pelo caminho de compatibilidade.
+**É necessária nova implantação do frontend; o frontend ainda não foi publicado nesta tarefa.** A rodada sintética posterior reprovou a validação: concluir as correções adicionais antes dessa implantação. O deploy deverá compilar o commit corrigido usando o Dockerfile do repositório, com as variáveis públicas já configuradas no EasyPanel. Na verificação anterior, o frontend público informava SHA `90b0767af59b9490fb3191601ac2796886ee72c2`. O backend implantado oferece o contrato durável e compatibilidade com o bundle anterior, mas também tem os achados adicionais registrados no novo relatório.
 
 O contrato técnico e os comandos de configuração estão em `durable-captive-auth-db-contract.md`. Para interromper novos envios, manter o reconciliador publicado e configurar `p_enabled=true, p_sends_enabled=false`. Isso preserva consultas de comandos que podem já ter sido aplicados. Não remover tabelas nem retornar operações incertas ao caminho legado.
 

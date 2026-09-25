@@ -1,0 +1,282 @@
+{
+  "generated_at": "2026-09-25T17:25:01.728Z",
+  "application_base_commit": "1b2eefbb3ab9108c4ca46fdea86626c6f81dc942",
+  "scope": "Synthetic local testing; no production or controller requests. Application and migrations unchanged.",
+  "overall": {
+    "total": 243,
+    "passed": 213,
+    "failed": 30,
+    "baseline_passed": 170,
+    "new_tests": 73,
+    "problem_groups": 18
+  },
+  "application": {
+    "started_at": "2026-09-25T17:19:24.933Z",
+    "total": 199,
+    "passed": 177,
+    "failed": 22,
+    "files": [
+      {
+        "path": "src/App.authorization.test.tsx",
+        "total": 20,
+        "passed": 20,
+        "failed": 0,
+        "failed_tests": []
+      },
+      {
+        "path": "src/App.synthetic.test.tsx",
+        "total": 14,
+        "passed": 8,
+        "failed": 6,
+        "failed_tests": [
+          "synthetic frontend boundaries SYN-F01: StrictMode resumes a stored operation after effect cleanup invalidates its first response",
+          "synthetic frontend boundaries SYN-F02: accepts a current server confirmation when the device clock is twenty minutes fast",
+          "synthetic frontend boundaries SYN-F03: bounds completed status reads during a short storm after confirmation",
+          "synthetic frontend boundaries SYN-F03b: successful revalidation does not keep postponing the existing redirect deadline",
+          "synthetic frontend boundaries SYN-F05: a synchronously blocked navigation eventually restores the continue button",
+          "synthetic frontend boundaries SYN-F04: preserves an init Retry-After across remount before silent login can create another capability"
+        ]
+      },
+      {
+        "path": "src/requirements.test.ts",
+        "total": 15,
+        "passed": 15,
+        "failed": 0,
+        "failed_tests": []
+      },
+      {
+        "path": "src/lib/api.test.ts",
+        "total": 13,
+        "passed": 13,
+        "failed": 0,
+        "failed_tests": []
+      },
+      {
+        "path": "src/lib/attempt-tracker.synthetic.test.ts",
+        "total": 3,
+        "passed": 3,
+        "failed": 0,
+        "failed_tests": []
+      },
+      {
+        "path": "src/lib/attempt-tracker.test.ts",
+        "total": 8,
+        "passed": 8,
+        "failed": 0,
+        "failed_tests": []
+      },
+      {
+        "path": "supabase/functions/_shared/daily-access.test.ts",
+        "total": 3,
+        "passed": 3,
+        "failed": 0,
+        "failed_tests": []
+      },
+      {
+        "path": "supabase/functions/_shared/durable-auth.test.ts",
+        "total": 8,
+        "passed": 8,
+        "failed": 0,
+        "failed_tests": []
+      },
+      {
+        "path": "supabase/functions/_shared/durable-handlers.test.ts",
+        "total": 20,
+        "passed": 14,
+        "failed": 6,
+        "failed_tests": [
+          "durable Edge handlers and browser wire contract synthetic: a stalled optional challenge RPC cannot hold a confirmed response",
+          "durable Edge handlers and browser wire contract synthetic: a failed user_roles lookup before POST preserves proven-unsent recovery",
+          "durable Edge handlers and browser wire contract synthetic: a failed store_access_points lookup before POST preserves proven-unsent recovery",
+          "durable Edge handlers and browser wire contract synthetic: initial authorization does not return an invalid success-shaped DTO for state_inconsistent",
+          "durable Edge handlers and browser wire contract synthetic: initial authorization does not return an invalid success-shaped DTO for receipt_stale",
+          "durable Edge handlers and browser wire contract synthetic: initial authorization does not return an invalid success-shaped DTO for invalid_capability"
+        ]
+      },
+      {
+        "path": "supabase/functions/_shared/durable-load.synthetic.test.ts",
+        "total": 8,
+        "passed": 5,
+        "failed": 3,
+        "failed_tests": [
+          "synthetic unattended recovery capacity records all 40 already-authorized clients when their browsers disappear",
+          "synthetic unattended recovery capacity records all 48 already-authorized clients when their browsers disappear",
+          "synthetic unattended recovery capacity records all 80 already-authorized clients when their browsers disappear"
+        ]
+      },
+      {
+        "path": "supabase/functions/_shared/identity.test.ts",
+        "total": 2,
+        "passed": 2,
+        "failed": 0,
+        "failed_tests": []
+      },
+      {
+        "path": "supabase/functions/_shared/unifi-adapter.test.ts",
+        "total": 17,
+        "passed": 17,
+        "failed": 0,
+        "failed_tests": []
+      },
+      {
+        "path": "supabase/functions/_shared/unifi-authorization.test.ts",
+        "total": 38,
+        "passed": 38,
+        "failed": 0,
+        "failed_tests": []
+      },
+      {
+        "path": "supabase/functions/_shared/unifi-cookie.test.ts",
+        "total": 4,
+        "passed": 4,
+        "failed": 0,
+        "failed_tests": []
+      },
+      {
+        "path": "supabase/functions/_shared/unifi-synthetic.test.ts",
+        "total": 26,
+        "passed": 19,
+        "failed": 7,
+        "failed_tests": [
+          "synthetic transport failures through real UniFi adapters SYN-U1 rejects an acknowledgment received after a runtime pause at headers",
+          "synthetic transport failures through real UniFi adapters SYN-U1 rejects an acknowledgment received after a runtime pause at body",
+          "synthetic authentication and session rollover SYN-U2 refuses 'redirect with an auth cookie'",
+          "synthetic authentication and session rollover SYN-U2 refuses 'explicit JSON login rejection with an…'",
+          "synthetic authentication and session rollover SYN-U3 carries a session and CSRF rotation from station response into the command",
+          "synthetic authentication and session rollover SYN-U4 removes nonempty auth cookies invalidated with Max-Age=0",
+          "synthetic authentication and session rollover SYN-U4 removes nonempty auth cookies invalidated with Expires=Thu, 01 Jan 1970 00:00:00 GMT"
+        ]
+      }
+    ]
+  },
+  "postgres": {
+    "version": "PostgreSQL 17.10 on x86_64-windows, compiled by msvc-19.44.35226, 64-bit",
+    "finished_at": "2026-09-25T17:24:23.339Z",
+    "total": 44,
+    "passed": 36,
+    "failed": 8,
+    "failed_tests": [
+      "lease renewal refuses an owner whose lease expired during row-lock wait",
+      "join cannot reuse an authorization that expired while waiting on device lock",
+      "existing membership cannot bypass capability expiry during operation-lock wait",
+      "known-unsent retry cannot emit a fresh send after the verification deadline",
+      "late actual-send responses persist their effect and terminal projections atomically",
+      "one audit poison item cannot prevent claiming unrelated healthy work",
+      "40 browserless clients all confirm with four operations per ten-second tick",
+      "40 already-accepted browserless clients all confirm before recovery budget expires"
+    ],
+    "observations": [
+      {
+        "probe": "renew_after_lock_expiry",
+        "renewed": true
+      },
+      {
+        "probe": "join_after_grant_expiry",
+        "join_disposition": "confirmed",
+        "join_authorized": true,
+        "status_disposition": "receipt_stale"
+      },
+      {
+        "probe": "join_after_capability_expiry",
+        "disposition": "joined"
+      },
+      {
+        "probe": "send_after_verification_deadline",
+        "actions": [
+          "send"
+        ],
+        "lease_remaining_ms": 18999,
+        "accepted_error": "AUTH_OPERATION_STATE_MANAGED"
+      },
+      {
+        "probe": "late_actual_send_guard_conflict",
+        "cases": [
+          {
+            "outcome": "accepted",
+            "error": "AUTH_OPERATION_STATE_MANAGED",
+            "state": {
+              "status": "sending",
+              "command_accepted_at": null,
+              "command_dispatched_at": null,
+              "attempt": "authorizing",
+              "session": "submitted"
+            }
+          },
+          {
+            "outcome": "unknown",
+            "error": "AUTH_OPERATION_STATE_MANAGED",
+            "state": {
+              "status": "sending",
+              "command_accepted_at": null,
+              "command_dispatched_at": null,
+              "attempt": "authorizing",
+              "session": "submitted"
+            }
+          }
+        ]
+      },
+      {
+        "probe": "poison_watchdog_blocks_global_claim",
+        "error": "POISON_OPERATION_AUDIT",
+        "states": [
+          {
+            "status": "queued",
+            "n": 3
+          }
+        ]
+      },
+      {
+        "probe": "browserless_4_queued_capacity",
+        "sent": 4,
+        "verified": 4,
+        "leaseRejected": 0,
+        "states": [
+          {
+            "status": "confirmed",
+            "n": 4
+          }
+        ]
+      },
+      {
+        "probe": "browserless_40_queued_capacity",
+        "sent": 40,
+        "verified": 0,
+        "leaseRejected": 40,
+        "states": [
+          {
+            "status": "expired_unconfirmed",
+            "n": 40
+          }
+        ]
+      },
+      {
+        "probe": "browserless_40_accepted_capacity",
+        "sent": 40,
+        "verified": 36,
+        "leaseRejected": 4,
+        "states": [
+          {
+            "status": "confirmed",
+            "n": 36
+          },
+          {
+            "status": "expired_unconfirmed",
+            "n": 4
+          }
+        ]
+      }
+    ]
+  },
+  "checks": {
+    "eslint": "passed",
+    "typescript": "passed",
+    "harness_foreign_cluster": "Refused with HARNESS_CLUSTER_MISMATCH; only SHOW data_directory reached the foreign disposable cluster, which stayed running with unchanged sentinel and catalog."
+  },
+  "limitations": [
+    "Queue load assumes four operations per ten-second tick and no browser status reads.",
+    "Controller outcomes are simulated; accepted commands do not prove internet access.",
+    "Native PostgreSQL is real; hosted Vault, cron and pg_net extensions are stubbed.",
+    "StrictMode and lease renewal findings are latent in the current application.",
+    "Failures remain active assertions; both test commands exit 1."
+  ]
+}

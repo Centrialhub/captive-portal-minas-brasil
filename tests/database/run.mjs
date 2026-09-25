@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFile, mkdir, writeFile } from 'node:fs/promises';
+import { readFile, mkdtemp, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
@@ -8,21 +8,48 @@ import pg from 'pg';
 const dir=path.dirname(fileURLToPath(import.meta.url));
 const root=path.resolve(dir,'../..');
 const bin=path.join(dir,'node_modules/@embedded-postgres/windows-x64/native/bin');
-const data=path.join(dir,'data-'+Date.now());
+const data=await mkdtemp(path.join(dir,'data-'));
+const expectedData=await realpath(data);
 const port=55439;
-const options={host:'127.0.0.1',port,user:'postgres',database:'postgres'};
+const options={host:'127.0.0.1',port,user:'postgres',database:'postgres',connectionTimeoutMillis:1000};
 if(process.platform!=='win32')throw new Error('This native PostgreSQL harness currently targets Windows x64; see README.');
 if(options.host!=='127.0.0.1')throw new Error('Database contract tests require loopback.');
-const run=(exe,args)=>{const r=spawnSync(path.join(bin,exe),args,{windowsHide:true,encoding:'utf8'});if(r.status!==0)throw new Error(r.stderr||r.stdout);return r.stdout;};
-await mkdir(data,{recursive:true});
-run('initdb.exe',['-D',data,'-U','postgres','-A','trust','--encoding=UTF8','--locale=C']);
-const server=spawn(path.join(bin,'postgres.exe'),['-D',data,'-h','127.0.0.1','-p',String(port)],{windowsHide:true,stdio:['ignore','pipe','pipe']});
-let logs='';server.stdout.on('data',x=>logs+=x);server.stderr.on('data',x=>logs+=x);
-let client; const clients=[]; const passed=[];
-async function connect(){const c=new pg.Client(options);await c.connect();clients.push(c);return c;}
+const run=(exe,args)=>{const r=spawnSync(path.join(bin,exe),args,{windowsHide:true,encoding:'utf8'});if(r.error)throw r.error;if(r.status!==0)throw new Error(r.stderr||r.stdout||`${exe} exited ${r.status}`);return r.stdout;};
+let server,serverError,serverExit,logs='';
+const samePath=(a,b)=>path.resolve(a).replaceAll('\\','/').toLowerCase()===path.resolve(b).replaceAll('\\','/').toLowerCase();
+const guardError=(code,message)=>Object.assign(new Error(`${code}: ${message}`),{code});
+function ownProcessAlive(){
+  if(!server?.pid||serverError||serverExit||server.exitCode!==null||server.signalCode!==null)return false;
+  try{process.kill(server.pid,0);return true;}catch{return false;}
+}
+async function ownedPidFile(){
+  const lines=(await readFile(path.join(data,'postmaster.pid'),'utf8')).split(/\r?\n/);
+  return Number(lines[0])===server?.pid&&samePath(await realpath(lines[1]),expectedData);
+}
+async function assertOwnedConnection(c){
+  // SHOW is read-only. Never apply a fixture to whatever happens to answer the port.
+  const actual=(await c.query('SHOW data_directory')).rows[0].data_directory;
+  if(!samePath(await realpath(actual),expectedData))throw guardError('HARNESS_CLUSTER_MISMATCH',`refusing PostgreSQL at ${actual}; expected ${expectedData}`);
+  if(!ownProcessAlive())throw guardError('HARNESS_PROCESS_NOT_RUNNING','the PostgreSQL child created by this run is not alive');
+  if(!await ownedPidFile())throw guardError('HARNESS_PID_MISMATCH','the new data directory does not belong to the PostgreSQL child');
+  if(!ownProcessAlive())throw guardError('HARNESS_PROCESS_NOT_RUNNING','PostgreSQL exited during the identity check');
+}
+let client; const clients=[]; const passed=[]; const adversarialFailures=[]; const observations=[];
+async function connect(){const c=new pg.Client(options);try{await c.connect();await assertOwnedConnection(c);clients.push(c);return c;}catch(error){await c.end().catch(()=>{});throw error;}}
 const test=async(name,fn)=>{await fn();passed.push(name);console.log('PASS '+name);};
+// Adversarial probes keep running after an invariant fails, then exit nonzero.
+// A failure is evidence to investigate; it is not an expected-success assertion.
+const adversarial=async(name,fn)=>{try{await test(name,fn);}catch(error){if(error.code==='PROBE_SETUP_ERROR')throw error;adversarialFailures.push({name,message:error.message,actual:error.actual,expected:error.expected});console.error('FAIL '+name+': '+error.message);}};
 try {
-  for(let i=0;i<60;i++){try{client=await connect();break;}catch{await new Promise(r=>setTimeout(r,100));}}
+  run('initdb.exe',['-D',data,'-U','postgres','-A','trust','--encoding=UTF8','--locale=C']);
+  server=spawn(path.join(bin,'postgres.exe'),['-D',data,'-h','127.0.0.1','-p',String(port)],{windowsHide:true,stdio:['ignore','pipe','pipe']});
+  server.stdout?.on('data',x=>logs+=x);server.stderr?.on('data',x=>logs+=x);
+  server.once('error',error=>{serverError=error;});server.once('exit',(code,signal)=>{serverExit={code,signal};});
+  await new Promise((resolve,reject)=>{server.once('spawn',resolve);server.once('error',reject);});
+  for(let i=0;i<60;i++){
+    if(!ownProcessAlive())throw guardError('HARNESS_PROCESS_NOT_RUNNING',`PostgreSQL child failed: ${serverError?.message||JSON.stringify(serverExit)}\n${logs}`);
+    try{client=await connect();break;}catch(error){if(error.code?.startsWith('HARNESS_'))throw error;await new Promise(r=>setTimeout(r,100));}
+  }
   if(!client)throw new Error('Postgres failed to start: '+logs);
   console.log((await client.query('select version()')).rows[0].version);
   await client.query(await readFile(path.join(dir,'fixture.sql'),'utf8'));
@@ -50,7 +77,7 @@ try {
     const keys=Object.keys(p);return (await c.query(`select join_captive_auth_operation(${keys.map((k,i)=>`${k}=>$${i+1}`).join(',')}) as result`,Object.values(p))).rows[0].result;
   }
   async function claim(id,owner='worker',c=client){return (await c.query('select * from claim_captive_auth_operations($1,1,$2,true)',[owner,id])).rows.map(x=>x.claim_captive_auth_operations);}
-  async function record(op,outcome,evidence=null,owner=op.lease_owner){return (await client.query(`select record_captive_auth_operation($1,$2,$3,$4,$5,$6,NULL,$7,1) result`,[op.id,owner,op.lease_version,outcome,evidence,outcome==='pending'?'CLIENT_NOT_FOUND':outcome==='rejected'?'COMMAND_REJECTED':outcome==='not_sent'?'LOGIN_TEMPORARILY_UNAVAILABLE':null,outcome==='confirmed'?new Date(new Date(op.first_sent_at).getTime()+2400000).toISOString():null])).rows[0].result;}
+  async function record(op,outcome,evidence=null,owner=op.lease_owner,c=client,retryAfterSeconds=1){return (await c.query(`select record_captive_auth_operation($1,$2,$3,$4,$5,$6,NULL,$7,$8) result`,[op.id,owner,op.lease_version,outcome,evidence,outcome==='pending'?'CLIENT_NOT_FOUND':outcome==='rejected'?'COMMAND_REJECTED':outcome==='not_sent'?'LOGIN_TEMPORARILY_UNAVAILABLE':null,outcome==='confirmed'?new Date(new Date(op.first_sent_at).getTime()+2400000).toISOString():null,retryAfterSeconds])).rows[0].result;}
   const evidence=op=>({found:true,authorized:true,mac:op.client_mac,site_id:op.site_id,controller_key:op.controller_key,observed_at:new Date().toISOString(),...(op.command_accepted_at?{}:{validity_basis:'observed_only'})});
   await test('atomic join creates session, membership and durable due work',async()=>{
     const f=await fixture();const j=await join(f);assert.equal(j.disposition,'created');
@@ -286,7 +313,204 @@ try {
     assert.equal(status.status,'expired_unconfirmed');assert.ok(status.retry_after_ms>9000&&status.retry_after_ms<=10000);
     const retry=await join(await fixture({mac:f.mac}));assert.equal(retry.disposition,'unconfirmed_cooldown');assert.ok(retry.retry_after_ms>9000&&retry.retry_after_ms<=10000);
   });
-  await writeFile(path.join(dir,'results.json'),JSON.stringify({postgres:(await client.query('select version()')).rows[0].version,passed,finished_at:new Date().toISOString()},null,2));
-  console.log(`${passed.length} behavioral PostgreSQL integration tests passed`);
+  // Everything below is synthetic fault injection against the applied SQL as-is.
+  // No remote credentials, controller requests, or migration edits are involved.
+  async function waitForLock(c){
+    for(let i=0;i<100;i++){
+      const row=(await client.query('select wait_event_type from pg_stat_activity where pid=$1',[c.processID])).rows[0];
+      if(row?.wait_event_type==='Lock')return;
+      await new Promise(r=>setTimeout(r,5));
+    }
+    throw guardError('PROBE_SETUP_ERROR','probe did not reach the expected PostgreSQL lock wait; no product invariant was measured');
+  }
+  async function acceptedConfirmed(f){
+    const j=await join(f),send=(await claim(j.operation.id))[0];await record(send,'accepted',{command_sent:true});
+    await client.query("update captive_auth_work_due set due_at=clock_timestamp()-interval '1 second' where operation_id=$1",[send.id]);
+    const verify=(await claim(send.id))[0];await record(verify,'confirmed',evidence(verify));return j;
+  }
+  await adversarial('24 simultaneous distinct contexts select one identity without partial sessions',async()=>{
+    const common=await fixture(),groups=[];
+    for(let i=0;i<4;i++){const id=randomUUID();await client.query('insert into auth.users(id) values($1)',[id]);groups.push({user:id,ap:'AB000000000'+i,ssid:'Context-'+i});}
+    const fs=[];for(let i=0;i<24;i++)fs.push(await fixture({mac:common.mac,...groups[i%4]}));
+    const cs=await Promise.all(fs.map(()=>connect()));
+    const results=await Promise.all(fs.map((f,i)=>join(f,cs[i])));
+    const joined=results.filter(r=>r.operation),rejected=results.filter(r=>r.disposition==='context_conflict');
+    assert.equal(joined.length,6);assert.equal(rejected.length,18);assert.equal(new Set(joined.map(r=>r.operation.id)).size,1);
+    assert.equal((await client.query('select count(*)::int n from captive_sessions where client_mac=$1',[common.mac])).rows[0].n,6);
+    assert.equal((await client.query('select count(*)::int n from captive_auth_work_due where operation_id=$1',[joined[0].operation.id])).rows[0].n,1);
+    await Promise.all(cs.map(c=>c.end()));
+  });
+  await adversarial('24 independent devices are claimed once across concurrent global batches',async()=>{
+    await client.query("update captive_auth_work_due set due_at=clock_timestamp()+interval '1 hour'");
+    const ids=[];for(let i=0;i<24;i++)ids.push((await join(await fixture())).operation.id);
+    const cs=await Promise.all([connect(),connect(),connect()]);
+    const batches=await Promise.all(cs.map((c,i)=>c.query('select * from claim_captive_auth_operations($1,10,NULL,true)',['bulk-'+i])));
+    const rows=batches.flatMap(r=>r.rows.map(x=>x.claim_captive_auth_operations));
+    assert.equal(rows.length,24);assert.equal(new Set(rows.map(o=>o.id)).size,24);assert.ok(rows.every(o=>ids.includes(o.id)&&o.action==='send'));
+    await Promise.all(cs.map(c=>c.end()));
+  });
+  await adversarial('duplicate concurrent acceptance records one event and leaves one recovery item',async()=>{
+    const op=(await claim((await join(await fixture())).operation.id))[0],cs=await Promise.all([connect(),connect()]);
+    const rs=await Promise.all(cs.map(c=>record(op,'accepted',{command_sent:true},op.lease_owner,c)));
+    assert.equal(rs.filter(r=>r.applied).length,1);assert.equal(rs.filter(r=>r.disposition==='stale_lease').length,1);
+    const r=(await client.query("select (select count(*)::int from captive_auth_operation_events where operation_id=$1 and event_key like 'lease:%') events,(select count(*)::int from captive_auth_work_due where operation_id=$1) due",[op.id])).rows[0];
+    assert.deepEqual(r,{events:1,due:1});await Promise.all(cs.map(c=>c.end()));
+  });
+  await adversarial('concurrent conflicting terminal responses commit one coherent result',async()=>{
+    const f=await fixture(),op=(await claim((await join(f)).operation.id))[0],cs=await Promise.all([connect(),connect()]);
+    const rs=await Promise.all([record(op,'confirmed',evidence(op),op.lease_owner,cs[0]),record(op,'rejected',{explicit_rejection:true},op.lease_owner,cs[1])]);
+    assert.equal(rs.filter(r=>r.applied).length,1);assert.equal(rs.filter(r=>r.disposition==='already_terminal').length,1);
+    const r=(await client.query("select o.status,a.status attempt,s.status session,(select count(*)::int from audit_logs where meta->>'operation_id'=o.id::text) audits,(select count(*)::int from captive_auth_work_due where operation_id=o.id) due from captive_auth_operations o join captive_auth_attempts a on a.auth_operation_id=o.id join captive_sessions s on s.auth_operation_id=o.id where o.id=$1",[op.id])).rows[0];
+    assert.equal(r.attempt,r.status==='confirmed'?'authorized':'failed');assert.equal(r.session,r.attempt);assert.equal(r.audits,1);assert.equal(r.due,0);await Promise.all(cs.map(c=>c.end()));
+  });
+  await adversarial('cancelled and invalid participants do not promote or poison eligible participants',async()=>{
+    const f=await fixture(),j=await join(f),cancelled=await fixture({mac:f.mac}),invalid=await fixture({mac:f.mac});
+    await join(cancelled);await join(invalid);const differentUser=randomUUID();await client.query('insert into auth.users(id) values($1)',[differentUser]);
+    // Managed cancellation is deliberately rejected; inject impossible old state as DBA
+    // to test recovery's documented skip behavior, not public API reachability.
+    await assert.rejects(()=>client.query("update captive_auth_attempts set status='cancelled' where id=$1",[cancelled.attempt]),/AUTH_OPERATION_STATE_MANAGED/);
+    await client.query('alter table captive_auth_attempts disable trigger guard_captive_auth_attempt_state');
+    try{await client.query("update captive_auth_attempts set status='cancelled' where id=$1",[cancelled.attempt]);}
+    finally{await client.query('alter table captive_auth_attempts enable trigger guard_captive_auth_attempt_state');}
+    await client.query('update captive_auth_operation_members set user_id=$2 where attempt_id=$1',[invalid.attempt,differentUser]);
+    const op=(await claim(j.operation.id))[0];await record(op,'confirmed',evidence(op));
+    const rs=(await client.query('select id,status,authorized from captive_auth_attempts where id=any($1::uuid[])',[[f.attempt,cancelled.attempt,invalid.attempt]])).rows;
+    assert.equal(rs.find(x=>x.id===f.attempt).status,'authorized');assert.equal(rs.find(x=>x.id===cancelled.attempt).status,'cancelled');assert.equal(rs.find(x=>x.id===invalid.attempt).authorized,false);
+    for(const excluded of [cancelled,invalid])assert.equal((await client.query('select get_captive_auth_operation($1,$2) r',[excluded.attempt,excluded.token])).rows[0].r.authorized,false);
+  });
+  await adversarial('block after accepted send preserves truthful Wi-Fi result but forbids login challenge',async()=>{
+    const blockedUser=randomUUID();await client.query('insert into auth.users(id) values($1)',[blockedUser]);const f=await fixture({user:blockedUser}),j=await join(f),send=(await claim(j.operation.id))[0];
+    await record(send,'accepted',{command_sent:true});await client.query("insert into user_blocks(user_id,reason) values($1,'synthetic after-send block')",[blockedUser]);
+    await client.query("update captive_auth_work_due set due_at=clock_timestamp()-interval '1 second' where operation_id=$1",[send.id]);
+    const verify=(await claim(send.id))[0];await record(verify,'confirmed',evidence(verify));
+    assert.equal((await client.query('select get_captive_auth_operation($1,$2) r',[f.attempt,f.token])).rows[0].r.authorized,true);
+    assert.equal((await client.query('select claim_captive_auth_challenge($1,$2) r',[f.attempt,f.token])).rows[0].r,null);
+  });
+  await adversarial('failed creation rolls back identity, session, membership and outbox before safe retry',async()=>{
+    const f=await fixture();
+    await client.query("create function test_fail_creation() returns trigger language plpgsql as $$begin if NEW.event_key='created' then raise exception 'CREATION_STORAGE_FAILURE';end if;return NEW;end;$$; create trigger test_fail_creation before insert on captive_auth_operation_events for each row execute function test_fail_creation();");
+    try{await assert.rejects(()=>join(f),/CREATION_STORAGE_FAILURE/);}finally{await client.query('drop trigger test_fail_creation on captive_auth_operation_events;drop function test_fail_creation();');}
+    const a=(await client.query('select user_id,captive_session_id,auth_operation_id from captive_auth_attempts where id=$1',[f.attempt])).rows[0];assert.deepEqual(a,{user_id:null,captive_session_id:null,auth_operation_id:null});
+    assert.equal((await client.query('select count(*)::int n from captive_sessions where attempt_id=$1',[f.attempt])).rows[0].n,0);
+    assert.equal((await client.query('select count(*)::int n from captive_auth_operations where client_mac=$1',[f.mac])).rows[0].n,0);
+    assert.equal((await join(f)).disposition,'created');
+  });
+  await adversarial('lease renewal refuses an owner whose lease expired during row-lock wait',async()=>{
+    const op=(await claim((await join(await fixture())).operation.id))[0],blocker=await connect(),renewer=await connect();
+    await client.query("update captive_auth_operations set lease_expires_at=clock_timestamp()+interval '1000 milliseconds' where id=$1",[op.id]);
+    await blocker.query('begin');await blocker.query('select 1 from captive_auth_operations where id=$1 for update',[op.id]);
+    const waiting=renewer.query('select renew_captive_auth_operation_lease($1,$2,$3) renewed',[op.id,op.lease_owner,op.lease_version]);
+    try{await waitForLock(renewer);await new Promise(r=>setTimeout(r,1100));}finally{await blocker.query('commit');}
+    const renewed=(await waiting).rows[0].renewed;observations.push({probe:'renew_after_lock_expiry',renewed});await blocker.end();await renewer.end();assert.equal(renewed,false);
+  });
+  await adversarial('join cannot reuse an authorization that expired while waiting on device lock',async()=>{
+    const f=await fixture(),j=await acceptedConfirmed(f),fresh=await fixture({mac:f.mac}),blocker=await connect(),waiter=await connect();
+    await client.query("update captive_auth_operations set authorized_until=clock_timestamp()+interval '1000 milliseconds' where id=$1",[j.operation.id]);
+    await blocker.query('begin');await blocker.query("select pg_advisory_xact_lock(hashtextextended($1,0))",[store+'|'+f.mac]);
+    const waiting=join(fresh,waiter);try{await waitForLock(waiter);await new Promise(r=>setTimeout(r,1100));}finally{await blocker.query('commit');}
+    const result=await waiting,status=(await client.query('select get_captive_auth_operation($1,$2) r',[fresh.attempt,fresh.token])).rows[0].r;
+    observations.push({probe:'join_after_grant_expiry',join_disposition:result.disposition,join_authorized:result.operation?.authorized,status_disposition:status.disposition});await blocker.end();await waiter.end();
+    assert.notEqual(result.operation?.authorized,true,'Join returned authorization even though its subsequent status is receipt_stale');
+  });
+  await adversarial('existing membership cannot bypass capability expiry during operation-lock wait',async()=>{
+    const f=await fixture(),j=await join(f),blocker=await connect(),waiter=await connect();
+    await client.query("update captive_auth_attempts set expires_at=clock_timestamp()+interval '1000 milliseconds' where id=$1",[f.attempt]);
+    await blocker.query('begin');await blocker.query('select 1 from captive_auth_operations where id=$1 for update',[j.operation.id]);
+    const waiting=join(f,waiter).then(result=>({result}),error=>({error:error.message}));
+    try{await waitForLock(waiter);await new Promise(r=>setTimeout(r,1100));}finally{await blocker.query('commit');}
+    const result=await waiting;observations.push({probe:'join_after_capability_expiry',disposition:result.result?.disposition,error:result.error});await blocker.end();await waiter.end();
+    assert.match(result.error||'',/EXPIRED|NO_LONGER_ELIGIBLE/);
+  });
+  await adversarial('known-unsent retry cannot emit a fresh send after the verification deadline',async()=>{
+    const first=(await claim((await join(await fixture())).operation.id))[0];await record(first,'not_sent',{command_sent:false});
+    await client.query("update captive_auth_operations set first_sent_at=clock_timestamp()-interval '91 seconds',verification_deadline=clock_timestamp()-interval '1 second' where id=$1",[first.id]);
+    await client.query("update captive_auth_work_due set due_at=clock_timestamp()-interval '1 second' where operation_id=$1",[first.id]);
+    const rows=await claim(first.id),remaining=rows[0]?new Date(rows[0].lease_expires_at)-Date.now():null;
+    let accepted,acceptedError;
+    if(rows[0]?.action==='send')try{accepted=await record(rows[0],'accepted',{command_sent:true});}catch(error){acceptedError=error.message;}
+    observations.push({probe:'send_after_verification_deadline',actions:rows.map(o=>o.action),lease_remaining_ms:remaining,accepted_result_status:accepted?.operation.status,accepted_error:acceptedError});
+    assert.ok(rows.every(o=>o.action!=='send'),'Expired preparation budget still permits an actual new POST');
+  });
+  await adversarial('late actual-send responses persist their effect and terminal projections atomically',async()=>{
+    const cases=[];
+    for(const outcome of ['accepted','unknown']){
+      const initial=(await claim((await join(await fixture())).operation.id))[0];await record(initial,'not_sent',{command_sent:false});
+      await client.query("update captive_auth_operations set first_sent_at=clock_timestamp()-interval '89.5 seconds',verification_deadline=clock_timestamp()+interval '500 milliseconds' where id=$1",[initial.id]);
+      await client.query("update captive_auth_work_due set due_at=clock_timestamp()-interval '1 second' where operation_id=$1",[initial.id]);
+      const op=(await claim(initial.id))[0];assert.equal(op.action,'send');assert.ok(new Date(op.deadline_at)>Date.now(),'This send must be claimed before the verification deadline');
+      // Real elapsed time: send was legitimately claimed before the deadline,
+      // but its result arrives after that deadline and within the actual lease.
+      await new Promise(r=>setTimeout(r,650));assert.ok(new Date(op.lease_expires_at)>Date.now());
+      let result,error;try{result=await record(op,outcome,{command_sent:true});}catch(e){error=e.message;}
+      const state=(await client.query('select o.status,o.command_accepted_at,o.command_dispatched_at,a.status attempt,s.status session from captive_auth_operations o join captive_auth_attempts a on a.auth_operation_id=o.id join captive_sessions s on s.auth_operation_id=o.id where o.id=$1',[op.id])).rows[0];
+      cases.push({outcome,error,applied:result?.applied,state});
+    }
+    observations.push({probe:'late_actual_send_guard_conflict',cases});
+    assert.deepEqual(cases.map(c=>c.error||null),[null,null],'Terminal operation state conflicts with pre-projection attempt/session telemetry update');
+    assert.ok(cases.every(c=>c.applied&&c.state.status==='expired_unconfirmed'&&c.state.attempt==='failed'&&c.state.session==='failed'&&c.state.command_dispatched_at));
+  });
+  await adversarial('one audit poison item cannot prevent claiming unrelated healthy work',async()=>{
+    const poison=await join(await fixture()),expiredHealthy=await join(await fixture()),fresh=await join(await fixture());
+    await client.query("update captive_auth_operations set created_at=clock_timestamp()-interval '115 seconds' where id=any($1::uuid[])",[[poison.operation.id,expiredHealthy.operation.id]]);
+    await client.query(`create function test_poison_one_audit() returns trigger language plpgsql as $$begin if NEW.meta->>'operation_id'='${poison.operation.id}' then raise exception 'POISON_OPERATION_AUDIT'; end if; return NEW;end;$$; create trigger test_poison_one_audit before insert on audit_logs for each row execute function test_poison_one_audit();`);
+    let rows,error;
+    try{try{rows=await claim(fresh.operation.id);}catch(e){error=e.message;}
+      const states=(await client.query('select status,count(*)::int n from captive_auth_operations where id=any($1::uuid[]) group by status',[[poison.operation.id,expiredHealthy.operation.id,fresh.operation.id]])).rows;
+      observations.push({probe:'poison_watchdog_blocks_global_claim',error,states});
+    }finally{await client.query('drop trigger test_poison_one_audit on audit_logs;drop function test_poison_one_audit();');await client.query('select expire_captive_auth_operations(500)');}
+    assert.equal(error,undefined,'Expiry of an unrelated poison operation aborted the healthy claim');assert.equal(rows?.length,1);
+  });
+  async function runBrowserlessLoad(size,alreadyAccepted=false){
+    // Accelerate time by aging only these synthetic operations and their outbox.
+    // The production RPC ordering, watchdog, leases and record functions are unchanged.
+    await client.query("update captive_auth_work_due set due_at=clock_timestamp()+interval '1 hour'");
+    const ids=[];for(let i=0;i<size;i++)ids.push((await join(await fixture())).operation.id);
+    const ticks=[];let sent=0,verified=0,leaseRejected=0;
+    // Second scenario: each request's inline pass completed its POST before all
+    // browsers disappeared. There are no queued sends competing with recovery.
+    if(alreadyAccepted)for(const id of ids){const op=(await claim(id))[0];await record(op,'accepted',{command_sent:true},op.lease_owner,client,2);sent++;}
+    for(let tick=0;tick<24;tick++){
+      const ops=(await client.query('select * from claim_captive_auth_operations($1,4,NULL,true)',['capacity-'+tick])).rows.map(x=>x.claim_captive_auth_operations);
+      assert.ok(ops.every(o=>ids.includes(o.id)));
+      const actions=[];
+      for(const op of ops){
+        if(new Date(op.lease_expires_at)-Date.now()<16000){leaseRejected++;actions.push('budget_rejected');continue;}
+        if(op.action==='send'){await record(op,'accepted',{command_sent:true},op.lease_owner,client,2);sent++;actions.push('send');}
+        else{await record(op,'confirmed',evidence(op));verified++;actions.push('verify');}
+      }
+      ticks.push({tick,simulated_seconds:tick*10,actions});
+      await client.query("update captive_auth_operations set created_at=created_at-interval '10 seconds',first_sent_at=first_sent_at-interval '10 seconds',command_dispatched_at=command_dispatched_at-interval '10 seconds',command_accepted_at=command_accepted_at-interval '10 seconds',verification_deadline=verification_deadline-interval '10 seconds',next_check_at=next_check_at-interval '10 seconds',lease_expires_at=lease_expires_at-interval '10 seconds',confirmed_at=confirmed_at-interval '10 seconds',authorized_until=authorized_until-interval '10 seconds',completed_at=completed_at-interval '10 seconds' where id=any($1::uuid[])",[ids]);
+      await client.query("update captive_auth_work_due set due_at=due_at-interval '10 seconds' where operation_id=any($1::uuid[])",[ids]);
+    }
+    const states=(await client.query('select status,count(*)::int n from captive_auth_operations where id=any($1::uuid[]) group by status',[ids])).rows;
+    const result={probe:'browserless_'+size+'_'+(alreadyAccepted?'accepted':'queued')+'_capacity',sent,verified,leaseRejected,states,ticks};observations.push(result);return result;
+  }
+  await adversarial('four browserless clients calibrate the accelerated real-SQL capacity probe',async()=>{
+    const result=await runBrowserlessLoad(4);assert.equal(result.sent,4);assert.equal(result.verified,4);assert.equal(result.leaseRejected,0);assert.equal(result.states.find(s=>s.status==='confirmed')?.n,4);
+  });
+  await adversarial('40 browserless clients all confirm with four operations per ten-second tick',async()=>{
+    const result=await runBrowserlessLoad(40);
+    assert.equal(result.states.find(s=>s.status==='confirmed')?.n||0,40,'FIFO queued sends starved verification despite always-successful synthetic controller');
+  });
+  await adversarial('40 already-accepted browserless clients all confirm before recovery budget expires',async()=>{
+    const result=await runBrowserlessLoad(40,true);
+    assert.equal(result.states.find(s=>s.status==='confirmed')?.n||0,40,'Final accepted cohort cannot fit the minimum lease budget at four operations per tick');
+  });
+  await writeFile(path.join(dir,'results.json'),JSON.stringify({postgres:(await client.query('select version()')).rows[0].version,passed,adversarialFailures,observations,finished_at:new Date().toISOString()},null,2));
+  console.log(`${passed.length} behavioral PostgreSQL integration tests passed; ${adversarialFailures.length} adversarial invariants failed`);
+  if(adversarialFailures.length)process.exitCode=1;
 } catch(e){console.error(e);process.exitCode=1;}
-finally {for(const c of clients)await c.end().catch(()=>{});run('pg_ctl.exe',['-D',data,'stop','-m','fast','-w']);await writeFile(path.join(dir,'server-last.log'),logs);}
+finally {
+  for(const c of clients)await c.end().catch(()=>{});
+  // Never stop a server by the shared port. Only this still-live child and its
+  // matching fresh data directory can be targeted by pg_ctl; startup failures
+  // without a matching pidfile are terminated through our ChildProcess handle.
+  if(ownProcessAlive()){
+    try{
+      const matching=await ownedPidFile().catch(()=>false);
+      if(matching&&ownProcessAlive())run('pg_ctl.exe',['-D',data,'stop','-m','fast','-w']);
+      else if(ownProcessAlive())server.kill();
+    }catch(error){console.error('Owned PostgreSQL cleanup failed:',error);process.exitCode=1;if(ownProcessAlive())server.kill();}
+  }
+  await writeFile(path.join(dir,'server-last.log'),logs);
+}

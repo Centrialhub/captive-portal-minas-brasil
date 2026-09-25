@@ -54,6 +54,8 @@ type HarnessOptions = {
   recordError?: boolean;
   readError?: boolean;
   challengeError?: boolean;
+  challengeStall?: boolean;
+  tableError?: string;
 };
 function harness(options: HarnessOptions = {}) {
   let currentStatus = options.status || "queued";
@@ -104,6 +106,7 @@ function harness(options: HarnessOptions = {}) {
         return { data: { applied: true }, error: null };
       }
       if (name === "claim_captive_auth_challenge") {
+        if (options.challengeStall) return await new Promise<never>(() => {});
         if (challengeClaimed) return { data: null, error: null };
         challengeClaimed = true;
         return { data: USER, error: null };
@@ -115,12 +118,15 @@ function harness(options: HarnessOptions = {}) {
         : table === "global_settings" ? { session_duration_minutes: 40, max_daily_accesses: 0 }
         : table === "store_access_points" ? [{ ap_mac: AP }]
         : table === "profiles" ? { cpf_digits: null, phone_digits: null } : null;
+      const result = options.tableError === table
+        ? { data: null, error: { code: "SYNTHETIC_TRANSIENT_LOOKUP_FAILURE" } }
+        : { data, error: null };
       const query = { select: () => query, eq: (field: string, value: unknown) => {
         if (table === "store_access_points") apQueries.push({ field, value });
         return query;
       },
-      single: async () => ({ data, error: null }), maybeSingle: async () => ({ data, error: null }),
-      then: (resolve: (value: unknown) => unknown) => Promise.resolve({ data, error: null }).then(resolve) };
+      single: async () => result, maybeSingle: async () => result,
+      then: (resolve: (value: unknown) => unknown) => Promise.resolve(result).then(resolve) };
       return query;
     },
   };
@@ -133,7 +139,7 @@ function harness(options: HarnessOptions = {}) {
     return { token_hash: "one-use-test-hash" };
   });
   const context = vm.createContext({
-    Date, Request, Response, crypto: { randomUUID: () => "test-worker" },
+    Date, Request, Response, setTimeout, clearTimeout, crypto: { randomUUID: () => "test-worker" },
     DEFAULT_REDIRECT_URL: REDIRECT, UNIFI_USERNAME: "fake", UNIFI_PASSWORD: "fake",
     Logger: { info() {}, warn() {}, error() {} }, reconcileAuthorization, requiredRpc,
     supabaseAdmin: () => db, safeParseJson: (request: Request) => request.json(),
@@ -278,4 +284,47 @@ describe("durable Edge handlers and browser wire contract", () => {
     await expect(h.status()).rejects.toThrow("READ_FAILED");
     expect(h.mint).not.toHaveBeenCalled();
   });
+
+  it("synthetic: a stalled optional challenge RPC cannot hold a confirmed response", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = harness({ status: "confirmed", challengeStall: true });
+      let result: Awaited<ReturnType<typeof h.status>> | undefined;
+      void h.status().then(value => { result = value; });
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(result?.body).toMatchObject({ authorized: true, status: "confirmed" });
+      expect(h.mint).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each(["user_roles", "store_access_points"])(
+    "synthetic: a failed %s lookup before POST preserves proven-unsent recovery", async tableError => {
+      const h = harness({ claims: true, tableError });
+      const result = await h.initial();
+      expect(result.authorized).toBe(false);
+      expect(h.send).not.toHaveBeenCalled();
+      expect(h.records).toHaveLength(1);
+      expect(h.records[0]).toMatchObject({ p_outcome: "not_sent", p_evidence: { command_sent: false } });
+    });
+
+  it.each(["state_inconsistent", "receipt_stale", "invalid_capability"])(
+    "synthetic: initial authorization does not return an invalid success-shaped DTO for %s", async disposition => {
+      const h = harness({ disposition });
+      // Accept a typed domain error or a valid explicit failure DTO. A generic
+      // ReferenceError from the harness must not make this contract pass.
+      const outcome = await h.initial().then(
+        value => ({ kind: "result" as const, value }),
+        (error: unknown) => ({ kind: "error" as const, error }),
+      );
+      if (outcome.kind === "result") {
+        expect(isAuthResult(outcome.value)).toBe(true);
+        expect(outcome.value).toMatchObject({ authorized: false, fail_reason: expect.stringMatching(/\S/) });
+      } else {
+        const expected = disposition === "state_inconsistent" ? /STATE_INCONSISTENT/i
+          : disposition === "receipt_stale" ? /RECEIPT_STALE|ATTEMPT.*EXPIRED|CAPABILITY.*EXPIRED/i
+            : /INVALID.*CAPABILITY|CAPABILITY.*INVALID|INVALID.*ATTEMPT|ATTEMPT.*INVALID/i;
+        expect(outcome.error).toMatchObject({ message: expect.stringMatching(expected) });
+      }
+      expect(h.send).not.toHaveBeenCalled();
+    });
 });
