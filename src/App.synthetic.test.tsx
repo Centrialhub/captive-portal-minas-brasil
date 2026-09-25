@@ -27,6 +27,7 @@ const capability = (ttl = 600000) => ({
   attempt_id: "52870b9b-d690-48fa-835e-232fa17cda00",
   token: "synthetic-capability-00000000000000",
   expires_at: new Date(Date.now() + ttl).toISOString(),
+  server_now: new Date().toISOString(),
 });
 const pending = (delay = 1000) => ({
   authorized: false, processing: true, status: "verifying" as const,
@@ -72,7 +73,7 @@ describe("synthetic frontend boundaries", () => {
     vi.useFakeTimers();
     vi.setSystemTime(serverTime);
     vi.resetAllMocks();
-    AttemptTracker.clear();
+    AttemptTracker.clear(true);
     sessionStorage.clear();
     window.history.replaceState(null, "", "/?store=povao&id=02:00:00:00:00:01&ap=02:00:00:00:00:11&ssid=Loja&t=1");
     vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
@@ -89,11 +90,12 @@ describe("synthetic frontend boundaries", () => {
     cleanup();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
-    AttemptTracker.clear();
+    AttemptTracker.clear(true);
     vi.useRealTimers();
   });
 
   it("SYN-F01: StrictMode resumes a stored operation after effect cleanup invalidates its first response", async () => {
+    replaceLocationWith(vi.fn());
     await seedSubmitted();
     vi.mocked(api.attemptStatus).mockResolvedValue(confirmed());
     renderPortal(true);
@@ -102,6 +104,23 @@ describe("synthetic frontend boundaries", () => {
     expect(api.identify).not.toHaveBeenCalled();
     expect(api.initAttempt).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("heading", { name: "Wi-Fi liberado!" })).not.toBeNull();
+  });
+
+  it("keeps a new StrictMode request locked when the invalidated request finishes first", async () => {
+    await seedSubmitted();
+    const old = deferred<ReturnType<typeof confirmed>>();
+    const current = deferred<ReturnType<typeof confirmed>>();
+    vi.mocked(api.attemptStatus).mockReturnValueOnce(old.promise).mockReturnValueOnce(current.promise);
+    renderPortal(true);
+    await flush();
+    expect(api.attemptStatus).toHaveBeenCalledTimes(2);
+    await act(async () => { old.resolve(confirmed()); });
+    for (let i = 0; i < 20; i++) fireEvent(window, new Event("online"));
+    await flush();
+    expect(api.attemptStatus).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("heading", { name: "Wi-Fi liberado!" })).toBeNull();
+    await act(async () => { current.resolve(confirmed()); });
+    expect(screen.getByRole("heading", { name: "Wi-Fi liberado!" })).toBeTruthy();
   });
 
   it("keeps the new mount authoritative when the unmounted page's request resolves later", async () => {
@@ -211,25 +230,58 @@ describe("synthetic frontend boundaries", () => {
     expect(replace).toHaveBeenCalledTimes(1);
   });
 
+  it("removes success and cancels redirect when protected revalidation returns expired", async () => {
+    const replace = vi.fn();
+    replaceLocationWith(replace);
+    vi.mocked(api.identify).mockResolvedValue(confirmed());
+    vi.mocked(api.attemptStatus).mockRejectedValue(new ApiError("http", "expired", 410));
+    renderPortal();
+    await flush();
+    await identify();
+    await advance(1000);
+    fireEvent(window, new Event("pageshow"));
+    await flush();
+    await advance(5000);
+    expect(screen.queryByRole("heading", { name: "Wi-Fi liberado!" })).toBeNull();
+    expect(screen.getByLabelText("CPF")).toBeTruthy();
+    expect(replace).not.toHaveBeenCalled();
+    expect(AttemptTracker.get()).toBeNull();
+    expect(api.identify).toHaveBeenCalledTimes(1);
+  });
+
+  it("checks a restored legacy capability before continuing an explicit identity submission", async () => {
+    const attempt = await AttemptTracker.ensureAttempt();
+    const originalPerformance = performance;
+    vi.stubGlobal("performance", { timeOrigin: originalPerformance.timeOrigin + 10000, now: () => originalPerformance.now() });
+    vi.mocked(api.attemptStatus).mockResolvedValue({ authorized: false, processing: false, status: "awaiting_identity" });
+    renderPortal();
+    await flush();
+    expect(AttemptTracker.get()?.requires_verification).toBe(true);
+    await identify();
+    expect(api.attemptStatus).toHaveBeenCalledTimes(2);
+    expect(api.identify).toHaveBeenCalledTimes(1);
+    expect(api.identify).toHaveBeenCalledWith(expect.objectContaining({ attempt_id: attempt.attempt_id }));
+    expect(api.initAttempt).toHaveBeenCalledTimes(1);
+  });
+
   it("SYN-F05: a synchronously blocked navigation eventually restores the continue button", async () => {
     const blocked = new DOMException("Synthetic navigation denied", "SecurityError");
-    const replace = vi.fn(() => { throw blocked; });
+    const replace = vi.fn<() => void>(() => { throw blocked; });
     replaceLocationWith(replace);
     vi.mocked(api.identify).mockResolvedValue(confirmed());
     renderPortal();
     await flush();
     await identify();
     await act(async () => {
-      // The current implementation leaks the injected exception. A fix may catch
-      // it; the contract below is recovery of the UI, not error propagation.
-      try { await vi.advanceTimersByTimeAsync(2000); } catch (caught) {
-        if (caught !== blocked) throw caught;
-      }
+      await vi.advanceTimersByTimeAsync(2000);
     });
     expect(replace).toHaveBeenCalledTimes(1);
     await advance(5000);
     expect(screen.getByRole("heading", { name: "Wi-Fi liberado!" })).toBeTruthy();
     expect((screen.getByRole("button", { name: "Continuar agora" }) as HTMLButtonElement).disabled).toBe(false);
+    replace.mockImplementation(() => undefined);
+    fireEvent.click(screen.getByRole("button", { name: "Continuar agora" }));
+    expect(replace).toHaveBeenCalledTimes(2);
   });
 
   it("does not leak redirect timers across unmount and only navigates once after remount", async () => {

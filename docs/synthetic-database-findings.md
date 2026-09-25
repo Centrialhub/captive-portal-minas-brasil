@@ -1,5 +1,7 @@
 # Novos achados dos testes sintéticos de banco — 25/09/2026
 
+> **Atualização:** os achados abaixo são o diagnóstico histórico anterior à correção. Os 18 grupos foram corrigidos; a validação atual passou com 303 testes automatizados e dois fluxos de navegador. Backend v254 e migration corretiva implantados; frontend ainda pendente. Veja [correção e evidências atuais](correcao-sinteticos-povao-2026-09-25.md).
+
 ## Escopo e resultado
 
 Checkout: `F:\captive MB\tmp\reliability-release-20260925`. Nenhuma chamada a produção, UniFi ou clientes reais. Nenhuma alteração nas migrations aplicadas ou nas funções de produto. Os testes usam PostgreSQL 17.10 nativo em `127.0.0.1:55439`, schema sintético com constraints/triggers do catálogo e as migrations publicadas, sem dados pessoais.

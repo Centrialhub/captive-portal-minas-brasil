@@ -1,5 +1,21 @@
 # Testes sintéticos do frontend — 25/09/2026
 
+## Estado após correção autorizada
+
+Os cinco achados abaixo foram corrigidos. A publicação do frontend ainda está pendente; o resultado integrado e a implantação do backend estão em [correção atual](correcao-sinteticos-povao-2026-09-25.md). A captura inicial e suas limitações foram preservadas neste relatório; seus números de linha descrevem a versão examinada, e os IDs/nome dos testes permitem encontrar as reproduções atuais.
+
+Validação atual: **83/83 testes frontend aprovados em seis arquivos**, incluindo os **25 testes sintéticos** (os 17 originais e oito controles adicionais). TypeScript, ESLint dos dez arquivos frontend alterados e `git diff --check` passaram. Os seis testes inicialmente vermelhos agora passam.
+
+- **F01:** cada request possui seu próprio identificador; cleanup invalida o epoch e permite nova leitura, enquanto o `finally` antigo não pode liberar o lock de uma chamada nova. Teste adicional conclui a resposta antiga durante uma consulta nova ainda pendente e dispara vinte eventos sem criar uma terceira consulta.
+- **F02:** `expires_at` continua sendo o prazo absoluto do servidor. O campo opcional `server_now` permite calcular a duração restante; prazos da interface usam `performance.now()`. Uma nova origem monotônica exige revalidação, e o novo saldo é calculado a partir de `expires_at` original: três minutos transcorridos deixam sete minutos, nunca dez. Sem `server_now` em uma resposta legada, o registro exige consulta protegida antes de continuar uma ação explícita e não ganha novo TTL. 401/410 continuam sendo autoridade de expiração. Datas de Retry-After usam referência temporal do servidor/HTTP Date.
+- **F03:** revalidações após sucesso têm intervalo mínimo de um segundo e preservam SuccessView/timer. Um 410 de revalidação ainda remove sucesso e cancela redirect; esse cenário ganhou teste próprio.
+- **F04:** cooldowns são guardados por contexto com memória e sessionStorage protegido. Dentro do documento usam tempo monotônico; em documento novo preservam conservadoramente o saldo salvo, sem confiar no relógio do usuário. Se a página ficou fechada, isso pode acrescentar espera, nunca antecipar a tentativa. Testes cobrem restauração do armazenamento e isolamento entre contextos.
+- **F05:** falha síncrona de navegação é capturada, gera `redirect_failed`, mantém Wi-Fi confirmado e libera nova ação manual. O teste verifica também a segunda navegação manual; não exige propagação da exceção.
+
+Arquivos de implementação: `src/App.tsx`, `src/components/SuccessView.tsx`, `src/lib/attempt-tracker.ts`, `src/lib/api.ts`, `src/lib/auth-outcome.ts`. Cinco arquivos de teste foram atualizados. O teste anterior que simulava passagem de tempo apenas alterando `Date.now` agora avança timers monotônicos; testes separados comprovam que uma correção do relógio de parede não expira nem prolonga a capability.
+
+## Registro da captura inicial (antes das correções)
+
 ## Escopo e reprodução
 
 Checkout canônico: `F:\captive MB\tmp\reliability-release-20260925`.

@@ -1,5 +1,7 @@
 # Testes sintéticos de confiabilidade — Povoão, 25/09/2026
 
+> **Atualização:** os achados abaixo são o diagnóstico histórico anterior à correção. Os 18 grupos foram corrigidos; a validação atual passou com 303 testes automatizados e dois fluxos de navegador. Backend v254 e migration corretiva implantados; frontend ainda pendente. Veja [correção e evidências atuais](correcao-sinteticos-povao-2026-09-25.md).
+
 ## Conclusão
 
 Foram acrescentados **73 testes**, exercitando concorrência, recuperação sem navegador, prazos, falhas transitórias, cookies, retomada da tela e relógio incorreto. O conjunto atual tem **243 testes: 213 aprovados e 30 reprovados**. As reprovações correspondem a **18 grupos de problemas**; alguns são falhas latentes ou dependem de condições específicas. Os **170 testes anteriores continuam aprovados**.

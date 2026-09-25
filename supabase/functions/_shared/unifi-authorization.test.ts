@@ -92,7 +92,8 @@ describe("UniFi response validation", () => {
   it("accepts an explicitly successful empty station list as an observation only", async () => {
     const result = await fetchUnifiStationsStrict("https://controller.test/stat/sta", {}, Date.now() + 1000,
       async () => json({ meta: { rc: "ok" }, data: [] }));
-    expect(result).toEqual({ ok: true, data: [] });
+    expect(result).toMatchObject({ ok: true, data: [] });
+    expect(result.headers?.get("content-type")).toBe("application/json");
     expect(exactUnifiEvidence(result.data!, MAC).state).toBe("inconclusive");
   });
 

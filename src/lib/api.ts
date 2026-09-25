@@ -46,13 +46,15 @@ export interface AttemptCapability {
   attempt_id: string;
   token: string;
   expires_at: string;
+  server_now?: string;
 }
 
 function retryAfterMs(xhr: XMLHttpRequest, body: any): number | undefined {
   const header = xhr.getResponseHeader("Retry-After");
   const bodyDelay = body?.retry_after_ms;
-  const headerDelay = header ? (/^\d+(\.\d+)?$/.test(header) ? Number(header) * 1000 : Date.parse(header) - Date.now()) : NaN;
-  const blockedDelay = typeof body?.blocked_until === "string" ? Date.parse(body.blocked_until) - Date.now() : NaN;
+  const serverTime = Date.parse(typeof body?.server_now === "string" ? body.server_now : xhr.getResponseHeader("Date") || "");
+  const headerDelay = header ? (/^\d+(\.\d+)?$/.test(header) ? Number(header) * 1000 : Date.parse(header) - serverTime) : NaN;
+  const blockedDelay = typeof body?.blocked_until === "string" ? Date.parse(body.blocked_until) - serverTime : NaN;
   const delays = [bodyDelay, headerDelay, blockedDelay].filter(value => typeof value === "number" && Number.isFinite(value) && value >= 0);
   return delays.length ? Math.max(...delays) : undefined;
 }
@@ -203,7 +205,9 @@ export const api = {
       body: data,
       timeoutMs: 15000,
     }).then(value => {
-      if (!value.attempt_id || !value.token || typeof value.expires_at !== "string" || !Number.isFinite(Date.parse(value.expires_at))) {
+      if (typeof value.attempt_id !== "string" || !value.attempt_id || typeof value.token !== "string" || !value.token ||
+          typeof value.expires_at !== "string" || !Number.isFinite(Date.parse(value.expires_at)) ||
+          (value.server_now !== undefined && (typeof value.server_now !== "string" || !Number.isFinite(Date.parse(value.server_now)) || Date.parse(value.expires_at) <= Date.parse(value.server_now)))) {
         throw new ApiError("parse", "Não foi possível confirmar a criação da tentativa. Tente novamente.");
       }
       return value;

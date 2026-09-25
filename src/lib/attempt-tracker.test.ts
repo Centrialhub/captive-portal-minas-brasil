@@ -8,16 +8,17 @@ const capability = (suffix = "1") => ({
   attempt_id: "synthetic-" + suffix,
   token: "test-capability-" + suffix,
   expires_at: new Date(Date.now() + 600000).toISOString(),
+  server_now: new Date().toISOString(),
 });
 
 describe("captive attempt tracking", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    AttemptTracker.clear();
+    AttemptTracker.clear(true);
     sessionStorage.clear();
     window.history.replaceState(null, "", "/?id=02:00:00:00:00:01&ap=02:00:00:00:00:11&ssid=Loja&t=1");
   });
-  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); AttemptTracker.clear(); });
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); AttemptTracker.clear(true); });
 
   it("deduplicates simultaneous initialization and keeps its server expiry", async () => {
     let finish!: (value: ReturnType<typeof capability>) => void;
@@ -74,7 +75,7 @@ describe("captive attempt tracking", () => {
     vi.useFakeTimers();
     const init = vi.spyOn(api, "initAttempt").mockResolvedValueOnce(capability("1")).mockImplementation(async () => capability("2"));
     await AttemptTracker.ensureAttempt();
-    vi.setSystemTime(Date.now() + 600001);
+    await vi.advanceTimersByTimeAsync(600001);
     expect(AttemptTracker.get()).toBeNull();
     expect((await AttemptTracker.ensureAttempt()).attempt_id).toBe("synthetic-2");
     expect(init).toHaveBeenCalledTimes(2);

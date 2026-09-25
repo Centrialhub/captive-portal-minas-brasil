@@ -1,5 +1,7 @@
 # Testes sintéticos adicionais do backend — 25/09/2026
 
+> **Atualização:** os achados abaixo são o diagnóstico histórico anterior à correção. Os 18 grupos foram corrigidos; a validação atual passou com 303 testes automatizados e dois fluxos de navegador. Backend v254 e migration corretiva implantados; frontend ainda pendente. Veja [correção e evidências atuais](correcao-sinteticos-povao-2026-09-25.md).
+
 Fonte da aplicação: `1b2eefbb3ab9108c4ca46fdea86626c6f81dc942`, correspondente à implementação da Edge Function v253. Esta rodada altera somente testes e documentação. Nenhuma requisição foi enviada a uma controladora real.
 
 ## Método

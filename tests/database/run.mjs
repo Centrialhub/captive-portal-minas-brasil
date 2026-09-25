@@ -4,6 +4,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { createRequire } from 'node:module';
+import { runInNewContext } from 'node:vm';
 import pg from 'pg';
 const dir=path.dirname(fileURLToPath(import.meta.url));
 const root=path.resolve(dir,'../..');
@@ -36,7 +38,12 @@ async function assertOwnedConnection(c){
 }
 let client; const clients=[]; const passed=[]; const adversarialFailures=[]; const observations=[];
 async function connect(){const c=new pg.Client(options);try{await c.connect();await assertOwnedConnection(c);clients.push(c);return c;}catch(error){await c.end().catch(()=>{});throw error;}}
-const test=async(name,fn)=>{await fn();passed.push(name);console.log('PASS '+name);};
+const test=async(name,fn)=>{
+  // Separate scenarios cannot consume one another's shared controller slots.
+  // This is fixture reset between tests, never a state change within a scenario.
+  await client.query("update captive_auth_work_due set due_at=clock_timestamp()+interval '1 hour';update captive_auth_operations set lease_expires_at=clock_timestamp()-interval '1 second' where lease_owner is not null;");
+  await fn();passed.push(name);console.log('PASS '+name);
+};
 // Adversarial probes keep running after an invariant fails, then exit nonzero.
 // A failure is evidence to investigate; it is not an expected-success assertion.
 const adversarial=async(name,fn)=>{try{await test(name,fn);}catch(error){if(error.code==='PROBE_SETUP_ERROR')throw error;adversarialFailures.push({name,message:error.message,actual:error.actual,expected:error.expected});console.error('FAIL '+name+': '+error.message);}};
@@ -60,6 +67,7 @@ try {
   for(const idx of cat.indexes.filter(x=>!cat.constraints.some(c=>c.conname===x.indexname)))await client.query(idx.indexdef);
   for(const t of snapshot.triggers){await client.query(t.function_definition);await client.query(t.trigger_definition);}
   await client.query(await readFile(path.join(root,'supabase/migrations/20260925164858_durable_captive_auth_operations.sql'),'utf8'));
+  await client.query(await readFile(path.join(root,'supabase/migrations/20260925180605_harden_durable_auth_recovery_under_load.sql'),'utf8'));
   // Explicitly enable sends in isolated fixture; production migration defaults off.
   await client.query('update captive_auth_worker_config set sends_enabled=true');
   const store=randomUUID(), user=randomUUID();
@@ -201,11 +209,12 @@ try {
     const row=(await client.query("select c.token_hash,v.decrypted_secret,j.command,j.schedule from captive_auth_worker_config c join vault.decrypted_secrets v on v.id=c.vault_secret_id cross join cron.job j")).rows[0];assert.ok(!row.command.includes(row.decrypted_secret));assert.equal(row.schedule,'10 seconds');
     assert.equal((await client.query('select authorize_captive_auth_worker($1) r',[row.decrypted_secret])).rows[0].r,true);
     assert.equal((await client.query("select authorize_captive_auth_worker('wrong') r")).rows[0].r,false);
-    await client.query('select dispatch_captive_auth_worker()');const sent=(await client.query('select headers,timeout_ms from net.test_requests order by id desc limit 1')).rows[0];assert.equal(sent.timeout_ms,25000);assert.equal(sent.headers['x-captive-worker-token'],row.decrypted_secret);
+    await join(await fixture());await client.query('select dispatch_captive_auth_worker()');const sent=(await client.query('select headers,timeout_ms from net.test_requests order by id desc limit 1')).rows[0];assert.equal(sent.timeout_ms,55000);assert.equal(sent.headers['x-captive-worker-token'],row.decrypted_secret);
     await client.query('select finish_captive_auth_worker(2)');assert.equal((await client.query('select last_worker_failed_count from captive_auth_worker_config')).rows[0].last_worker_failed_count,2);
   });
   await test('HTTP transport exception cannot roll back database watchdog expiration',async()=>{
     const j=await join(await fixture());await client.query("update captive_auth_operations set created_at=clock_timestamp()-interval '111 seconds' where id=$1",[j.operation.id]);
+    await join(await fixture()); // Independent due work still requires dispatch after expiry.
     await client.query("create or replace function net.http_post(url text,body jsonb default '{}'::jsonb,params jsonb default '{}'::jsonb,headers jsonb default '{}'::jsonb,timeout_milliseconds integer default 2000) returns bigint language plpgsql as $$begin raise exception 'transport unavailable';end;$$");
     await client.query('update captive_auth_worker_config set last_dispatch_at=null');await client.query('select dispatch_captive_auth_worker()');
     assert.equal((await client.query('select status from captive_auth_operations where id=$1',[j.operation.id])).rows[0].status,'expired_unconfirmed');
@@ -346,6 +355,10 @@ try {
     const cs=await Promise.all([connect(),connect(),connect()]);
     const batches=await Promise.all(cs.map((c,i)=>c.query('select * from claim_captive_auth_operations($1,10,NULL,true)',['bulk-'+i])));
     const rows=batches.flatMap(r=>r.rows.map(x=>x.claim_captive_auth_operations));
+    rows.push(...(await client.query("select * from claim_captive_auth_operations('fill-first-wave',16,NULL,true)")).rows.map(x=>x.claim_captive_auth_operations));
+    assert.equal(rows.length,16);assert.equal((await client.query("select count(*)::int n from captive_auth_operations where controller_key='https://controller.test/povao' and site_id='default' and lease_expires_at>clock_timestamp()")).rows[0].n,16);
+    for(const op of rows)await record(op,'confirmed',evidence(op));
+    rows.push(...(await client.query("select * from claim_captive_auth_operations('second-wave',16,NULL,true)")).rows.map(x=>x.claim_captive_auth_operations));
     assert.equal(rows.length,24);assert.equal(new Set(rows.map(o=>o.id)).size,24);assert.ok(rows.every(o=>ids.includes(o.id)&&o.action==='send'));
     await Promise.all(cs.map(c=>c.end()));
   });
@@ -376,7 +389,10 @@ try {
     const op=(await claim(j.operation.id))[0];await record(op,'confirmed',evidence(op));
     const rs=(await client.query('select id,status,authorized from captive_auth_attempts where id=any($1::uuid[])',[[f.attempt,cancelled.attempt,invalid.attempt]])).rows;
     assert.equal(rs.find(x=>x.id===f.attempt).status,'authorized');assert.equal(rs.find(x=>x.id===cancelled.attempt).status,'cancelled');assert.equal(rs.find(x=>x.id===invalid.attempt).authorized,false);
-    for(const excluded of [cancelled,invalid])assert.equal((await client.query('select get_captive_auth_operation($1,$2) r',[excluded.attempt,excluded.token])).rows[0].r.authorized,false);
+    for(const excluded of [cancelled,invalid]){
+      assert.equal((await client.query('select get_captive_auth_operation($1,$2) r',[excluded.attempt,excluded.token])).rows[0].r.authorized,false);
+      const joined=await join(excluded);assert.equal(joined.disposition,'state_inconsistent');assert.equal(joined.operation,null);
+    }
   });
   await adversarial('block after accepted send preserves truthful Wi-Fi result but forbids login challenge',async()=>{
     const blockedUser=randomUUID();await client.query('insert into auth.users(id) values($1)',[blockedUser]);const f=await fixture({user:blockedUser}),j=await join(f),send=(await claim(j.operation.id))[0];
@@ -435,12 +451,15 @@ try {
     const cases=[];
     for(const outcome of ['accepted','unknown']){
       const initial=(await claim((await join(await fixture())).operation.id))[0];await record(initial,'not_sent',{command_sent:false});
-      await client.query("update captive_auth_operations set first_sent_at=clock_timestamp()-interval '89.5 seconds',verification_deadline=clock_timestamp()+interval '500 milliseconds' where id=$1",[initial.id]);
+      await client.query("update captive_auth_operations set first_sent_at=clock_timestamp()-interval '72 seconds',verification_deadline=clock_timestamp()+interval '18 seconds' where id=$1",[initial.id]);
       await client.query("update captive_auth_work_due set due_at=clock_timestamp()-interval '1 second' where operation_id=$1",[initial.id]);
-      const op=(await claim(initial.id))[0];assert.equal(op.action,'send');assert.ok(new Date(op.deadline_at)>Date.now(),'This send must be claimed before the verification deadline');
+      const op=(await claim(initial.id))[0];assert.equal(op.action,'send');assert.ok(new Date(op.deadline_at)-Date.now()>=16000,'This send must be claimed with its full preparation budget');
+      // Advance only this fixture by 17.5 seconds after the valid claim, keeping
+      // the original deadline and lease offsets relative to its first intent.
+      const shifted=(await client.query("update captive_auth_operations set first_sent_at=first_sent_at-interval '17.5 seconds',verification_deadline=verification_deadline-interval '17.5 seconds',lease_expires_at=lease_expires_at-interval '17.5 seconds' where id=$1 returning lease_expires_at",[op.id])).rows[0];
       // Real elapsed time: send was legitimately claimed before the deadline,
       // but its result arrives after that deadline and within the actual lease.
-      await new Promise(r=>setTimeout(r,650));assert.ok(new Date(op.lease_expires_at)>Date.now());
+      await new Promise(r=>setTimeout(r,650));assert.ok(shifted.lease_expires_at>Date.now());
       let result,error;try{result=await record(op,outcome,{command_sent:true});}catch(e){error=e.message;}
       const state=(await client.query('select o.status,o.command_accepted_at,o.command_dispatched_at,a.status attempt,s.status session from captive_auth_operations o join captive_auth_attempts a on a.auth_operation_id=o.id join captive_sessions s on s.auth_operation_id=o.id where o.id=$1',[op.id])).rows[0];
       cases.push({outcome,error,applied:result?.applied,state});
@@ -457,9 +476,81 @@ try {
     try{try{rows=await claim(fresh.operation.id);}catch(e){error=e.message;}
       const states=(await client.query('select status,count(*)::int n from captive_auth_operations where id=any($1::uuid[]) group by status',[[poison.operation.id,expiredHealthy.operation.id,fresh.operation.id]])).rows;
       observations.push({probe:'poison_watchdog_blocks_global_claim',error,states});
-    }finally{await client.query('drop trigger test_poison_one_audit on audit_logs;drop function test_poison_one_audit();');await client.query('select expire_captive_auth_operations(500)');}
+      const first=(await client.query('select failure_count,last_sqlstate,extract(epoch from(next_retry_at-last_failed_at))::int delay from captive_auth_recovery_failures where operation_id=$1',[poison.operation.id])).rows[0];
+      assert.deepEqual(first,{failure_count:1,last_sqlstate:'P0001',delay:10});
+      await client.query('select expire_captive_auth_operations(500)');
+      assert.equal((await client.query('select failure_count from captive_auth_recovery_failures where operation_id=$1',[poison.operation.id])).rows[0].failure_count,1);
+      await client.query("update captive_auth_recovery_failures set next_retry_at=clock_timestamp()-interval '1 second' where operation_id=$1",[poison.operation.id]);await client.query('select expire_captive_auth_operations(500)');
+      assert.equal((await client.query('select extract(epoch from(next_retry_at-last_failed_at))::int delay from captive_auth_recovery_failures where operation_id=$1',[poison.operation.id])).rows[0].delay,20);
+    }finally{
+      await client.query('drop trigger test_poison_one_audit on audit_logs;drop function test_poison_one_audit();');
+      await client.query("update captive_auth_recovery_failures set next_retry_at=clock_timestamp()-interval '1 second' where operation_id=$1",[poison.operation.id]);await client.query('select expire_captive_auth_operations(500)');
+    }
     assert.equal(error,undefined,'Expiry of an unrelated poison operation aborted the healthy claim');assert.equal(rows?.length,1);
+    assert.equal((await client.query('select count(*)::int n from captive_auth_recovery_failures where operation_id=$1',[poison.operation.id])).rows[0].n,0);
+    assert.equal((await client.query('select status from captive_auth_operations where id=$1',[poison.operation.id])).rows[0].status,'expired_unconfirmed');
   });
+  await test('existing join returns a stale receipt instead of reusing its expired authorization',async()=>{
+    const f=await fixture(),j=await acceptedConfirmed(f);await client.query("update captive_auth_operations set authorized_until=clock_timestamp()-interval '1 second' where id=$1",[j.operation.id]);
+    const retry=await join(f);assert.equal(retry.disposition,'receipt_stale');assert.equal(retry.operation,null);assert.equal(retry.authorized,false);
+  });
+  await test('confirmed candidate is rechecked after its row-lock wait before a new attempt joins',async()=>{
+    const f=await fixture(),j=await acceptedConfirmed(f),fresh=await fixture({mac:f.mac}),blocker=await connect(),waiter=await connect();
+    await client.query("update captive_auth_operations set authorized_until=clock_timestamp()+interval '1000 milliseconds' where id=$1",[j.operation.id]);
+    await blocker.query('begin');await blocker.query('select 1 from captive_auth_operations where id=$1 for update',[j.operation.id]);
+    const waiting=join(fresh,waiter);try{await waitForLock(waiter);await new Promise(r=>setTimeout(r,1100));}finally{await blocker.query('commit');}
+    const joined=await waiting;assert.equal(joined.disposition,'created');assert.notEqual(joined.operation.id,j.operation.id);assert.equal(joined.operation.authorized,false);await blocker.end();await waiter.end();
+  });
+  await test('verification claims precede queued sends and use the nearest immutable deadline',async()=>{
+    await client.query("update captive_auth_work_due set due_at=clock_timestamp()+interval '1 hour'");
+    const queued=await join(await fixture()),later=await join(await fixture()),sooner=await join(await fixture());
+    for(const j of [later,sooner]){const op=(await claim(j.operation.id))[0];await record(op,'accepted',{command_sent:true});await client.query("update captive_auth_work_due set due_at=clock_timestamp()+interval '1 hour' where operation_id=$1",[op.id]);}
+    await client.query("update captive_auth_operations set verification_deadline=clock_timestamp()+interval '35 seconds' where id=$1",[sooner.operation.id]);
+    await client.query("update captive_auth_work_due set due_at=clock_timestamp()-interval '2 seconds' where operation_id=any($1::uuid[])",[[later.operation.id,sooner.operation.id]]);
+    await client.query("update captive_auth_work_due set due_at=clock_timestamp()-interval '1 minute' where operation_id=$1",[queued.operation.id]);
+    const op=(await client.query("select * from claim_captive_auth_operations('priority',1,NULL,true)")).rows[0].claim_captive_auth_operations;assert.equal(op.id,sooner.operation.id);assert.equal(op.action,'verify');
+  });
+  await test('fresh send is forbidden near deadline and known-unsent work finishes without extending time',async()=>{
+    const op=(await claim((await join(await fixture())).operation.id))[0];await record(op,'not_sent',{command_sent:false});
+    const before=(await client.query("update captive_auth_operations set first_sent_at=clock_timestamp()-interval '75 seconds',verification_deadline=clock_timestamp()+interval '15 seconds' where id=$1 returning first_sent_at,verification_deadline",[op.id])).rows[0];
+    await client.query("update captive_auth_work_due set due_at=clock_timestamp()-interval '1 second' where operation_id=$1",[op.id]);assert.equal((await claim(op.id)).length,0);
+    const after=(await client.query('select first_sent_at,verification_deadline,status,last_error_code,command_dispatched_at from captive_auth_operations where id=$1',[op.id])).rows[0];
+    assert.deepEqual(after.first_sent_at,before.first_sent_at);assert.deepEqual(after.verification_deadline,before.verification_deadline);assert.equal(after.status,'expired_unconfirmed');assert.equal(after.last_error_code,'AUTHORIZATION_PREPARATION_BUDGET_EXHAUSTED');assert.equal(after.command_dispatched_at,null);
+  });
+  await test('recovery diagnostics and expiration helper remain private to the trusted database writer',async()=>{
+    await client.query('set role anon');try{await assert.rejects(()=>client.query('select * from captive_auth_recovery_failures'),/permission denied/);}finally{await client.query('reset role');}
+    await client.query('set role service_role');try{
+      await client.query('select * from captive_auth_recovery_failures');
+      await assert.rejects(()=>client.query("insert into captive_auth_recovery_failures values(gen_random_uuid(),1,'P0001',now(),now(),now())"),/permission denied/);
+      await assert.rejects(()=>client.query("select try_expire_captive_auth_operation(gen_random_uuid(),'test')"),/permission denied/);
+    }finally{await client.query('reset role');}
+    const bad=(await client.query("select p.proname from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname in ('join_captive_auth_operation','claim_captive_auth_operations','renew_captive_auth_operation_lease','record_captive_auth_operation','expire_captive_auth_operations','sync_captive_auth_operation','try_expire_captive_auth_operation') and (has_function_privilege('anon',p.oid,'EXECUTE') or has_function_privilege('authenticated',p.oid,'EXECUTE') or not coalesce(p.proconfig @> array['search_path=\"\"'],false))")).rows;
+    assert.deepEqual(bad,[]);
+  });
+  await test('controller capacity includes targeted and cross-store claims but is independent across controllers',async()=>{
+    const otherStore=randomUUID();await client.query("insert into stores(id,slug,name) values($1,'capacity-other-store','Capacity other store')",[otherStore]);
+    const ids=[];for(let i=0;i<17;i++)ids.push((await join(await fixture({store:i%2?otherStore:store}))).operation.id);
+    const claimed=[];for(let i=0;i<16;i++){const rows=await claim(ids[i],'targeted-'+i);assert.equal(rows.length,1);claimed.push(rows[0]);}
+    assert.equal((await claim(ids[16],'targeted-over-cap')).length,0);
+    const live=(await client.query("select count(*)::int n,count(distinct store_id)::int stores from captive_auth_operations where controller_key='https://controller.test/povao' and site_id='default' and lease_expires_at>clock_timestamp()")).rows[0];assert.deepEqual(live,{n:16,stores:2});
+    const independent=await join(await fixture(),client,{p_controller_key:'https://independent-controller.test/default'});
+    const independentClaim=(await client.query("select * from claim_captive_auth_operations('independent-global',1,NULL,true)")).rows.map(x=>x.claim_captive_auth_operations);
+    assert.equal(independentClaim.length,1);assert.equal(independentClaim[0].id,independent.operation.id);
+    // Release one slot with a known accepted command. Its due read must get the
+    // slot before a targeted browser request can start a fresh send.
+    await record(claimed[0],'accepted',{command_sent:true});await client.query("update captive_auth_work_due set due_at=clock_timestamp()-interval '1 second' where operation_id=$1",[claimed[0].id]);
+    assert.equal((await claim(ids[16],'cannot-bypass-due-verify')).length,0);
+    const verify=(await claim(claimed[0].id,'priority-read'))[0];assert.equal(verify.action,'verify');await record(verify,'confirmed',evidence(verify));
+    assert.equal((await claim(ids[16],'after-verification')).length,1);
+  });
+  // Use the actual shipped coordinator/policy, not a copied scheduler model.
+  const localRequire=createRequire(import.meta.url),typescript=localRequire(path.join(root,'node_modules/typescript'));
+  const coordinatorSource=await readFile(path.join(root,'supabase/functions/_shared/durable-auth.ts'),'utf8');
+  const coordinatorModule={exports:{}};
+  runInNewContext(typescript.transpileModule(coordinatorSource,{compilerOptions:{module:typescript.ModuleKind.CommonJS,target:typescript.ScriptTarget.ES2022}}).outputText,
+    {module:coordinatorModule,exports:coordinatorModule.exports,console,Date,setTimeout,clearTimeout,AbortController,performance,crypto:globalThis.crypto});
+  const {drainAuthorization,AUTH_WORKER_POLICY}=coordinatorModule.exports;
+  assert.equal(typeof drainAuthorization,'function');
   async function runBrowserlessLoad(size,alreadyAccepted=false){
     // Accelerate time by aging only these synthetic operations and their outbox.
     // The production RPC ordering, watchdog, leases and record functions are unchanged.
@@ -468,33 +559,44 @@ try {
     const ticks=[];let sent=0,verified=0,leaseRejected=0;
     // Second scenario: each request's inline pass completed its POST before all
     // browsers disappeared. There are no queued sends competing with recovery.
-    if(alreadyAccepted)for(const id of ids){const op=(await claim(id))[0];await record(op,'accepted',{command_sent:true},op.lease_owner,client,2);sent++;}
+    if(alreadyAccepted){
+      for(const id of ids){const op=(await claim(id))[0];await record(op,'accepted',{command_sent:true},op.lease_owner,client,2);sent++;await client.query("update captive_auth_work_due set due_at=clock_timestamp()+interval '1 hour' where operation_id=$1",[op.id]);}
+      await client.query("update captive_auth_work_due set due_at=clock_timestamp()+interval '2 seconds' where operation_id=any($1::uuid[])",[ids]);
+    }
     for(let tick=0;tick<24;tick++){
-      const ops=(await client.query('select * from claim_captive_auth_operations($1,4,NULL,true)',['capacity-'+tick])).rows.map(x=>x.claim_captive_auth_operations);
-      assert.ok(ops.every(o=>ids.includes(o.id)));
       const actions=[];
-      for(const op of ops){
-        if(new Date(op.lease_expires_at)-Date.now()<16000){leaseRejected++;actions.push('budget_rejected');continue;}
-        if(op.action==='send'){await record(op,'accepted',{command_sent:true},op.lease_owner,client,2);sent++;actions.push('send');}
-        else{await record(op,'confirmed',evidence(op));verified++;actions.push('verify');}
-      }
-      ticks.push({tick,simulated_seconds:tick*10,actions});
+      const db={rpc:async(name,args)=>{
+        assert.ok(['claim_captive_auth_operations','record_captive_auth_operation'].includes(name));
+        const keys=Object.keys(args);try{
+          const result=await client.query(`select ${name}(${keys.map((k,i)=>`${k}=>$${i+1}`).join(',')}) r`,Object.values(args));
+          const data=name==='claim_captive_auth_operations'?result.rows.map(r=>r.r):result.rows[0].r;
+          if(Array.isArray(data))assert.ok(data.every(o=>ids.includes(o.id)));
+          return {data,error:null};
+        }catch(error){return {data:null,error:{message:error.message,code:error.code}};}
+      }};
+      const work=await drainAuthorization(db,{
+        send:async op=>{sent++;actions.push('send');return {status:'accepted',command_sent:true,effective_mac:op.client_mac,command_sent_at:new Date().toISOString()};},
+        verify:async op=>{verified++;actions.push('verify');return {state:'authorized',found:true,authorized:true,effective_mac:op.client_mac,evidence:evidence(op)};},
+      },{owner:'capacity-'+tick});
+      leaseRejected+=work.errors.filter(e=>e.includes('LEASE_BUDGET_EXHAUSTED')).length;
+      assert.equal(work.errors.length,0,work.errors.join(','));
+      ticks.push({tick,simulated_seconds:tick*10,actions,batches:work.batches});
       await client.query("update captive_auth_operations set created_at=created_at-interval '10 seconds',first_sent_at=first_sent_at-interval '10 seconds',command_dispatched_at=command_dispatched_at-interval '10 seconds',command_accepted_at=command_accepted_at-interval '10 seconds',verification_deadline=verification_deadline-interval '10 seconds',next_check_at=next_check_at-interval '10 seconds',lease_expires_at=lease_expires_at-interval '10 seconds',confirmed_at=confirmed_at-interval '10 seconds',authorized_until=authorized_until-interval '10 seconds',completed_at=completed_at-interval '10 seconds' where id=any($1::uuid[])",[ids]);
       await client.query("update captive_auth_work_due set due_at=due_at-interval '10 seconds' where operation_id=any($1::uuid[])",[ids]);
     }
     const states=(await client.query('select status,count(*)::int n from captive_auth_operations where id=any($1::uuid[]) group by status',[ids])).rows;
-    const result={probe:'browserless_'+size+'_'+(alreadyAccepted?'accepted':'queued')+'_capacity',sent,verified,leaseRejected,states,ticks};observations.push(result);return result;
+    const result={probe:'browserless_'+size+'_'+(alreadyAccepted?'accepted':'queued')+'_capacity',policy:AUTH_WORKER_POLICY,sent,verified,leaseRejected,states,ticks};observations.push(result);return result;
   }
   await adversarial('four browserless clients calibrate the accelerated real-SQL capacity probe',async()=>{
     const result=await runBrowserlessLoad(4);assert.equal(result.sent,4);assert.equal(result.verified,4);assert.equal(result.leaseRejected,0);assert.equal(result.states.find(s=>s.status==='confirmed')?.n,4);
   });
-  await adversarial('40 browserless clients all confirm with four operations per ten-second tick',async()=>{
+  await adversarial('40 browserless clients all confirm with bounded batches per ten-second cron tick',async()=>{
     const result=await runBrowserlessLoad(40);
     assert.equal(result.states.find(s=>s.status==='confirmed')?.n||0,40,'FIFO queued sends starved verification despite always-successful synthetic controller');
   });
   await adversarial('40 already-accepted browserless clients all confirm before recovery budget expires',async()=>{
     const result=await runBrowserlessLoad(40,true);
-    assert.equal(result.states.find(s=>s.status==='confirmed')?.n||0,40,'Final accepted cohort cannot fit the minimum lease budget at four operations per tick');
+    assert.equal(result.states.find(s=>s.status==='confirmed')?.n||0,40,'Final accepted cohort cannot fit the minimum lease budget with bounded batches per ten-second cron tick');
   });
   await writeFile(path.join(dir,'results.json'),JSON.stringify({postgres:(await client.query('select version()')).rows[0].version,passed,adversarialFailures,observations,finished_at:new Date().toISOString()},null,2));
   console.log(`${passed.length} behavioral PostgreSQL integration tests passed; ${adversarialFailures.length} adversarial invariants failed`);

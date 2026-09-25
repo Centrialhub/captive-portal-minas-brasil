@@ -7,34 +7,45 @@ interface SuccessViewProps {
   redirectReady?: boolean;
   autoRedirect?: boolean;
   onRedirect?: (mode: "automatic" | "manual") => void;
+  onRedirectFailure?: () => void;
 }
 
 export function SuccessView({
-  redirectUrl, successMsg, redirectReady = true, autoRedirect = true, onRedirect,
+  redirectUrl, successMsg, redirectReady = true, autoRedirect = true, onRedirect, onRedirectFailure,
 }: SuccessViewProps) {
   const [countdown, setCountdown] = useState(2);
   const [navigating, setNavigating] = useState(false);
+  const [navigationFailed, setNavigationFailed] = useState(false);
   const automaticAttemptedRef = useRef(false);
   const manualUnlockRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onRedirectRef = useRef(onRedirect);
   onRedirectRef.current = onRedirect;
+  const failureRef = useRef(onRedirectFailure);
+  failureRef.current = onRedirectFailure;
 
   const navigate = useCallback((mode: "automatic" | "manual") => {
     if (!redirectUrl) return;
     automaticAttemptedRef.current = true;
     setNavigating(true);
+    setNavigationFailed(false);
     // Record intent before navigation. This is not proof of delivery.
-    onRedirectRef.current?.(mode);
-    window.location.replace(redirectUrl);
-    if (manualUnlockRef.current) clearTimeout(manualUnlockRef.current);
-    manualUnlockRef.current = setTimeout(() => setNavigating(false), 2000);
+    try {
+      onRedirectRef.current?.(mode);
+      window.location.replace(redirectUrl);
+    } catch {
+      setNavigationFailed(true);
+      failureRef.current?.();
+    } finally {
+      if (manualUnlockRef.current) clearTimeout(manualUnlockRef.current);
+      manualUnlockRef.current = setTimeout(() => setNavigating(false), 2000);
+    }
   }, [redirectUrl]);
 
   useEffect(() => {
     if (!redirectUrl || !redirectReady || !autoRedirect || automaticAttemptedRef.current || navigating) return;
     setCountdown(2);
-    const started = Date.now();
-    const tick = setInterval(() => setCountdown(Math.max(0, 2 - Math.floor((Date.now() - started) / 1000))), 250);
+    const started = performance.now();
+    const tick = setInterval(() => setCountdown(Math.max(0, 2 - Math.floor((performance.now() - started) / 1000))), 250);
     const redirect = setTimeout(() => navigate("automatic"), 2000);
     return () => { clearInterval(tick); clearTimeout(redirect); };
   }, [redirectUrl, redirectReady, autoRedirect, navigate, navigating]);
@@ -55,6 +66,7 @@ export function SuccessView({
         <p role="status" className="portal-subtitle">{successMsg}</p>
         <p className="text-gray-600 text-sm">Você já pode usar sua conexão ou fechar esta janela.</p>
         {redirectUrl && <div className="space-y-4">
+          {navigationFailed && <p role="alert" className="text-gray-600 text-sm">Não foi possível abrir a página. Seu Wi-Fi continua liberado; tente continuar novamente.</p>}
           {redirectReady && autoRedirect && !automaticAttemptedRef.current && (
             <p className="text-gray-600 text-sm mt-5">Redirecionando em {countdown} segundos...</p>
           )}

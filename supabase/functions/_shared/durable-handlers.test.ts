@@ -3,7 +3,7 @@ import vm from "node:vm";
 import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
 import { isAuthResult } from "../../../src/lib/auth-outcome";
-import { reconcileAuthorization, requiredRpc, type AuthOperation } from "./durable-auth";
+import { drainAuthorization, reconcileAuthorization, requiredRpc, withOperationDeadline, type AuthOperation } from "./durable-auth";
 import { canonicalUnifiMac } from "./unifi-authorization";
 
 // Run the actual Edge handlers and coordinator. Only storage/network/Auth are
@@ -13,6 +13,7 @@ const tree = ts.createSourceFile("edge.ts", source, ts.ScriptTarget.Latest, true
 const names = new Set([
   "publicOperationResult", "readOperation", "authorizeDurably", "handleAttemptStatus",
   "runAuthorizationWorker", "claimPortalSessionChallenge",
+  "authorizationDispositionError", "authorizationFailureResponse",
 ]);
 const selected = tree.statements.filter(node => ts.isFunctionDeclaration(node) && names.has(node.name?.text || ""));
 if (selected.length !== names.size) throw new Error("Durable handler extraction incomplete");
@@ -56,12 +57,15 @@ type HarnessOptions = {
   challengeError?: boolean;
   challengeStall?: boolean;
   tableError?: string;
+  tableStall?: string;
+  joinError?: { code: string; message: string };
 };
 function harness(options: HarnessOptions = {}) {
   let currentStatus = options.status || "queued";
   let hasClaimed = false;
   let challengeClaimed = false;
   let readCount = 0;
+  let releaseLookup = () => {};
   const records: Record<string, unknown>[] = [];
   const apQueries: Array<{ field: string; value: unknown }> = [];
   const db = {
@@ -69,7 +73,7 @@ function harness(options: HarnessOptions = {}) {
       if (name === "join_captive_auth_operation") return {
         data: { disposition: options.joinDisposition || "created",
           operation: options.joinDisposition ? null : operationResult(currentStatus), session_id: "session-test",
-          retry_after_ms: 10_000 }, error: null,
+          retry_after_ms: 10_000 }, error: options.joinError || null,
       };
       if (name === "get_captive_auth_operation") {
         readCount += 1;
@@ -102,7 +106,8 @@ function harness(options: HarnessOptions = {}) {
       if (name === "record_captive_auth_operation") {
         records.push(args);
         if (options.recordError) return { data: null, error: { code: "LOST_RECORD_RESPONSE" } };
-        currentStatus = args.p_outcome === "confirmed" ? "confirmed" : args.p_outcome === "rejected" ? "rejected" : "verifying";
+        currentStatus = args.p_outcome === "confirmed" ? "confirmed" : args.p_outcome === "rejected" ? "rejected"
+          : args.p_outcome === "not_sent" ? "queued" : "verifying";
         return { data: { applied: true }, error: null };
       }
       if (name === "claim_captive_auth_challenge") {
@@ -121,12 +126,14 @@ function harness(options: HarnessOptions = {}) {
       const result = options.tableError === table
         ? { data: null, error: { code: "SYNTHETIC_TRANSIENT_LOOKUP_FAILURE" } }
         : { data, error: null };
+      const lookup = options.tableStall === table ? new Promise<typeof result>(resolve => { releaseLookup = () => resolve(result); }) : Promise.resolve(result);
       const query = { select: () => query, eq: (field: string, value: unknown) => {
         if (table === "store_access_points") apQueries.push({ field, value });
         return query;
       },
-      single: async () => result, maybeSingle: async () => result,
-      then: (resolve: (value: unknown) => unknown) => Promise.resolve(result).then(resolve) };
+      single: () => lookup, maybeSingle: () => lookup,
+      abortSignal: () => query,
+      then: (resolve: (value: unknown) => unknown) => lookup.then(resolve) };
       return query;
     },
   };
@@ -141,7 +148,7 @@ function harness(options: HarnessOptions = {}) {
   const context = vm.createContext({
     Date, Request, Response, setTimeout, clearTimeout, crypto: { randomUUID: () => "test-worker" },
     DEFAULT_REDIRECT_URL: REDIRECT, UNIFI_USERNAME: "fake", UNIFI_PASSWORD: "fake",
-    Logger: { info() {}, warn() {}, error() {} }, reconcileAuthorization, requiredRpc,
+    Logger: { info() {}, warn() {}, error() {} }, drainAuthorization, reconcileAuthorization, requiredRpc, withOperationDeadline,
     supabaseAdmin: () => db, safeParseJson: (request: Request) => request.json(),
     jsonResponse: (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } }),
     isValidUUID: (value: string) => value === ATTEMPT,
@@ -163,7 +170,7 @@ function harness(options: HarnessOptions = {}) {
     ctx: { clientMac: MAC, apMac: AP, ssid: "Wifi", captiveTimestamp: "test-association" },
     profile: {}, authMethod: "identity", traceId: "trace-test", clientIp: null, userAgent: "test",
   }, STORE, "povao", REDIRECT) as Promise<Record<string, unknown>>;
-  return { db, context, initial, status, send, verify, mint, records, apQueries };
+  return { db, context, initial, status, send, verify, mint, records, apQueries, releaseLookup: () => releaseLookup() };
 }
 
 describe("durable Edge handlers and browser wire contract", () => {
@@ -326,5 +333,42 @@ describe("durable Edge handlers and browser wire contract", () => {
         expect(outcome.error).toMatchObject({ message: expect.stringMatching(expected) });
       }
       expect(h.send).not.toHaveBeenCalled();
+    });
+
+  it.each([["ATTEMPT_EXPIRED", "P0001", 410], ["AUTHORIZATION_RECEIPT_STALE", "P0001", 410],
+    ["INVALID_RESUME_TOKEN", "28000", 401]])(
+    "maps join SQL exception %s (%s) to HTTP %i without losing its domain reason", async (message, code, status) => {
+      const h = harness({ joinError: { message: String(message), code: String(code) } });
+      const error = await h.initial().catch(error => error);
+      const response: Response = h.context.authorizationFailureResponse(error);
+      expect(response.status).toBe(status);
+      const body = await response.json();
+      expect(body.code).toBe(status === 410 ? "attempt_expired" : "invalid_attempt");
+      expect(h.send).not.toHaveBeenCalled();
+    });
+
+  it("does not classify arbitrary P0001 errors as expired or expose raw SQL text", async () => {
+    const h = harness({ joinError: { code: "P0001", message: "private SQL value 123" } });
+    const error = await h.initial().catch(error => error);
+    expect(error.rpcReason).toBeUndefined();
+    expect(error.message).not.toContain("private");
+    expect(h.context.authorizationFailureResponse(error)).toBeNull();
+  });
+
+  it.each(["user_roles", "store_access_points"])(
+    "bounds a stalled %s preparation and never sends after its late completion", async tableStall => {
+      vi.useFakeTimers();
+      try {
+        const h = harness({ claims: true, tableStall });
+        const result = h.initial();
+        await vi.advanceTimersByTimeAsync(4001);
+        expect(await result).toMatchObject({ authorized: false, status: "queued", processing: true });
+        expect(h.records).toHaveLength(1);
+        expect(h.records[0]).toMatchObject({ p_outcome: "not_sent", p_evidence: { command_sent: false } });
+        h.releaseLookup();
+        await vi.advanceTimersByTimeAsync(20_000);
+        expect(h.send).not.toHaveBeenCalled();
+        expect(h.records).toHaveLength(1);
+      } finally { vi.useRealTimers(); }
     });
 });

@@ -24,6 +24,7 @@ const capability = () => ({
   attempt_id: "be7928df-ade1-48cc-a3e9-4937c83c052b",
   token: "synthetic-capability",
   expires_at: new Date(Date.now() + 600000).toISOString(),
+  server_now: new Date().toISOString(),
 });
 const pending = (delay = 1000) => ({
   authorized: false, processing: true, status: "verifying" as const,
@@ -48,7 +49,7 @@ describe("portal authorization lifecycle", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.resetAllMocks();
-    AttemptTracker.clear();
+    AttemptTracker.clear(true);
     sessionStorage.clear();
     window.history.replaceState(null, "", "/?store=povao&id=02:00:00:00:00:01&ap=02:00:00:00:00:11&ssid=Loja&t=1");
     vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
@@ -63,7 +64,7 @@ describe("portal authorization lifecycle", () => {
   });
   afterEach(() => {
     cleanup();
-    AttemptTracker.clear();
+    AttemptTracker.clear(true);
     vi.restoreAllMocks();
     vi.useRealTimers();
   });

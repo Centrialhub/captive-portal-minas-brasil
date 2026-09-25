@@ -7,6 +7,7 @@ export interface AuthResult {
   operation_id?: string;
   retry_after_ms?: number;
   deadline_at?: string;
+  server_now?: string;
   fail_reason?: string;
   redirect_url?: string;
   session_id?: string | null;
@@ -47,6 +48,7 @@ export function isAuthResult(result: unknown): result is AuthResult {
   if (value.authorized && (value.needs_cpf === true || value.needs_login === true)) return false;
   if (value.retry_after_ms !== undefined && (!Number.isFinite(value.retry_after_ms) || value.retry_after_ms < 0)) return false;
   if (value.deadline_at !== undefined && (typeof value.deadline_at !== "string" || !Number.isFinite(Date.parse(value.deadline_at)))) return false;
+  if (value.server_now !== undefined && (typeof value.server_now !== "string" || !Number.isFinite(Date.parse(value.server_now)))) return false;
   for (const key of ["operation_id", "fail_reason", "redirect_url", "session_token_hash"] as const) {
     if (value[key] !== undefined && value[key] !== null && typeof value[key] !== "string") return false;
   }

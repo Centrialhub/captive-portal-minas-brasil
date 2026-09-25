@@ -1,0 +1,403 @@
+{
+  "generated_at": "2026-09-25T18:10:14.080Z",
+  "base_commit": "b89fcacaaa7369c2259279070d18ec95772772b9",
+  "scope": "Synthetic local corrections and reviewed backend/database deployment; frontend deployment and physical beta validation pending.",
+  "overall": {
+    "automated_tests": 303,
+    "passed": 303,
+    "failed": 0,
+    "application": 253,
+    "database": 50,
+    "browser_scenarios": 2,
+    "original_problem_groups_corrected": 18
+  },
+  "gates": {
+    "npm_check": true,
+    "assets": true,
+    "claims": true,
+    "migrations": true,
+    "security_contract": true,
+    "eslint": true,
+    "typescript": true,
+    "deno": true,
+    "production_build": true,
+    "docker_release_gate": "not run: Docker unavailable; existing Auth leaked-password warning also remains"
+  },
+  "database": {
+    "postgres": "PostgreSQL 17.10 on x86_64-windows, compiled by msvc-19.44.35226, 64-bit",
+    "passed": [
+      "atomic join creates session, membership and durable due work",
+      "20 independent concurrent clients join one operation and one session",
+      "distinct eligible attempts join; other user/context cannot join",
+      "concurrent leases emit exactly one send; expired lease only verifies",
+      "accepted command stays recoverable and confirms all participants atomically",
+      "database error rolls back terminal operation, attempt, session and audit",
+      "missing, mismatched, stale evidence and expired lease cannot confirm",
+      "watchdog terminates abandoned work despite live lease and expired capability",
+      "legacy accepted operation imports verify-only; terminal legacy attempt rejected",
+      "rate-limit block survives window expiry and blocked polls do not extend it",
+      "daily count deduplicates participants and rejects next new grant",
+      "observed-only success has no fabricated expiry, no reuse, and receipt expires at 30s",
+      "five concurrent optional challenges issue only once",
+      "managed attempts reject late legacy writes without changing operation",
+      "admin and blocked users cannot obtain optional login challenge",
+      "capability status awaits identity; expired real authorization receipt is stale",
+      "configured cron keeps secret out of job and dispatches only due work",
+      "HTTP transport exception cannot roll back database watchdog expiration",
+      "public roles have no operation reads or RPC execution",
+      "rollback send switch still permits verification",
+      "proven unsent preparation retries within immutable budget then sends once",
+      "three proven unsent preparations terminate honestly without endless retries",
+      "unknown without actual-send evidence cannot invent command timeline",
+      "historical repair requires unique matching user/AP/SSID evidence and is idempotent",
+      "active roaming joins only between mapped APs in the same store and keeps original context",
+      "status RPC uses a single snapshot while another connection completes authorization",
+      "record rechecks wall clock after waiting for the operation row lock",
+      "uncertain completion exposes only the remaining 30-second cooldown",
+      "24 simultaneous distinct contexts select one identity without partial sessions",
+      "24 independent devices are claimed once across concurrent global batches",
+      "duplicate concurrent acceptance records one event and leaves one recovery item",
+      "concurrent conflicting terminal responses commit one coherent result",
+      "cancelled and invalid participants do not promote or poison eligible participants",
+      "block after accepted send preserves truthful Wi-Fi result but forbids login challenge",
+      "failed creation rolls back identity, session, membership and outbox before safe retry",
+      "lease renewal refuses an owner whose lease expired during row-lock wait",
+      "join cannot reuse an authorization that expired while waiting on device lock",
+      "existing membership cannot bypass capability expiry during operation-lock wait",
+      "known-unsent retry cannot emit a fresh send after the verification deadline",
+      "late actual-send responses persist their effect and terminal projections atomically",
+      "one audit poison item cannot prevent claiming unrelated healthy work",
+      "existing join returns a stale receipt instead of reusing its expired authorization",
+      "confirmed candidate is rechecked after its row-lock wait before a new attempt joins",
+      "verification claims precede queued sends and use the nearest immutable deadline",
+      "fresh send is forbidden near deadline and known-unsent work finishes without extending time",
+      "recovery diagnostics and expiration helper remain private to the trusted database writer",
+      "controller capacity includes targeted and cross-store claims but is independent across controllers",
+      "four browserless clients calibrate the accelerated real-SQL capacity probe",
+      "40 browserless clients all confirm with four operations per ten-second tick",
+      "40 already-accepted browserless clients all confirm before recovery budget expires"
+    ],
+    "failures": [],
+    "observations": [
+      {
+        "probe": "renew_after_lock_expiry",
+        "renewed": false
+      },
+      {
+        "probe": "join_after_grant_expiry",
+        "join_disposition": "created",
+        "join_authorized": false,
+        "status_disposition": "found"
+      },
+      {
+        "probe": "join_after_capability_expiry",
+        "error": "ATTEMPT_EXPIRED"
+      },
+      {
+        "probe": "send_after_verification_deadline",
+        "actions": [],
+        "lease_remaining_ms": null
+      },
+      {
+        "probe": "late_actual_send_guard_conflict",
+        "cases": [
+          {
+            "outcome": "accepted",
+            "applied": true,
+            "state": {
+              "status": "expired_unconfirmed",
+              "command_accepted_at": "2026-09-25T18:04:50.946Z",
+              "command_dispatched_at": "2026-09-25T18:03:20.784Z",
+              "attempt": "failed",
+              "session": "failed"
+            }
+          },
+          {
+            "outcome": "unknown",
+            "applied": true,
+            "state": {
+              "status": "expired_unconfirmed",
+              "command_accepted_at": null,
+              "command_dispatched_at": "2026-09-25T18:03:21.457Z",
+              "attempt": "failed",
+              "session": "failed"
+            }
+          }
+        ]
+      },
+      {
+        "probe": "poison_watchdog_blocks_global_claim",
+        "states": [
+          {
+            "status": "expired_unconfirmed",
+            "n": 1
+          },
+          {
+            "status": "queued",
+            "n": 1
+          },
+          {
+            "status": "sending",
+            "n": 1
+          }
+        ]
+      },
+      {
+        "probe": "browserless_4_queued_capacity",
+        "policy": {
+          "batchSize": 4,
+          "maxBatches": 10,
+          "wallTimeMs": 50000,
+          "minRemainingMs": 16000
+        },
+        "sent": 4,
+        "verified": 4,
+        "leaseRejected": 0,
+        "states": [
+          {
+            "status": "confirmed",
+            "n": 4
+          }
+        ]
+      },
+      {
+        "probe": "browserless_40_queued_capacity",
+        "policy": {
+          "batchSize": 4,
+          "maxBatches": 10,
+          "wallTimeMs": 50000,
+          "minRemainingMs": 16000
+        },
+        "sent": 40,
+        "verified": 40,
+        "leaseRejected": 0,
+        "states": [
+          {
+            "status": "confirmed",
+            "n": 40
+          }
+        ]
+      },
+      {
+        "probe": "browserless_40_accepted_capacity",
+        "policy": {
+          "batchSize": 4,
+          "maxBatches": 10,
+          "wallTimeMs": 50000,
+          "minRemainingMs": 16000
+        },
+        "sent": 40,
+        "verified": 40,
+        "leaseRejected": 0,
+        "states": [
+          {
+            "status": "confirmed",
+            "n": 40
+          }
+        ]
+      }
+    ]
+  },
+  "browser": {
+    "scenarios": [
+      {
+        "label": "desktop-automatic-redirect",
+        "apiRoutes": [
+          "/bootstrap",
+          "/attempt/init",
+          "/identify",
+          "/attempt/status",
+          "/attempt/status",
+          "/client-event",
+          "/client-event"
+        ],
+        "identifyCount": 1,
+        "statusCount": 2,
+        "redirectCount": 1,
+        "pendingSeen": true,
+        "confirmedSeen": true,
+        "manualRetryEnabled": null,
+        "finalDestinationSeen": true
+      },
+      {
+        "label": "mobile-navigation-no-effect-then-manual-retry",
+        "apiRoutes": [
+          "/bootstrap",
+          "/attempt/init",
+          "/identify",
+          "/attempt/status",
+          "/attempt/status",
+          "/client-event",
+          "/client-event",
+          "/client-event"
+        ],
+        "identifyCount": 1,
+        "statusCount": 2,
+        "redirectCount": 2,
+        "pendingSeen": true,
+        "confirmedSeen": true,
+        "manualRetryEnabled": true,
+        "finalDestinationSeen": true
+      }
+    ],
+    "unexpectedExternal": [],
+    "pageErrors": [],
+    "controls": {
+      "viteConfigFile": false,
+      "environment": "empty directory plus explicit synthetic Supabase URL/key",
+      "apiServerFallback": "599, no proxy",
+      "browserRoutes": "global allowlist installed before navigation",
+      "serviceWorkers": "blocked",
+      "externalDNS": "blocked by Chromium resolver rules",
+      "productionRequests": 0
+    },
+    "success": true,
+    "cleanup": {
+      "browserClosed": true,
+      "serverClosed": true
+    }
+  },
+  "production": {
+    "deployed": {
+      "id": "652071a4-d7e1-4536-be93-1e4574d6b2db",
+      "slug": "captive-portal",
+      "name": "captive-portal",
+      "status": "ACTIVE",
+      "version": 254,
+      "created_at": 1770990093127,
+      "updated_at": 1790359582759,
+      "verify_jwt": false,
+      "import_map": false,
+      "entrypoint_path": "file:///tmp/user_fn_fqamejlyytrhovawgtwg_652071a4-d7e1-4536-be93-1e4574d6b2db_254/source/functions/captive-portal/index.ts",
+      "ezbr_sha256": "c66c5e9d94aa772f3a817a266f6f7fc9cda7424ea0527a991603644d21ad2e5e"
+    },
+    "source_match": {
+      "version": 254,
+      "matched": [
+        {
+          "name": "functions/captive-portal/index.ts",
+          "equal": true
+        },
+        {
+          "name": "functions/_shared/unifi-cookie.ts",
+          "equal": true
+        },
+        {
+          "name": "functions/_shared/identity.ts",
+          "equal": true
+        },
+        {
+          "name": "functions/_shared/durable-auth.ts",
+          "equal": true
+        },
+        {
+          "name": "functions/_shared/unifi-authorization.ts",
+          "equal": true
+        },
+        {
+          "name": "functions/_shared/daily-access.ts",
+          "equal": true
+        }
+      ]
+    },
+    "database": {
+      "worker": {
+        "enabled": true,
+        "last_tick_at": "2026-09-25T18:09:15.027165+00:00",
+        "sends_enabled": true,
+        "last_error_code": null,
+        "last_worker_finished_at": "2026-09-25T18:07:36.18102+00:00",
+        "last_worker_failed_count": 0
+      },
+      "checked_at": "2026-09-25T18:09:21.621327+00:00",
+      "operations": [
+        {
+          "count": 2,
+          "status": "confirmed"
+        }
+      ],
+      "diagnostics": 0,
+      "smoke_response": {
+        "body": {
+          "failed": 0,
+          "applied": 0,
+          "claimed": 0
+        },
+        "error": null,
+        "timed_out": false,
+        "status_code": 200
+      },
+      "active_operations": 0
+    },
+    "schema": {
+      "rls": true,
+      "cron": [
+        {
+          "active": true,
+          "schedule": "10 seconds"
+        }
+      ],
+      "migration": {
+        "name": "harden_durable_auth_recovery_under_load",
+        "version": "20260925180605"
+      },
+      "checked_at": "2026-09-25T18:06:59.918094+00:00",
+      "anon_select": false,
+      "diagnostics": 0,
+      "timeout_55s": true,
+      "service_insert": false,
+      "service_select": true,
+      "active_operations": 0,
+      "authenticated_select": false,
+      "service_expire_helper": false
+    },
+    "public_checks": {
+      "health_ready_and_proxy": "8/8 verified",
+      "frontend_sha": "90b0767af59b9490fb3191601ac2796886ee72c2",
+      "frontend_deployed": false,
+      "unauthenticated_worker": 401,
+      "unauthenticated_status": 401,
+      "edge_readiness": 200
+    }
+  },
+  "source_files": [
+    {
+      "name": "functions/captive-portal/index.ts",
+      "remote_equal": true,
+      "sha256": "ac5bdf3a84fd13216d69b713fb33bc15daafd9026e839f746d3e142027fe1679"
+    },
+    {
+      "name": "functions/_shared/unifi-cookie.ts",
+      "remote_equal": true,
+      "sha256": "57f95c16b1ac1022072a29cda8ba22d73b3fa47709d548132719723f0dfe5b05"
+    },
+    {
+      "name": "functions/_shared/identity.ts",
+      "remote_equal": true,
+      "sha256": "b2b612c00b810508f2fc5d8be603b308ec57cf0d1d58662bb831525f162c4347"
+    },
+    {
+      "name": "functions/_shared/durable-auth.ts",
+      "remote_equal": true,
+      "sha256": "56fc733ec6bf28946466df0717d3a7f44f502b3c29d2114d4db34efc7189381c"
+    },
+    {
+      "name": "functions/_shared/unifi-authorization.ts",
+      "remote_equal": true,
+      "sha256": "60c0edb30b28f0e084dec702b41feb9188288a4684a479240d49bdf1bd694133"
+    },
+    {
+      "name": "functions/_shared/daily-access.ts",
+      "remote_equal": true,
+      "sha256": "583440d58373cde3a3bb67a4b8481625546697c1942303178280027efcd16177"
+    }
+  ],
+  "limitations": [
+    "PostgreSQL fixture uses real locks/triggers but Vault/cron/pg_net stubs. Hosted worker separately smoked with zero work.",
+    "40-client SQL cases have immediate synthetic controller success.",
+    "80 already-accepted operations with 14s successful reads use actual coordinator and a lease-cap model; not measured UniFi capacity.",
+    "Chromium mobile emulation is not physical iOS/Android captive-browser verification.",
+    "No synthetic client authorization command was sent to production.",
+    "Frontend remains on its previous deployed SHA."
+  ]
+}

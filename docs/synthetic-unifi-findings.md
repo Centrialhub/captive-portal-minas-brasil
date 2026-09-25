@@ -1,5 +1,7 @@
 # Resultados sintéticos do adaptador UniFi
 
+> **Atualização:** os achados abaixo são o diagnóstico histórico anterior à correção. Os 18 grupos foram corrigidos; a validação atual passou com 303 testes automatizados e dois fluxos de navegador. Backend v254 e migration corretiva implantados; frontend ainda pendente. Veja [correção e evidências atuais](correcao-sinteticos-povao-2026-09-25.md).
+
 Data: 25/09/2026. Base examinada: `1b2eefbb3ab9108c4ca46fdea86626c6f81dc942`, checkout `tmp/reliability-release-20260925`.
 
 ## Método e limites

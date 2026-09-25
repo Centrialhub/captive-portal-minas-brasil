@@ -70,11 +70,12 @@ export async function fetchUnifiResponse(
     return await Promise.race([
       (async () => {
         response = await fetcher(url, { ...init, redirect: "manual", signal: controller.signal });
-        if (controller.signal.aborted) {
+        if (controller.signal.aborted || Date.now() >= deadlineAt) {
           void response.body?.cancel().catch(() => {});
           throw new Error("UNIFI_DEADLINE_EXCEEDED");
         }
         const body = await response.text();
+        if (controller.signal.aborted || Date.now() >= deadlineAt) throw new Error("UNIFI_DEADLINE_EXCEEDED");
         return { status: response.status, ok: response.ok, headers: response.headers, body };
       })(),
       timeout,
@@ -108,7 +109,7 @@ export async function fetchUnifiStationsStrict(
   init: RequestInit,
   deadlineAt: number,
   fetcher: UnifiFetcher = fetch,
-): Promise<{ ok: boolean; data?: UnifiStation[]; error?: string; sessionExpired?: boolean }> {
+): Promise<{ ok: boolean; data?: UnifiStation[]; headers?: Headers; error?: string; sessionExpired?: boolean }> {
   try {
     const response = await fetchUnifiResponse(url, { ...init, method: "GET" }, deadlineAt, fetcher);
     if (!response.ok) return {
@@ -122,7 +123,7 @@ export async function fetchUnifiStationsStrict(
     if (!parsed || parsed.rc !== "ok" || !parsed.data || parsed.data.some(row => !object(row))) {
       return { ok: false, error: "UNIFI_STATIONS_INVALID_ENVELOPE" };
     }
-    return { ok: true, data: parsed.data as UnifiStation[] };
+    return { ok: true, data: parsed.data as UnifiStation[], headers: response.headers };
   } catch { return { ok: false, error: "UNIFI_STATIONS_UNAVAILABLE" }; }
 }
 

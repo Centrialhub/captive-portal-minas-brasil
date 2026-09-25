@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "./lib/api";
 import { supabase } from "./integrations/supabase/client";
 import { formatCPF, getQueryParams, resolvePostAuthRedirect, Validators } from "./lib/portal-utils";
-import { AttemptTracker, type TrackedAttempt } from "./lib/attempt-tracker";
+import { AttemptTracker, monotonicNow, type TrackedAttempt } from "./lib/attempt-tracker";
 import { getAuthFailureMessage, isRecoverableAuthResult, withDeadline, type AuthResult } from "./lib/auth-outcome";
 import logoMinasBrasil from "./assets/logo-minas-brasil.png";
 import Footer from "./components/Footer";
@@ -26,6 +26,7 @@ const FALLBACK_BOOT: BootstrapData = {
 };
 const SESSION_DEADLINE_MS = 3000;
 const STATUS_WATCH_MS = 120000;
+const RESUME_INTERVAL_MS = 1000;
 
 function formatPhoneBR(value: string): string {
   const digits = (value || "").replace(/\D/g, "").slice(0, 11);
@@ -38,7 +39,7 @@ function formatPhoneBR(value: string): string {
 export default function App() {
   const mountedRef = useRef(false);
   const epochRef = useRef(0);
-  const inFlightRef = useRef(false);
+  const inFlightRef = useRef<symbol | null>(null);
   const stepRef = useRef<Step>("loading");
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const checkStatusRef = useRef<(source?: CheckSource) => Promise<void>>();
@@ -46,7 +47,7 @@ export default function App() {
   const watchUntilRef = useRef(0);
   const failuresRef = useRef(0);
   const lastResultRef = useRef<AuthResult | null>(null);
-  const exchangedRef = useRef(new Set<string>());
+  const exchangedRef = useRef(new Map<string, "pending" | "done">());
   const [step, setStep] = useState<Step>("loading");
   const [boot, setBoot] = useState<BootstrapData>(FALLBACK_BOOT);
   const [phone, setPhone] = useState("");
@@ -54,7 +55,7 @@ export default function App() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [retryAt, setRetryAt] = useState(0);
-  const [clockNow, setClockNow] = useState(Date.now);
+  const [clockNow, setClockNow] = useState(monotonicNow);
   const [manualOnly, setManualOnly] = useState(false);
   const [errorAction, setErrorAction] = useState<"identity" | "restart">("identity");
   const [confirmed, setConfirmed] = useState<{ attemptId: string; result: AuthResult; autoRedirect: boolean } | null>(null);
@@ -89,9 +90,9 @@ export default function App() {
   const waitBeforeNextCheck = useCallback((delayMs: number, automatic = true) => {
     clearPoll();
     const delay = Math.max(1000, Math.min(delayMs, 2147480000));
-    nextCheckRef.current = Date.now() + delay;
+    nextCheckRef.current = monotonicNow() + delay;
     setRetryAt(nextCheckRef.current);
-    setClockNow(Date.now());
+    setClockNow(monotonicNow());
     const withinBudget = watchUntilRef.current > nextCheckRef.current;
     setManualOnly(!automatic || !withinBudget);
     if (!automatic || !withinBudget || document.visibilityState === "hidden" || navigator.onLine === false) return;
@@ -102,15 +103,18 @@ export default function App() {
     clearPoll();
     if (clearAttempt) AttemptTracker.clear();
     watchUntilRef.current = 0;
-    nextCheckRef.current = 0;
-    setRetryAt(0);
+    const cooldown = AttemptTracker.cooldownRemaining();
+    nextCheckRef.current = cooldown ? monotonicNow() + cooldown : 0;
+    setRetryAt(nextCheckRef.current);
+    setClockNow(monotonicNow());
     setError(message);
     setBusy(false);
     showStep("identity");
   }, [clearPoll, showStep]);
 
-  const applyResult = useCallback((result: AuthResult, attempt: TrackedAttempt, epoch: number) => {
+  const applyResult = useCallback((result: AuthResult, attempt: TrackedAttempt, epoch: number, requestStarted: number) => {
     if (!mountedRef.current || epoch !== epochRef.current) return;
+    AttemptTracker.validateFromServer(attempt.attempt_id, result.server_now, requestStarted);
     if (AttemptTracker.get()?.attempt_id !== attempt.attempt_id) {
       returnToIdentity("A conexão desta visita mudou ou expirou. Confirme seus dados novamente.");
       return;
@@ -120,16 +124,17 @@ export default function App() {
     clearPoll();
 
     if (result.authorized === true) {
+      nextCheckRef.current = monotonicNow() + RESUME_INTERVAL_MS;
       AttemptTracker.markConfirmed(attempt.attempt_id);
       setError("");
       setPhone("");
       setCpf("");
       setConfirmed({ attemptId: attempt.attempt_id, result, autoRedirect: !AttemptTracker.get()?.redirect_attempted });
       const shouldExchange = !!result.session_token_hash && !exchangedRef.current.has(attempt.attempt_id);
-      setRedirectReady(!shouldExchange);
+      setRedirectReady(!shouldExchange && exchangedRef.current.get(attempt.attempt_id) !== "pending");
       showStep("success");
       if (shouldExchange) {
-        exchangedRef.current.add(attempt.attempt_id);
+        exchangedRef.current.set(attempt.attempt_id, "pending");
         // The network authorization is already confirmed. Session persistence
         // gets a bounded grace period before navigation and never regresses it.
         void withDeadline(supabase.auth.verifyOtp({
@@ -137,6 +142,7 @@ export default function App() {
           type: "magiclink",
         }), SESSION_DEADLINE_MS).then(exchange => {
           if (!mountedRef.current || epoch !== epochRef.current) return;
+          exchangedRef.current.set(attempt.attempt_id, "done");
           const ok = exchange.outcome === "completed" && !exchange.value.error;
           telemetry("browser_session", ok ? "success" : "warning", { outcome: ok ? "persisted" : exchange.outcome === "timeout" ? "timeout" : "failed" });
           setRedirectReady(true);
@@ -152,7 +158,9 @@ export default function App() {
     }
 
     if (isRecoverableAuthResult(result)) {
-      const serverDeadline = result.deadline_at ? Date.parse(result.deadline_at) + 30000 : Date.now() + STATUS_WATCH_MS;
+      const remaining = result.deadline_at && result.server_now
+        ? Math.max(0, Date.parse(result.deadline_at) - Date.parse(result.server_now) + 30000) : STATUS_WATCH_MS;
+      const serverDeadline = requestStarted + Math.min(STATUS_WATCH_MS, remaining);
       watchUntilRef.current = watchUntilRef.current ? Math.min(watchUntilRef.current, serverDeadline) : serverDeadline;
       setError("");
       showStep("pending");
@@ -161,9 +169,9 @@ export default function App() {
     }
 
     const unknownExpired = result.status === "expired_unconfirmed";
-    nextCheckRef.current = unknownExpired ? Date.now() + (result.retry_after_ms ?? 30000) : 0;
+    nextCheckRef.current = unknownExpired ? monotonicNow() + (result.retry_after_ms ?? 30000) : 0;
     setRetryAt(nextCheckRef.current);
-    setClockNow(Date.now());
+    setClockNow(monotonicNow());
     setError(getAuthFailureMessage(result));
     setErrorAction(unknownExpired ? "restart" : "identity");
     showStep("error");
@@ -185,19 +193,20 @@ export default function App() {
     if (!attempt) {
       returnToIdentity(message);
       if (err?.status === 429) {
-        nextCheckRef.current = Date.now() + (err.retryAfterMs ?? 5000);
+        AttemptTracker.deferInitialization(err.retryAfterMs ?? 5000);
+        nextCheckRef.current = monotonicNow() + AttemptTracker.cooldownRemaining();
         setRetryAt(nextCheckRef.current);
-        setClockNow(Date.now());
+        setClockNow(monotonicNow());
       }
       return;
     }
     const unknownOutcome = !err || err.kind !== "http" || err.status === 408 || err.status === 429 || (err.status || 0) >= 500;
     if (unknownOutcome || fromStatus) {
       // All recovery is a status read. Never repeat identify/authorize-existing.
-      watchUntilRef.current ||= Date.now() + STATUS_WATCH_MS;
+      watchUntilRef.current ||= monotonicNow() + STATUS_WATCH_MS;
       failuresRef.current += 1;
       setError(err?.status === 429 ? message : "Ainda não recebemos a confirmação. Sua tentativa foi preservada.");
-      showStep("pending");
+      if (stepRef.current !== "success") showStep("pending");
       waitBeforeNextCheck(err?.retryAfterMs ?? Math.min(10000, 1000 * 2 ** Math.min(failuresRef.current, 4)), unknownOutcome);
       return;
     }
@@ -210,9 +219,9 @@ export default function App() {
   const checkStatus = useCallback(async (source: CheckSource = "automatic") => {
     if (!mountedRef.current || inFlightRef.current) return;
     if (source === "automatic" && (document.visibilityState === "hidden" || navigator.onLine === false)) return;
-    if (nextCheckRef.current > Date.now()) {
+    if (nextCheckRef.current > monotonicNow()) {
       clearPoll();
-      pollTimerRef.current = setTimeout(() => { void checkStatusRef.current?.(source); }, nextCheckRef.current - Date.now());
+      pollTimerRef.current = setTimeout(() => { void checkStatusRef.current?.(source); }, nextCheckRef.current - monotonicNow());
       return;
     }
     const attempt = AttemptTracker.get();
@@ -220,33 +229,38 @@ export default function App() {
       returnToIdentity("Confirme seus dados para acompanhar esta visita.", true);
       return;
     }
-    inFlightRef.current = true;
+    const request = Symbol("status");
+    inFlightRef.current = request;
     setBusy(true);
     clearPoll();
-    showStep("pending");
+    if (stepRef.current !== "success") showStep("pending");
     const epoch = epochRef.current;
+    const requestStarted = monotonicNow();
     if (source !== "automatic") telemetry("attempt_resumed", "info", { source });
     try {
       const result = await api.attemptStatus({ attempt_id: attempt.attempt_id, token: attempt.token });
-      applyResult(result, attempt, epoch);
+      applyResult(result, attempt, epoch, requestStarted);
     } catch (caught) {
       if (mountedRef.current && epoch === epochRef.current) handleFailure(caught, attempt, true);
     } finally {
-      inFlightRef.current = false;
-      if (mountedRef.current && epoch === epochRef.current) setBusy(false);
+      if (inFlightRef.current === request) {
+        inFlightRef.current = null;
+        if (mountedRef.current && epoch === epochRef.current) setBusy(false);
+      }
     }
   }, [applyResult, clearPoll, handleFailure, returnToIdentity, showStep, telemetry]);
   checkStatusRef.current = checkStatus;
 
   const startAuthorization = useCallback(async (identity: { phone: string; cpf: string; consent_version: string } | { access_token: string }) => {
-    if (inFlightRef.current || nextCheckRef.current > Date.now()) return;
+    if (inFlightRef.current || nextCheckRef.current > monotonicNow()) return;
     const existing = AttemptTracker.get();
     if (existing?.submitted) {
       await checkStatus("manual");
       return;
     }
     const epoch = ++epochRef.current;
-    inFlightRef.current = true;
+    const request = Symbol("authorization");
+    inFlightRef.current = request;
     setBusy(true);
     setError("");
     showStep("authorizing");
@@ -254,6 +268,22 @@ export default function App() {
     try {
       attempt = await AttemptTracker.ensureAttempt();
       if (!mountedRef.current || epoch !== epochRef.current) return;
+      if (attempt.requires_verification) {
+        // A legacy response without server time cannot renew a local TTL after
+        // reload. Check the real expiry, then continue this explicit user action.
+        const checkedAt = monotonicNow();
+        const state = await api.attemptStatus({ attempt_id: attempt.attempt_id, token: attempt.token });
+        if (!mountedRef.current || epoch !== epochRef.current) return;
+        if (state.status !== "awaiting_identity" && !state.needs_cpf && !state.needs_login) {
+          applyResult(state, attempt, epoch, checkedAt);
+          return;
+        }
+        AttemptTracker.validateFromServer(attempt.attempt_id, state.server_now, checkedAt);
+        if (AttemptTracker.get()?.attempt_id !== attempt.attempt_id) {
+          returnToIdentity("A verificação desta visita expirou. Confirme seus dados novamente.", true);
+          return;
+        }
+      }
       const params = getQueryParams();
       const context = {
         client_mac: params.client_mac, ap_mac: params.ap_mac, ssid: params.ssid,
@@ -261,18 +291,21 @@ export default function App() {
         attempt_id: attempt.attempt_id, resume_token: attempt.token,
       };
       AttemptTracker.markSubmitted(attempt.attempt_id);
-      watchUntilRef.current = Date.now() + STATUS_WATCH_MS;
+      const requestStarted = monotonicNow();
+      watchUntilRef.current = requestStarted + STATUS_WATCH_MS;
       const result = "access_token" in identity
         ? await api.authorizeExisting({ ...context, ...identity, auth_method: "silent" })
         : await api.identify({ ...context, ...identity });
-      applyResult(result, attempt, epoch);
+      applyResult(result, attempt, epoch, requestStarted);
     } catch (caught) {
       if (mountedRef.current && epoch === epochRef.current) handleFailure(caught, attempt, false);
     } finally {
-      inFlightRef.current = false;
-      if (mountedRef.current && epoch === epochRef.current) setBusy(false);
+      if (inFlightRef.current === request) {
+        inFlightRef.current = null;
+        if (mountedRef.current && epoch === epochRef.current) setBusy(false);
+      }
     }
-  }, [applyResult, checkStatus, handleFailure, showStep]);
+  }, [applyResult, checkStatus, handleFailure, returnToIdentity, showStep]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -289,6 +322,8 @@ export default function App() {
 
     if (AttemptTracker.get()) {
       void checkStatus("resume");
+    } else if (AttemptTracker.cooldownRemaining() > 0) {
+      returnToIdentity("Aguarde antes de tentar novamente.");
     } else {
       void withDeadline(supabase.auth.getSession(), SESSION_DEADLINE_MS).then(sessionResult => {
         if (!mountedRef.current || epoch !== epochRef.current) return;
@@ -313,6 +348,9 @@ export default function App() {
     return () => {
       mountedRef.current = false;
       epochRef.current += 1;
+      // Effect replay may begin a new read. Its lock is owned by its request,
+      // so a late finally from this setup cannot unlock the new request.
+      inFlightRef.current = null;
       clearPoll();
       window.removeEventListener("online", resume);
       window.removeEventListener("pageshow", resume);
@@ -322,10 +360,11 @@ export default function App() {
   }, [checkStatus, clearPoll, returnToIdentity, startAuthorization, telemetry]);
 
   useEffect(() => {
-    if (retryAt <= Date.now()) return;
+    if (retryAt <= monotonicNow()) return;
     const timer = setInterval(() => {
-      setClockNow(Date.now());
-      if (Date.now() >= retryAt) clearInterval(timer);
+      setClockNow(monotonicNow());
+      AttemptTracker.cooldownRemaining();
+      if (monotonicNow() >= retryAt) clearInterval(timer);
     }, 500);
     return () => clearInterval(timer);
   }, [retryAt]);
@@ -336,7 +375,7 @@ export default function App() {
 
   const handleIdentity = (event: React.FormEvent) => {
     event.preventDefault();
-    if (busy || nextCheckRef.current > Date.now()) return;
+    if (busy || nextCheckRef.current > monotonicNow()) return;
     const phoneDigits = phone.replace(/\D/g, "");
     const cpfDigits = cpf.replace(/\D/g, "");
     if (!Validators.phone(phoneDigits)) { setError("Informe um telefone válido com DDD."); return; }
@@ -356,6 +395,7 @@ export default function App() {
         AttemptTracker.markRedirectAttempted(confirmed.attemptId);
         telemetry("redirect_started", "info", { mode });
       }}
+      onRedirectFailure={() => telemetry("redirect_failed", "warning", { reason: "navigation_blocked" })}
     />;
   }
 

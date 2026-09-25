@@ -1,6 +1,6 @@
 # Correção da autorização do beta Povoão — 25/09/2026
 
-> **Atualização após testes sintéticos adicionais:** a bateria ampliada encontrou 18 grupos de problemas e terminou com 213 aprovações e 30 reprovações. A validação para a próxima publicação está reprovada; corrigir os achados antes de implantar o frontend. Este documento preserva o histórico da implantação anterior. O resultado vigente está em [testes-sinteticos-povao-2026-09-25.md](testes-sinteticos-povao-2026-09-25.md).
+> **Atualização:** os achados abaixo são o diagnóstico histórico anterior à correção. Os 18 grupos foram corrigidos; a validação atual passou com 303 testes automatizados e dois fluxos de navegador. Backend v254 e migration corretiva implantados; frontend ainda pendente. Veja [correção e evidências atuais](correcao-sinteticos-povao-2026-09-25.md).
 
 ## Escopo e conclusão
 

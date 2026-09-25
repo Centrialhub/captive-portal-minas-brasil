@@ -35,7 +35,7 @@ describe("portal API", () => {
     vi.stubGlobal("XMLHttpRequest", FakeXHR);
     window.history.replaceState(null, "", "/?store=povao");
   });
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
   it("forwards only an explicit store", () => {
     expect(getStoreParam("?store=centro&id=client")).toBe("?store=centro");
@@ -65,6 +65,21 @@ describe("portal API", () => {
     const promise = api.initAttempt({ params: {}, original_url: "https://example.invalid/" });
     FakeXHR.requests[0].respond(429, { error: "Aguarde", code: "RATE_LIMITED", retry_after_ms: 5000 }, { "Retry-After": "12" });
     await expect(promise).rejects.toMatchObject({ status: 429, code: "RATE_LIMITED", retryAfterMs: 12000, message: "Aguarde" });
+  });
+
+  it("uses server time for dated Retry-After despite a fast client wall clock", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-09-25T19:00:00Z"));
+    const promise = api.initAttempt({ params: {}, original_url: "https://example.invalid/" });
+    FakeXHR.requests[0].respond(429, { error: "Aguarde", blocked_until: "2026-09-25T18:00:45Z" }, {
+      Date: "Fri, 25 Sep 2026 18:00:00 GMT", "Retry-After": "Fri, 25 Sep 2026 18:00:30 GMT",
+    });
+    await expect(promise).rejects.toMatchObject({ status: 429, retryAfterMs: 45000 });
+  });
+
+  it("rejects malformed optional server time without accepting the result as success", async () => {
+    const promise = api.attemptStatus({ attempt_id: "synthetic", token: "test-capability" });
+    FakeXHR.requests[0].respond(200, { authorized: true, status: "confirmed", server_now: "invalid" });
+    await expect(promise).rejects.toMatchObject({ kind: "parse" });
   });
 
   it.each(["onabort", "onerror", "ontimeout"] as const)("settles a request on %s without inventing HTTP status", async event => {

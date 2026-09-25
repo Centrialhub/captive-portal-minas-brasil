@@ -169,6 +169,20 @@ describe("synthetic authentication and session rollover", () => {
     expect(h.commands()).toHaveLength(0);
   });
 
+  it.each([{ body: {} }, { body: { meta: { rc: "unexpected" } } }, { body: { meta: {} } }, { body: [] }])("legacy login rejects malformed success JSON $body even with a session cookie", async ({ body }) => {
+    const h = harness(request => request.url.endsWith("/api/login")
+      ? json(body, 200, { "set-cookie": "unifises=placeholder" }) : undefined);
+    expect((await h.login()).ok).toBe(false);
+    expect(h.commands()).toHaveLength(0);
+  });
+
+  it("OS login cannot use TOKEN to override an explicit controller rejection", async () => {
+    const h = harness(request => request.url.endsWith("/api/auth/login")
+      ? json({ meta: { rc: "error" } }, 200, { "set-cookie": "TOKEN=placeholder" }) : undefined, "unifi-os");
+    expect((await h.login()).ok).toBe(false);
+    expect(h.commands()).toHaveLength(0);
+  });
+
   it("preserves proxy routing and derives CSRF from the OS token without following redirects", async () => {
     const payload = btoa(JSON.stringify({ csrfToken: "csrf-in-token" })).replace(/=/g, "");
     const token = `header.${payload}.signature`;
@@ -194,6 +208,31 @@ describe("synthetic authentication and session rollover", () => {
     });
     expect(await h.command()).toMatchObject({ status: "accepted", command_sent: true });
     expect(h.commands()).toHaveLength(1);
+  });
+
+  it("derives fresh CSRF from a rotated OS token instead of reusing the login header", async () => {
+    const token = (csrf: string) => `header.${btoa(JSON.stringify({ csrfToken: csrf })).replace(/=/g, "")}.signature`;
+    const h = harness(request => {
+      if (request.url.endsWith("/api/auth/login")) return json({ unique_id: "synthetic-os" }, 200,
+        { "set-cookie": `TOKEN=${token("old-csrf")}`, "x-csrf-token": "old-csrf" });
+      if (request.url.endsWith("/stat/sta")) return json({ meta: { rc: "ok" }, data: [station()] }, 200,
+        { "set-cookie": `TOKEN=${token("new-csrf")}` });
+      if (request.url.endsWith("/cmd/stamgr")) {
+        expect(request.headers.get("cookie")).toContain(`TOKEN=${token("new-csrf")}`);
+        expect(request.headers.get("cookie")).toContain("unifi_controller=povao");
+        expect(request.headers.get("x-csrf-token")).toBe("new-csrf");
+      }
+    }, "unifi-os");
+    expect(await h.command()).toMatchObject({ status: "accepted", command_sent: true });
+    expect(h.commands()).toHaveLength(1);
+  });
+
+  it("keeps an expired authentication session proven unsent when the station response revokes it", async () => {
+    const h = harness(request => request.url.endsWith("/stat/sta")
+      ? json({ meta: { rc: "ok" }, data: [station()] }, 200, { "set-cookie": "unifises=deleted; Max-Age=0" }) : undefined);
+    expect(await h.command()).toMatchObject({ status: "unknown", command_sent: false, retryable: true,
+      reason: "UNIFI_SESSION_EXPIRED_DURING_PREFLIGHT" });
+    expect(h.commands()).toHaveLength(0);
   });
 
   it.each(["Max-Age=0", "Expires=Thu, 01 Jan 1970 00:00:00 GMT"])("SYN-U4 removes nonempty auth cookies invalidated with %s", attribute => {

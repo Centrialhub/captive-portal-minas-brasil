@@ -7,12 +7,13 @@ import {
   type UnifiCookieJar,
 } from "../_shared/unifi-cookie.ts";
 import { normalizeBrazilianPhone, storedPhoneMatches } from "../_shared/identity.ts";
-import { reconcileAuthorization, requiredRpc, type AuthOperation } from "../_shared/durable-auth.ts";
+import { drainAuthorization, reconcileAuthorization, requiredRpc, withOperationDeadline, type AuthOperation } from "../_shared/durable-auth.ts";
 import {
   canonicalUnifiMac,
   exactUnifiEvidence,
   fetchUnifiResponse,
   fetchUnifiStationsStrict,
+  parseUnifiEnvelope,
   sendUnifiAuthorizeOnce,
   type UnifiStation,
   type UnifiCommandResult,
@@ -831,7 +832,23 @@ async function unifiTryLogin(
       ...transport, method: "POST", headers,
       body: JSON.stringify({ username: effectiveUser, password: effectivePass, remember: false, strict: true }),
     } as RequestInit, deadlineAt);
-    if (response.status >= 400) return { ok: false, error: `UNIFI_LOGIN_HTTP_${response.status}` };
+    if (!response.ok) return { ok: false, error: `UNIFI_LOGIN_HTTP_${response.status}` };
+    if (!response.headers.get("content-type")?.toLowerCase().includes("application/json")) {
+      return { ok: false, error: "UNIFI_LOGIN_INVALID_ENVELOPE" };
+    }
+    let loginBody: unknown;
+    try { loginBody = JSON.parse(response.body); }
+    catch { return { ok: false, error: "UNIFI_LOGIN_INVALID_ENVELOPE" }; }
+    if (!loginBody || typeof loginBody !== "object" || Array.isArray(loginBody)) {
+      return { ok: false, error: "UNIFI_LOGIN_INVALID_ENVELOPE" };
+    }
+    const envelope = parseUnifiEnvelope(response.body);
+    const isOsEndpoint = /\/api\/auth\/login$/.test(loginUrl);
+    // UniFi OS has its own object response. Legacy login requires the standard
+    // envelope, and neither endpoint may override an explicit error with cookies.
+    if ((!isOsEndpoint || "meta" in loginBody) && envelope?.rc !== "ok") {
+      return { ok: false, error: "UNIFI_LOGIN_REJECTED" };
+    }
     cookieJar = mergeResponseCookies(cookieJar, response.headers);
     const csrf = response.headers.get("x-csrf-token") || cookieJar.csrf_token;
     if (cookieJar.TOKEN) return {
@@ -996,8 +1013,23 @@ async function unifiAuthorizeCommandOnly(
       return { ...unsent(observation.reason || "UNIFI_OBSERVATION_INCONCLUSIVE"), evidence: observation.evidence };
     }
     const exactStation = stations.data.find(station => canonicalUnifiMac(station.mac) === mac);
+    const previousCookies = login.cookies || {};
+    const currentCookies = mergeResponseCookies(previousCookies, stations.headers!);
+    const tokenChanged = currentCookies.TOKEN !== previousCookies.TOKEN;
+    const csrfCookieChanged = currentCookies.csrf_token !== previousCookies.csrf_token;
+    const responseCsrf = stations.headers!.get("x-csrf-token");
+    // A newly rotated TOKEN must not reuse CSRF from the previous token. An
+    // explicit response header takes precedence; unchanged sessions retain their
+    // established CSRF value when the station response does not replace it.
+    const currentCsrf = responseCsrf || (tokenChanged
+      ? (currentCookies.TOKEN && extractCsrfFromToken(currentCookies.TOKEN)) ||
+        (csrfCookieChanged ? currentCookies.csrf_token : undefined)
+      : csrfCookieChanged ? currentCookies.csrf_token : login.csrfToken);
+    if (!(login.isUnifiOs ? currentCookies.TOKEN : currentCookies.unifises)) {
+      return unsent("UNIFI_SESSION_EXPIRED_DURING_PREFLIGHT");
+    }
     const result = await sendUnifiAuthorizeOnce(
-      `${networkUrl}/cmd/stamgr`, init, mac,
+      `${networkUrl}/cmd/stamgr`, { ...init, headers: buildUnifiHeaders({ ...login, cookies: currentCookies, csrfToken: currentCsrf || undefined }) }, mac,
       // Exact station evidence already validated this AP, including permitted
       // roaming within the server's store mapping. Never target a stale AP.
       { apMac: exactStation?.ap_mac || options.apMac, minutes: options.minutes },
@@ -2697,6 +2729,7 @@ interface PortalAuthorizationResult {
   operation_id?: string;
   retry_after_ms?: number;
   deadline_at?: string;
+  server_now?: string;
   store_slug: string;
   store_id: string | null;
 }
@@ -2717,6 +2750,7 @@ type PortalAuthorizationArgs = {
 
 function publicOperationResult(result: Record<string, any>): Record<string, unknown> {
   return {
+    server_now: new Date().toISOString(),
     session_id: result.session_id || null,
     authorized: result.authorized === true,
     processing: result.processing === true,
@@ -2730,8 +2764,8 @@ function publicOperationResult(result: Record<string, any>): Record<string, unkn
   };
 }
 
-async function runAuthorizationWorker(db: ReturnType<typeof supabaseAdmin>, operationId?: string) {
-  return await reconcileAuthorization(db, {
+async function runAuthorizationWorker(db: ReturnType<typeof supabaseAdmin>, operationId?: string, deadlineAt?: number) {
+  return await (operationId ? reconcileAuthorization : drainAuthorization)(db, {
     afterConfirmed: (operation) => {
       const sync = (async () => {
         if (!operation.user_id) return;
@@ -2747,33 +2781,54 @@ async function runAuthorizationWorker(db: ReturnType<typeof supabaseAdmin>, oper
       if (typeof EdgeRuntime !== "undefined") EdgeRuntime.waitUntil(sync);
     },
     send: async (operation: AuthOperation) => {
-      if (!operation.user_id) throw new Error("OPERATION_USER_MISSING");
-      const block = await getActiveUserBlock(db, operation.user_id);
-      const { data: privileged, error: roleError } = await db.from("user_roles")
-        .select("user_id").eq("user_id", operation.user_id).eq("role", "admin").maybeSingle();
-      if (roleError) throw new Error("OPERATION_ROLE_LOOKUP_FAILED");
-      if (block || privileged) return { status: "rejected" as const, command_sent: false,
-        effective_mac: operation.client_mac, reason: block ? "USER_BLOCKED" : "PRIVILEGED_ACCOUNT",
-        evidence: { explicit_rejection: true, command_sent: false } };
-      // Configuration changes cannot redirect a queued command to another
-      // controller. The immutable intent is checked again at its boundary.
-      const { data: store, error } = await db.from("stores")
-        .select("slug, is_active, unifi_controller_url, unifi_site_id").eq("id", operation.store_id).single();
-      if (error) throw new Error("STORE_LOOKUP_FAILED");
-      if (!store?.is_active || store.slug !== "povao" ||
-          store.unifi_controller_url !== operation.controller_key ||
-          (store.unifi_site_id || "default") !== operation.site_id) {
-        return { status: "rejected" as const, command_sent: false,
-          reason: "OPERATION_CONFIGURATION_CHANGED", effective_mac: operation.client_mac,
+      // Only this preparation region can prove that no adapter/POST began.
+      // Keep adapter exceptions outside it: their effects may be unknown.
+      let trustedApMacs: string[];
+      let deadlineAt: number;
+      const preparationDeadline = Math.min(Date.parse(operation.lease_expires_at),
+        operation.execution_deadline_at ?? Infinity,
+        operation.deadline_at ? Date.parse(operation.deadline_at) : Infinity) - 16_000;
+      try {
+        if (!operation.user_id) throw new Error("OPERATION_USER_MISSING");
+        const block = await withOperationDeadline(() => getActiveUserBlock(db, operation.user_id!),
+          preparationDeadline, "BLOCK_LOOKUP_TIMEOUT");
+        const { data: privileged, error: roleError } = await withOperationDeadline(signal => db.from("user_roles")
+          .select("user_id").eq("user_id", operation.user_id!).eq("role", "admin").abortSignal(signal).maybeSingle(),
+          preparationDeadline, "ROLE_LOOKUP_TIMEOUT");
+        if (roleError) throw new Error("OPERATION_ROLE_LOOKUP_FAILED");
+        if (block || privileged) return { status: "rejected" as const, command_sent: false,
+          effective_mac: operation.client_mac, reason: block ? "USER_BLOCKED" : "PRIVILEGED_ACCOUNT",
           evidence: { explicit_rejection: true, command_sent: false } };
-      }
-      const { data: aps, error: apError } = await db.from("store_access_points")
-        .select("ap_mac").eq("store_id", operation.store_id);
-      if (apError) throw new Error("AP_LOOKUP_FAILED");
-      const trustedApMacs = (aps || []).map((ap) => normalizeMac(ap.ap_mac))
-        .filter((mac): mac is string => !!mac);
-      if (new Date(operation.lease_expires_at).getTime() - Date.now() < 16_000) {
-        throw new Error("LEASE_BUDGET_EXHAUSTED");
+        // Configuration changes cannot redirect a queued command to another
+        // controller. The immutable intent is checked again at its boundary.
+        const { data: store, error } = await withOperationDeadline(signal => db.from("stores")
+          .select("slug, is_active, unifi_controller_url, unifi_site_id").eq("id", operation.store_id).abortSignal(signal).single(),
+          preparationDeadline, "STORE_LOOKUP_TIMEOUT");
+        if (error) throw new Error("STORE_LOOKUP_FAILED");
+        if (!store?.is_active || store.slug !== "povao" ||
+            store.unifi_controller_url !== operation.controller_key ||
+            (store.unifi_site_id || "default") !== operation.site_id) {
+          return { status: "rejected" as const, command_sent: false,
+            reason: "OPERATION_CONFIGURATION_CHANGED", effective_mac: operation.client_mac,
+            evidence: { explicit_rejection: true, command_sent: false } };
+        }
+        const { data: aps, error: apError } = await withOperationDeadline(signal => db.from("store_access_points")
+          .select("ap_mac").eq("store_id", operation.store_id).abortSignal(signal), preparationDeadline, "AP_LOOKUP_TIMEOUT");
+        if (apError) throw new Error("AP_LOOKUP_FAILED");
+        trustedApMacs = (aps || []).map((ap) => normalizeMac(ap.ap_mac))
+          .filter((mac): mac is string => !!mac);
+        deadlineAt = Math.min(Date.parse(operation.lease_expires_at) - 2_000,
+          operation.deadline_at ? Date.parse(operation.deadline_at) : Infinity,
+          operation.execution_deadline_at ? operation.execution_deadline_at - 2_000 : Infinity);
+        if (!Number.isFinite(deadlineAt) || deadlineAt - Date.now() < 14_000) {
+          throw new Error("PREPARATION_BUDGET_EXHAUSTED");
+        }
+      } catch (error) {
+        const knownCodes = new Set(["OPERATION_USER_MISSING", "OPERATION_ROLE_LOOKUP_FAILED",
+          "STORE_LOOKUP_FAILED", "AP_LOOKUP_FAILED", "PREPARATION_BUDGET_EXHAUSTED"]);
+        const code = error instanceof Error && knownCodes.has(error.message) ? error.message : "OPERATION_PREPARATION_FAILED";
+        return { status: "unknown" as const, command_sent: false, retryable: true,
+          reason: code, effective_mac: operation.client_mac, evidence: { command_sent: false } };
       }
       return await unifiAuthorizeCommandOnly(operation.controller_key, operation.site_id,
         operation.client_mac, UNIFI_USERNAME, UNIFI_PASSWORD, {
@@ -2781,12 +2836,14 @@ async function runAuthorizationWorker(db: ReturnType<typeof supabaseAdmin>, oper
           trustedApMacs,
           minutes: Number(operation.command.minutes),
           allowPortalMacFallback: !!operation.ap_mac && trustedApMacs.includes(normalizeMac(operation.ap_mac) || ""),
-          deadlineAt: new Date(operation.lease_expires_at).getTime() - 2_000,
+          deadlineAt,
         });
     },
     verify: async (operation: AuthOperation) => {
-      const { data: aps, error } = await db.from("store_access_points")
-        .select("ap_mac").eq("store_id", operation.store_id);
+      const preparationDeadline = Math.min(Date.parse(operation.lease_expires_at),
+        operation.execution_deadline_at ?? Infinity) - 16_000;
+      const { data: aps, error } = await withOperationDeadline(signal => db.from("store_access_points")
+        .select("ap_mac").eq("store_id", operation.store_id).abortSignal(signal), preparationDeadline, "AP_LOOKUP_TIMEOUT");
       if (error) throw new Error("AP_LOOKUP_FAILED");
       return await unifiCheckAuthorizationOnly(
         operation.controller_key, operation.site_id, operation.client_mac,
@@ -2794,16 +2851,44 @@ async function runAuthorizationWorker(db: ReturnType<typeof supabaseAdmin>, oper
           apMac: operation.ap_mac, ssid: String(operation.command.ssid || "") || null,
           trustedApMacs: (aps || []).map((ap) => normalizeMac(ap.ap_mac))
             .filter((mac): mac is string => !!mac),
-          deadlineAt: new Date(operation.lease_expires_at).getTime() - 2_000,
+          deadlineAt: Math.min(Date.parse(operation.lease_expires_at) - 2_000,
+            operation.execution_deadline_at ? operation.execution_deadline_at - 2_000 : Infinity),
         });
     },
-  }, { owner: `durable-${crypto.randomUUID()}`, operationId, limit: operationId ? 1 : 4 });
+  }, { owner: `durable-${crypto.randomUUID()}`, operationId, limit: operationId ? 1 : 4,
+    deadlineAt: deadlineAt ?? (operationId ? Date.now() + 20_000 : undefined) });
 }
 
 async function readOperation(db: ReturnType<typeof supabaseAdmin>, attemptId: string, token: string) {
   return await requiredRpc(db, "get_captive_auth_operation", {
     p_attempt_id: attemptId, p_resume_token: token,
-  }) as Record<string, any>;
+  }, { deadlineAt: Date.now() + 3000 }) as Record<string, any>;
+}
+
+function authorizationDispositionError(value: Record<string, any>) {
+  if (value.disposition === "capability_expired" || value.disposition === "receipt_stale") {
+    return { status: 410, body: { error: "Identifique-se novamente para consultar seu acesso.", code: "attempt_expired" } };
+  }
+  if (value.disposition === "invalid_capability") {
+    return { status: 401, body: { error: "Tentativa inválida.", code: "invalid_attempt" } };
+  }
+  if (value.disposition === "state_inconsistent") {
+    return { status: 503, body: { error: "A confirmação precisa ser conciliada. Tente novamente em instantes.",
+      code: "AUTHORIZATION_STATE_INCONSISTENT", retry_after_ms: 5000 } };
+  }
+  return null;
+}
+
+function authorizationFailureResponse(error: unknown): Response | null {
+  const known = error as { authorizationFailure?: ReturnType<typeof authorizationDispositionError>;
+    rpcName?: string; rpcReason?: string };
+  let failure = known?.authorizationFailure;
+  if (!failure && known?.rpcName === "join_captive_auth_operation") {
+    const disposition = ["ATTEMPT_EXPIRED", "AUTHORIZATION_RECEIPT_STALE"].includes(known.rpcReason || "") ? "capability_expired"
+      : ["INVALID_RESUME_TOKEN", "ATTEMPT_NOT_FOUND"].includes(known.rpcReason || "") ? "invalid_capability" : null;
+    if (disposition) failure = authorizationDispositionError({ disposition });
+  }
+  return failure ? jsonResponse(failure.body, failure.status) : null;
 }
 
 async function persistPortalLead(args: PortalAuthorizationArgs, storeId: string) {
@@ -2857,7 +2942,9 @@ async function authorizeDurably(args: PortalAuthorizationArgs, storeId: string, 
     p_session: { auth_method: args.authMethod, trace_id: args.traceId,
       user_agent: args.userAgent?.slice(0, 500) || null, client_ip: args.clientIp,
       captive_timestamp: ctx.captiveTimestamp, ssid: ctx.ssid },
-  }) as Record<string, any>;
+  }, { deadlineAt: Date.now() + 5000 }) as Record<string, any>;
+  const joinError = authorizationDispositionError(joined);
+  if (joinError) throw Object.assign(new Error(joinError.body.code), { authorizationFailure: joinError });
   if (joined.disposition === "context_conflict") {
     return { ...fallback, status: "rejected", processing: false,
       fail_reason: "DEVICE_CONTEXT_CONFLICT" };
@@ -2877,7 +2964,8 @@ async function authorizeDurably(args: PortalAuthorizationArgs, storeId: string, 
   const work = await runAuthorizationWorker(db, joined.operation.id);
   if (work.errors.length) Logger.warn("[authorization] deferred to reconciler", { errors: work.errors });
   const state = await readOperation(db, attemptId, resumeToken);
-  if (state.disposition === "capability_expired") throw new Error("ATTEMPT_CAPABILITY_EXPIRED");
+  const stateError = authorizationDispositionError(state);
+  if (stateError) throw Object.assign(new Error(stateError.body.code), { authorizationFailure: stateError });
   return { ...fallback, ...publicOperationResult(state) } as PortalAuthorizationResult;
 }
 
@@ -2890,29 +2978,15 @@ async function handleAttemptStatus(req: Request): Promise<Response> {
   }
   const db = supabaseAdmin();
   let state = await readOperation(db, attemptId, token);
-  const dispositionError = (value: Record<string, any>): Response | null => {
-    if (value.disposition === "capability_expired" || value.disposition === "receipt_stale") {
-      return jsonResponse({ error: "Identifique-se novamente para consultar seu acesso.", code: "attempt_expired" }, 410);
-    }
-    if (value.disposition === "invalid_capability") {
-      return jsonResponse({ error: "Tentativa inválida.", code: "invalid_attempt" }, 401);
-    }
-    if (value.disposition === "state_inconsistent") {
-      Logger.error("[authorization] inconsistent projection", { attempt_id: attemptId });
-      return jsonResponse({ error: "A confirmação precisa ser conciliada. Tente novamente em instantes.",
-        code: "AUTHORIZATION_STATE_INCONSISTENT", retry_after_ms: 5000 }, 503);
-    }
-    return null;
-  };
-  const initialError = dispositionError(state);
-  if (initialError) return initialError;
+  const initialError = authorizationDispositionError(state);
+  if (initialError) return jsonResponse(initialError.body, initialError.status);
   if (state.processing && state.operation_id) {
     const work = await runAuthorizationWorker(db, state.operation_id);
     if (work.errors.length) Logger.warn("[authorization] status recovery deferred", { errors: work.errors });
     state = await readOperation(db, attemptId, token);
   }
-  const finalError = dispositionError(state);
-  if (finalError) return finalError;
+  const finalError = authorizationDispositionError(state);
+  if (finalError) return jsonResponse(finalError.body, finalError.status);
   let challenge: { token_hash: string } | null = null;
   if (state.authorized === true && state.user_id) {
     challenge = await claimPortalSessionChallenge(db, attemptId, token);
@@ -2921,13 +2995,16 @@ async function handleAttemptStatus(req: Request): Promise<Response> {
 }
 
 async function handleAuthorizationReconcile(req: Request): Promise<Response> {
+  const deadlineAt = Date.now() + 50_000;
   const token = req.headers.get("x-captive-worker-token") || "";
   if (token.length < 32 || token.length > 256) return errorResponse("Unauthorized", 401);
   const db = supabaseAdmin();
-  const allowed = await requiredRpc(db, "authorize_captive_auth_worker", { p_token: token });
+  const allowed = await requiredRpc(db, "authorize_captive_auth_worker", { p_token: token },
+    { deadlineAt: Math.min(deadlineAt - 2000, Date.now() + 3000) });
   if (allowed !== true) return errorResponse("Unauthorized", 401);
-  const result = await runAuthorizationWorker(db);
-  const { error: heartbeatError } = await db.rpc("finish_captive_auth_worker", { p_failed_count: result.errors.length });
+  const result = await runAuthorizationWorker(db, undefined, deadlineAt - 2000);
+  const { error: heartbeatError } = await withOperationDeadline(signal => db.rpc("finish_captive_auth_worker",
+    { p_failed_count: result.errors.length }).abortSignal(signal), deadlineAt, "WORKER_HEARTBEAT_TIMEOUT");
   if (heartbeatError) throw new Error("WORKER_HEARTBEAT_FAILED");
   if (result.errors.length) Logger.error("[authorization-worker] incomplete pass", { errors: result.errors });
   return jsonResponse({ claimed: result.claimed, applied: result.applied, failed: result.errors.length },
@@ -3428,36 +3505,54 @@ async function _handleRequestPasswordReset(req: Request): Promise<Response> {
 
 const PORTAL_IDENTITY_EMAIL_DOMAIN = "wifi.minasbrasilwifi.com.br";
 
-async function boundedPortalSessionChallenge(db: ReturnType<typeof supabaseAdmin>, userId: string) {
+async function boundedPortalSessionChallenge(db: ReturnType<typeof supabaseAdmin>, userId: string,
+  deadlineAt = Date.now() + 1500) {
+  const remaining = deadlineAt - Date.now();
+  if (remaining <= 0) return null;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return await Promise.race([
-      createPortalSessionChallenge(db, userId).catch(() => null),
-      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), 1500); }),
+    const challenge = await Promise.race([
+      createPortalSessionChallenge(db, userId, deadlineAt).catch(() => null),
+      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), remaining); }),
     ]);
+    return Date.now() < deadlineAt ? challenge : null;
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
 }
 
 async function claimPortalSessionChallenge(db: ReturnType<typeof supabaseAdmin>, attemptId: string, token: string) {
+  const deadlineAt = Date.now() + 1500;
+  let active = true;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const { data: userId, error } = await db.rpc("claim_captive_auth_challenge", {
-      p_attempt_id: attemptId, p_resume_token: token,
-    });
-    if (error || !userId) return null;
-    return await boundedPortalSessionChallenge(db, userId);
+    const challenge = await Promise.race([
+      (async () => {
+        const { data: userId, error } = await db.rpc("claim_captive_auth_challenge", {
+          p_attempt_id: attemptId, p_resume_token: token,
+        });
+        if (error || !userId || !active || Date.now() >= deadlineAt) return null;
+        return await boundedPortalSessionChallenge(db, userId, deadlineAt);
+      })(),
+      new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), 1500); }),
+    ]);
+    return active && Date.now() < deadlineAt ? challenge : null;
   } catch {
     return null; // Reusable browser login is optional after network confirmation.
+  } finally {
+    active = false;
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 
 async function createPortalSessionChallenge(
   db: ReturnType<typeof supabaseAdmin>,
   userId: string,
+  deadlineAt = Infinity,
 ): Promise<{ token_hash: string } | null> {
   const { data: userResult, error: userError } = await db.auth.admin.getUserById(userId);
   let email = userResult?.user?.email || null;
+  if (Date.now() >= deadlineAt) return null;
 
   if (userError || !userResult?.user) {
     Logger.error("[identity] auth user lookup failed", { code: userError?.code || "AUTH_USER_NOT_FOUND" });
@@ -3479,11 +3574,13 @@ async function createPortalSessionChallenge(
   // Generate a one-use session challenge without consuming /auth/v1/verify
   // from the shared Edge Function IP. The browser exchanges it only after the
   // UniFi authorization result, preserving the existing reusable session.
+  if (Date.now() >= deadlineAt) return null;
   const { data: linkData, error: linkError } = await db.auth.admin.generateLink({
     type: "magiclink",
     email,
   });
   const tokenHash = linkData?.properties?.hashed_token;
+  if (Date.now() >= deadlineAt) return null;
   if (linkError || !tokenHash) {
     Logger.error("[identity] session link generation failed", { code: linkError?.code || "SESSION_LINK_FAILED" });
     return null;
@@ -3757,6 +3854,7 @@ async function handleIdentity(req: Request): Promise<Response> {
     deadline_at: result.deadline_at,
     replay: result.replay || false,
     session_token_hash: result.authorized ? sessionChallenge?.token_hash : undefined,
+    server_now: new Date().toISOString(),
     trace_id: traceId,
   });
 }
@@ -4256,6 +4354,7 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
     operation_id: result.operation_id,
     retry_after_ms: result.retry_after_ms,
     deadline_at: result.deadline_at,
+    server_now: new Date().toISOString(),
     trace_id: traceId,
   });
 }
@@ -4420,7 +4519,7 @@ Deno.serve(async (req: Request) => {
         !store.unifi_site_id
       );
       const [{ data: worker, error: workerError }, { count: activeOperations, error: operationError },
-        { count: overdueOperations, error: overdueError }] = await Promise.all([
+        { count: overdueOperations, error: overdueError }, { count: recoveryFailures, error: recoveryError }] = await Promise.all([
         readyDb.from("captive_auth_worker_config")
           .select("enabled,sends_enabled,last_tick_at,last_dispatch_at,last_worker_finished_at,last_worker_failed_count,last_error_code")
           .eq("singleton", true).maybeSingle(),
@@ -4428,13 +4527,14 @@ Deno.serve(async (req: Request) => {
           .in("status", ["queued", "sending", "verifying"]),
         readyDb.from("captive_auth_operations").select("id", { count: "exact", head: true })
           .in("status", ["queued", "sending", "verifying"])
-          .lt("verification_deadline", new Date(Date.now() - 30_000).toISOString()),
+          .or(`verification_deadline.lt.${new Date(Date.now() - 30_000).toISOString()},and(verification_deadline.is.null,created_at.lt.${new Date(Date.now() - 120_000).toISOString()})`),
+        readyDb.from("captive_auth_recovery_failures").select("operation_id", { count: "exact", head: true }),
       ]);
       const tickHealthy = !!worker?.last_tick_at && Date.now() - Date.parse(worker.last_tick_at) < 35_000;
       const dispatchUnanswered = !!worker?.last_dispatch_at &&
         Date.parse(worker.last_dispatch_at) > Date.parse(worker.last_worker_finished_at || "1970-01-01") &&
         Date.now() - Date.parse(worker.last_dispatch_at) > 30_000;
-      const reconcilerHealthy = !workerError && !operationError && !overdueError &&
+      const reconcilerHealthy = !workerError && !operationError && !overdueError && !recoveryError && !recoveryFailures &&
         worker?.enabled === true && worker.sends_enabled === true && tickHealthy &&
         !worker.last_error_code && !overdueOperations &&
         (!(activeOperations || 0) || (!dispatchUnanswered && !worker.last_worker_failed_count));
@@ -4447,6 +4547,7 @@ Deno.serve(async (req: Request) => {
         authorization_reconciler: reconcilerHealthy,
         authorization_active_operations: activeOperations ?? null,
         authorization_overdue_operations: overdueOperations ?? null,
+        authorization_recovery_failures: recoveryFailures ?? null,
       };
       const ready = checks.database && checks.unifi_credentials && checks.controller_configuration && reconcilerHealthy;
       return jsonResponse({ status: ready ? "ready" : "degraded", checks }, ready ? 200 : 503);
@@ -4496,6 +4597,8 @@ Deno.serve(async (req: Request) => {
     return errorResponse("Not found", 404);
   } catch (err) {
     Logger.error("Unhandled error", { error: err });
+    const authorizationResponse = authorizationFailureResponse(err);
+    if (authorizationResponse) return authorizationResponse;
     return errorResponse("Internal server error", 500);
   }
 });
@@ -4675,6 +4778,7 @@ async function handleAttemptInit(req: Request): Promise<Response> {
     token: token,
     expires_at: expiresAt.toISOString(),
     store: { slug: detected.store_slug, name: detected.store_name, city: detected.store_city },
+    server_now: new Date().toISOString(),
     detection_source: detected.detection_source,
   });
 }
