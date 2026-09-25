@@ -1,5 +1,7 @@
 # Testes sintéticos de confiabilidade — Povoão, 25/09/2026
 
+> **Nova auditoria:** o objetivo de 99,9% em até 120 s ainda não foi demonstrado. A segunda rodada ampliou a bateria para 363 testes e reproduziu 17 reprovações em nove grupos adicionais; os 303 testes anteriores continuam aprovados. Consulte o [resultado vigente e plano de correção](auditoria-confiabilidade-povao-2026-09-25-rodada2.md). Este documento preserva os resultados da etapa anterior.
+
 > **Atualização:** os achados abaixo são o diagnóstico histórico anterior à correção. Os 18 grupos foram corrigidos; a validação atual passou com 303 testes automatizados e dois fluxos de navegador. Backend v254 e migration corretiva implantados; frontend ainda pendente. Veja [correção e evidências atuais](correcao-sinteticos-povao-2026-09-25.md).
 
 ## Conclusão

@@ -1,0 +1,565 @@
+{
+  "generated_at": "2026-09-25T18:42:10.868Z",
+  "application_base_commit": "18826aedd4a2abccb62e6e487d0f75cdff92da6a",
+  "scope": "Second adversarial audit; new tests/docs only; production observations read-only; no synthetic client authorization in production.",
+  "objective": {
+    "success_fraction": 0.999,
+    "deadline_seconds": 120,
+    "production_certified": false
+  },
+  "overall": {
+    "total": 363,
+    "passed": 346,
+    "failed": 17,
+    "baseline_passed": 303,
+    "new_tests": 60,
+    "new_passed": 43,
+    "new_failed": 17,
+    "problem_groups": 9,
+    "by_priority": {
+      "P1": 4,
+      "P2": 2,
+      "P3": 3
+    }
+  },
+  "application": {
+    "total": 303,
+    "passed": 290,
+    "failed": 13,
+    "pending": 0,
+    "started_at": "2026-09-25T18:39:30.740Z",
+    "files": [
+      {
+        "path": "src/App.authorization.test.tsx",
+        "total": 20,
+        "passed": 20,
+        "failed": 0,
+        "failed_tests": []
+      },
+      {
+        "path": "src/App.resilience.test.tsx",
+        "total": 13,
+        "passed": 10,
+        "failed": 3,
+        "failed_tests": [
+          {
+            "name": "second-round frontend resilience AUD2-F01: does not start a resume read offline when a previously scheduled pageshow timer becomes due",
+            "messages": [
+              "AssertionError: expected \"vi.fn()\" to not be called at all, but actually been called 1 times"
+            ]
+          },
+          {
+            "name": "second-round frontend resilience AUD2-F01: does not issue status reads for foreground events while the device is offline",
+            "messages": [
+              "AssertionError: expected \"vi.fn()\" to not be called at all, but actually been called 3 times"
+            ]
+          },
+          {
+            "name": "second-round frontend resilience AUD2-F01: an offline resume must not occupy the request lock when the network returns",
+            "messages": [
+              "AssertionError: expected null not to be null",
+              "AssertionError: expected [ { online: false, at: 1000 } ] to have a length of +0 but got 1"
+            ]
+          }
+        ]
+      },
+      {
+        "path": "src/App.synthetic.test.tsx",
+        "total": 17,
+        "passed": 17,
+        "failed": 0,
+        "failed_tests": []
+      },
+      {
+        "path": "src/requirements.test.ts",
+        "total": 15,
+        "passed": 15,
+        "failed": 0,
+        "failed_tests": []
+      },
+      {
+        "path": "src/lib/api.test.ts",
+        "total": 15,
+        "passed": 15,
+        "failed": 0,
+        "failed_tests": []
+      },
+      {
+        "path": "src/lib/attempt-tracker.resilience.test.ts",
+        "total": 8,
+        "passed": 8,
+        "failed": 0,
+        "failed_tests": []
+      },
+      {
+        "path": "src/lib/attempt-tracker.synthetic.test.ts",
+        "total": 8,
+        "passed": 8,
+        "failed": 0,
+        "failed_tests": []
+      },
+      {
+        "path": "src/lib/attempt-tracker.test.ts",
+        "total": 8,
+        "passed": 8,
+        "failed": 0,
+        "failed_tests": []
+      },
+      {
+        "path": "supabase/functions/_shared/daily-access.test.ts",
+        "total": 3,
+        "passed": 3,
+        "failed": 0,
+        "failed_tests": []
+      },
+      {
+        "path": "supabase/functions/_shared/durable-auth.test.ts",
+        "total": 22,
+        "passed": 22,
+        "failed": 0,
+        "failed_tests": []
+      },
+      {
+        "path": "supabase/functions/_shared/durable-faults.synthetic.test.ts",
+        "total": 10,
+        "passed": 9,
+        "failed": 1,
+        "failed_tests": [
+          {
+            "name": "second audit: unattended fault and capacity envelope recovers the supplied workload within the agreed 120s objective: {\"size\":40,\"initial\":\"accepted\",\"sendMs\":0,\"readMs\":6100,\"failFirstReads\":1}",
+            "messages": [
+              "AssertionError: {\"config\":{\"size\":40,\"initial\":\"accepted\",\"sendMs\":0,\"readMs\":6100,\"failFirstReads\":1},\"confirmed\":20,\"confirmedWithin120s\":20,\"expired\":20,\"active\":0,\"posts\":40,\"duplicatePosts\":0,\"peak\":8,\"readAttempts\":60,\"transientErrors\":52,\"lastConfirmationMs\":98300}: expected 20 to be 40 // Object.is equality"
+            ]
+          }
+        ]
+      },
+      {
+        "path": "supabase/functions/_shared/durable-handlers.test.ts",
+        "total": 26,
+        "passed": 26,
+        "failed": 0,
+        "failed_tests": []
+      },
+      {
+        "path": "supabase/functions/_shared/durable-load.synthetic.test.ts",
+        "total": 12,
+        "passed": 12,
+        "failed": 0,
+        "failed_tests": []
+      },
+      {
+        "path": "supabase/functions/_shared/identity.test.ts",
+        "total": 2,
+        "passed": 2,
+        "failed": 0,
+        "failed_tests": []
+      },
+      {
+        "path": "supabase/functions/_shared/portal-challenge.test.ts",
+        "total": 5,
+        "passed": 5,
+        "failed": 0,
+        "failed_tests": []
+      },
+      {
+        "path": "supabase/functions/_shared/readiness-resilience.synthetic.test.ts",
+        "total": 5,
+        "passed": 4,
+        "failed": 1,
+        "failed_tests": [
+          {
+            "name": "second audit: readiness detects failed recovery does not hide a worker that never acknowledges work when every cron dispatch replaces last_dispatch_at",
+            "messages": [
+              "AssertionError: {\"elapsed\":90000,\"status\":\"ready\",\"checks\":{\"database\":true,\"unifi_credentials\":true,\"controller_configuration\":true,\"invalid_controller_stores\":[],\"cron_secret\":true,\"authorization_reconciler\":true,\"authorization_active_operations\":1,\"authorization_overdue_operations\":0,\"authorization_recovery_failures\":0}}: expected 200 to be 503 // Object.is equality"
+            ]
+          }
+        ]
+      },
+      {
+        "path": "supabase/functions/_shared/transport-resilience.synthetic.test.ts",
+        "total": 14,
+        "passed": 6,
+        "failed": 8,
+        "failed_tests": [
+          {
+            "name": "second audit: actual handler, coordinator and UniFi transport A2-T02: preserves Retry-After for a proven-unsent login 429 so scheduling can respect the controller cooldown",
+            "messages": [
+              "AssertionError: expected undefined to be 30000 // Object.is equality"
+            ]
+          },
+          {
+            "name": "second audit: actual handler, coordinator and UniFi transport A2-T02: preserves Retry-After for a proven-unsent preflight 429 so scheduling can respect the controller cooldown",
+            "messages": [
+              "AssertionError: expected undefined to be 30000 // Object.is equality"
+            ]
+          },
+          {
+            "name": "second audit: actual handler, coordinator and UniFi transport A2-T03: a timed-out AP lookup during verification does not prevent the next healthy status read from confirming",
+            "messages": [
+              "AssertionError: AP lookup response completed after 4000ms; the healthy read is still waiting for its old lease: expected { …(10) } to match object { authorized: true, …(1) }"
+            ]
+          },
+          {
+            "name": "second audit: admission before the durable operation exists A2-T01: bounds a stalled rate_limit_hit dependency before the 120s authorization objective expires",
+            "messages": [
+              "AssertionError: identify remained pending after 120s in rate_limit_hit, with no durable operation: expected false to be true // Object.is equality"
+            ]
+          },
+          {
+            "name": "second audit: admission before the durable operation exists A2-T01: bounds a stalled resolve_portal_identity dependency before the 120s authorization objective expires",
+            "messages": [
+              "AssertionError: identify remained pending after 120s in resolve_portal_identity, with no durable operation: expected false to be true // Object.is equality"
+            ]
+          },
+          {
+            "name": "second audit: admission before the durable operation exists A2-T01: bounds a stalled createUser dependency before the 120s authorization objective expires",
+            "messages": [
+              "AssertionError: identify remained pending after 120s in createUser, with no durable operation: expected false to be true // Object.is equality"
+            ]
+          },
+          {
+            "name": "second audit: admission before the durable operation exists A2-T01: bounds the stores read before join, instead of leaving a valid identified client outside recovery",
+            "messages": [
+              "AssertionError: authorizeDurably remained pending after 120s before join (stores): expected false to be true // Object.is equality"
+            ]
+          },
+          {
+            "name": "second audit: admission before the durable operation exists A2-T01: bounds the global_settings read before join, instead of leaving a valid identified client outside recovery",
+            "messages": [
+              "AssertionError: authorizeDurably remained pending after 120s before join (global_settings): expected false to be true // Object.is equality"
+            ]
+          }
+        ]
+      },
+      {
+        "path": "supabase/functions/_shared/unifi-adapter.test.ts",
+        "total": 17,
+        "passed": 17,
+        "failed": 0,
+        "failed_tests": []
+      },
+      {
+        "path": "supabase/functions/_shared/unifi-authorization.test.ts",
+        "total": 38,
+        "passed": 38,
+        "failed": 0,
+        "failed_tests": []
+      },
+      {
+        "path": "supabase/functions/_shared/unifi-cookie.test.ts",
+        "total": 12,
+        "passed": 12,
+        "failed": 0,
+        "failed_tests": []
+      },
+      {
+        "path": "supabase/functions/_shared/unifi-synthetic.test.ts",
+        "total": 33,
+        "passed": 33,
+        "failed": 0,
+        "failed_tests": []
+      }
+    ]
+  },
+  "database": {
+    "postgres": "PostgreSQL 17.10 on x86_64-windows, compiled by msvc-19.44.35226, 64-bit",
+    "finished_at": "2026-09-25T18:41:27.302Z",
+    "passed": [
+      "atomic join creates session, membership and durable due work",
+      "20 independent concurrent clients join one operation and one session",
+      "distinct eligible attempts join; other user/context cannot join",
+      "concurrent leases emit exactly one send; expired lease only verifies",
+      "accepted command stays recoverable and confirms all participants atomically",
+      "database error rolls back terminal operation, attempt, session and audit",
+      "missing, mismatched, stale evidence and expired lease cannot confirm",
+      "watchdog terminates abandoned work despite live lease and expired capability",
+      "legacy accepted operation imports verify-only; terminal legacy attempt rejected",
+      "rate-limit block survives window expiry and blocked polls do not extend it",
+      "daily count deduplicates participants and rejects next new grant",
+      "observed-only success has no fabricated expiry, no reuse, and receipt expires at 30s",
+      "five concurrent optional challenges issue only once",
+      "managed attempts reject late legacy writes without changing operation",
+      "admin and blocked users cannot obtain optional login challenge",
+      "capability status awaits identity; expired real authorization receipt is stale",
+      "configured cron keeps secret out of job and dispatches only due work",
+      "HTTP transport exception cannot roll back database watchdog expiration",
+      "public roles have no operation reads or RPC execution",
+      "rollback send switch still permits verification",
+      "proven unsent preparation retries within immutable budget then sends once",
+      "three proven unsent preparations terminate honestly without endless retries",
+      "unknown without actual-send evidence cannot invent command timeline",
+      "historical repair requires unique matching user/AP/SSID evidence and is idempotent",
+      "active roaming joins only between mapped APs in the same store and keeps original context",
+      "status RPC uses a single snapshot while another connection completes authorization",
+      "record rechecks wall clock after waiting for the operation row lock",
+      "uncertain completion exposes only the remaining 30-second cooldown",
+      "24 simultaneous distinct contexts select one identity without partial sessions",
+      "24 independent devices are claimed once across concurrent global batches",
+      "duplicate concurrent acceptance records one event and leaves one recovery item",
+      "concurrent conflicting terminal responses commit one coherent result",
+      "cancelled and invalid participants do not promote or poison eligible participants",
+      "block after accepted send preserves truthful Wi-Fi result but forbids login challenge",
+      "failed creation rolls back identity, session, membership and outbox before safe retry",
+      "lease renewal refuses an owner whose lease expired during row-lock wait",
+      "join cannot reuse an authorization that expired while waiting on device lock",
+      "existing membership cannot bypass capability expiry during operation-lock wait",
+      "known-unsent retry cannot emit a fresh send after the verification deadline",
+      "late actual-send responses persist their effect and terminal projections atomically",
+      "one audit poison item cannot prevent claiming unrelated healthy work",
+      "existing join returns a stale receipt instead of reusing its expired authorization",
+      "confirmed candidate is rechecked after its row-lock wait before a new attempt joins",
+      "verification claims precede queued sends and use the nearest immutable deadline",
+      "fresh send is forbidden near deadline and known-unsent work finishes without extending time",
+      "recovery diagnostics and expiration helper remain private to the trusted database writer",
+      "controller capacity includes targeted and cross-store claims but is independent across controllers",
+      "four browserless clients calibrate the accelerated real-SQL capacity probe",
+      "40 browserless clients all confirm with bounded batches per ten-second cron tick",
+      "40 already-accepted browserless clients all confirm before recovery budget expires",
+      "connection death before claim commit rolls back every send reservation",
+      "connection death after uncommitted acceptance preserves verify-only ambiguity",
+      "query cancellation at participant lock rolls back partial confirmation before retry",
+      "confirmation and watchdog races serialize one terminal result in either lock order",
+      "105 poison expirations cross the first batch without starving healthy work",
+      "mixed burst of 80 accepted and 40 queued clients survives transient reads within 120 seconds"
+    ],
+    "failures": [
+      {
+        "name": "a locked expired participant cannot abort a healthy claim through the global watchdog",
+        "message": "An unrelated expired participant consumed the entire statement budget before healthy work could be claimed\n+ actual - expected\n\n+ '57014'\n- undefined\n",
+        "actual": "57014"
+      },
+      {
+        "name": "fresh-send budget is still valid after waiting to update the outbox",
+        "message": "Claim returned a fresh-send lease whose preparation budget expired while waiting on its outbox row",
+        "actual": false,
+        "expected": true
+      },
+      {
+        "name": "lease renewal cannot report success after outbox wait consumed the renewed lease",
+        "message": "Renewal reported success after its returned lease had already expired",
+        "actual": false,
+        "expected": true
+      },
+      {
+        "name": "confirmation response cannot advertise a grant that expired at the participant lock",
+        "message": "record returned authorized=true although the unchanged capability immediately returns receipt_stale\n\nfalse !== true\n",
+        "actual": false,
+        "expected": true
+      }
+    ],
+    "observations": [
+      {
+        "probe": "audit2_cancel_participant_lock",
+        "path": "blocked"
+      },
+      {
+        "probe": "audit2_terminal_lock_order",
+        "cases": [
+          {
+            "first": "confirmation",
+            "path": "blocked",
+            "status": "confirmed",
+            "send_count": 1,
+            "lease_version": "1",
+            "command_accepted_at": null,
+            "command_dispatched_at": null,
+            "attempt": "authorized",
+            "session": "authorized",
+            "audits": 1,
+            "events": 3,
+            "due": 0
+          },
+          {
+            "first": "watchdog",
+            "path": "blocked",
+            "status": "expired_unconfirmed",
+            "send_count": 1,
+            "lease_version": "2",
+            "command_accepted_at": null,
+            "command_dispatched_at": null,
+            "attempt": "failed",
+            "session": "failed",
+            "audits": 1,
+            "events": 2,
+            "due": 0
+          }
+        ]
+      },
+      {
+        "probe": "audit2_poison_second_batch",
+        "first_batch_diagnostics": 100,
+        "total_diagnostics": 105,
+        "healthy_claimed": 1
+      },
+      {
+        "probe": "audit2_watchdog_participant_lock",
+        "path": "blocked",
+        "error": "57014",
+        "message": "canceling statement due to statement timeout",
+        "elapsed_ms": 1511,
+        "healthy_state": "queued"
+      },
+      {
+        "probe": "audit2_claim_outbox_budget",
+        "path": "blocked",
+        "actions": [
+          "send"
+        ],
+        "remaining_ms": 14868
+      },
+      {
+        "probe": "audit2_renew_outbox_budget",
+        "path": "blocked",
+        "renewed": true,
+        "valid": false
+      },
+      {
+        "probe": "audit2_confirmation_grant_after_participant_lock",
+        "path": "blocked",
+        "record_authorized": true,
+        "authorized_until": "2026-09-25T15:41:25.929308-03:00",
+        "get_disposition": "receipt_stale",
+        "get_authorized": false
+      },
+      {
+        "probe": "audit2_mixed_120_fast",
+        "sent": 40,
+        "verified": 140,
+        "max_live_leases": 4,
+        "last_finished_simulated_seconds": 40,
+        "states": [
+          {
+            "status": "confirmed",
+            "n": 120
+          }
+        ]
+      }
+    ]
+  },
+  "additional_controls": {
+    "seeded_jitter_schedules": 20,
+    "seeds": "1..20",
+    "counted_as_additional_tests": false,
+    "postgres_observer_fast_completion_control": true
+  },
+  "quality": {
+    "eslint": "passed",
+    "typescript": "passed",
+    "product_code_changed": false,
+    "migrations_changed": false,
+    "production_changed": false,
+    "full_release_gate": "not run; known Docker/Auth prerequisites remain"
+  },
+  "production": {
+    "edge_version": 254,
+    "checked_window_utc": "2026-09-25T18:20:16Z/2026-09-25T18:28:35Z",
+    "initial_database": {
+      "late": 0,
+      "worker": {
+        "enabled": true,
+        "last_tick_at": "2026-09-25T18:20:06.516982+00:00",
+        "sends_enabled": true,
+        "last_error_code": null,
+        "last_dispatch_at": null,
+        "last_worker_finished_at": "2026-09-25T18:07:36.18102+00:00",
+        "last_worker_failed_count": 0
+      },
+      "checked_at": "2026-09-25T18:20:16.022824+00:00",
+      "diagnostics": 0,
+      "sessions_v254": [
+        {
+          "count": 2,
+          "status": "authorized",
+          "durable": 2
+        }
+      ],
+      "cron_last_hour": [
+        {
+          "count": 359,
+          "status": "succeeded"
+        }
+      ],
+      "operations_all": [
+        {
+          "count": 4,
+          "status": "confirmed"
+        }
+      ],
+      "latency_seconds": {
+        "n": 4,
+        "max": 4.754604,
+        "min": 3.924538,
+        "p95": 4.7537418
+      },
+      "operations_v254": [
+        {
+          "count": 2,
+          "status": "confirmed"
+        }
+      ],
+      "database_version": "17.6"
+    },
+    "http_statuses": {
+      "result": [
+        {
+          "requests": 16,
+          "status": "200"
+        },
+        {
+          "requests": 2,
+          "status": "401"
+        }
+      ]
+    },
+    "frontend_sha": "90b0767af59b9490fb3191601ac2796886ee72c2",
+    "edge_readiness_http": 200,
+    "v254_cohort": {
+      "since": "2026-09-25T18:06:22Z",
+      "attempts": 2,
+      "sessions": 2,
+      "operations_confirmed": 2,
+      "min_confirmation_seconds": 3.924538,
+      "max_confirmation_seconds": 4.540216,
+      "external_connectivity_observed": false
+    },
+    "advisors": {
+      "security": [
+        {
+          "name": "rls_enabled_no_policy",
+          "level": "INFO",
+          "count": 20,
+          "remediation": "https://supabase.com/docs/guides/database/database-linter?lint=0008_rls_enabled_no_policy"
+        },
+        {
+          "name": "auth_leaked_password_protection",
+          "level": "WARN",
+          "count": 1,
+          "remediation": "https://supabase.com/docs/guides/auth/password-security#password-strength-and-leaked-password-protection"
+        }
+      ],
+      "performance": [
+        {
+          "name": "unindexed_foreign_keys",
+          "level": "INFO",
+          "count": 2,
+          "remediation": "https://supabase.com/docs/guides/database/database-linter?lint=0001_unindexed_foreign_keys"
+        },
+        {
+          "name": "unused_index",
+          "level": "INFO",
+          "count": 27,
+          "remediation": "https://supabase.com/docs/guides/database/database-linter?lint=0005_unused_index"
+        }
+      ]
+    }
+  },
+  "limitations": [
+    "Directed fault injections and small production cohort cannot estimate real 99.9% availability.",
+    "Fault/capacity model runs real coordinator/helper but not real network or hosted scheduling; PostgreSQL suite separately uses real transactions/locks.",
+    "DB native fixtures stub Vault/cron/pg_net.",
+    "No physical iPhone/Android captive-browser or external internet test this round.",
+    "A2-T03 corroborates A2-C01 and is not a tenth group.",
+    "Before-join timeout tests verify bounded completion, not yet the full future recoverable error contract.",
+    "Retry-After output property is a proposed representation; equivalent future scheduling/deadline must preserve the same cooldown semantics."
+  ]
+}
