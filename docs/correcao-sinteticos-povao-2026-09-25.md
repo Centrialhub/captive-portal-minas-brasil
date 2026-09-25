@@ -16,7 +16,7 @@ Escopo: beta `povao`. `drive` e `joao23` permanecem fora desta intervenção. Os
 | DB-SYN-02 | Join revalida capability e recibo depois dos locks. Recibo vencido não é reutilizado; expiração é devolvida como erro de domínio. |
 | DB-SYN-03 | Renovação revalida dono, versão e relógio depois do lock; lease vencida é recusada. |
 | DB-SYN-04 | Envio novo exige orçamento restante de pelo menos 16 s; tolerância de verificação não autoriza novo envio. Prazo original permanece imutável. |
-| DB-SYN-05 | Cada expiração é uma transação isolada dentro do lote. Falha de auditoria reverte aquele item; diagnóstico privado e backoff permitem que os demais avancem. |
+| DB-SYN-05 | Cada expiração usa uma subtransação isolada dentro do lote. Falha de auditoria reverte aquele item; diagnóstico privado e backoff permitem que os demais avancem. |
 | DB-SYN-06 | Aceite/resposta incerta tardios persistem a evidência e atualizam participantes atomicamente, sem conflito com o guard. |
 | SYN-B01 | Reserva e criação do login auxiliar compartilham 1,5 s. Confirmação do Wi-Fi deixa de depender de uma RPC auxiliar sem prazo. |
 | SYN-B02 | Falha comprovadamente anterior ao adaptador é registrada como `not_sent`, com preparação limitada. Uma chamada cujo efeito é incerto continua somente para verificação. |
