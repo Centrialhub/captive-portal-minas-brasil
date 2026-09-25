@@ -5,7 +5,7 @@ import {
   isSafeRedirect,
   resolvePostAuthRedirect,
 } from "./lib/portal-utils";
-import { getAuthFailureMessage, isRecoverableAuthResult, runWithAuthRecovery } from "./lib/auth-outcome";
+import { getAuthFailureMessage, isAuthResult, isRecoverableAuthResult } from "./lib/auth-outcome";
 
 describe("Brazilian identity validation", () => {
   it("rejects repeated or invalid CPFs and accepts a valid checksum", () => {
@@ -57,34 +57,23 @@ describe("authorization outcomes", () => {
 
   it("treats definitive failures as terminal", () => {
     expect(isRecoverableAuthResult({ fail_reason: "UNIFI_ERROR" })).toBe(false);
+    expect(getAuthFailureMessage({ fail_reason: "DAILY_ACCESS_LIMIT_REACHED" }))
+      .toContain("limite diário");
   });
 
-  it("recovers a pending authorization without duplicating unbounded requests", async () => {
-    const results = [
-      { processing: true, fail_reason: "PROCESSING_IN_PROGRESS" },
-      { fail_reason: "RETRY_REQUIRED" },
-      { authorized: true },
-    ];
-    let calls = 0;
-
-    const result = await runWithAuthRecovery(async () => results[calls++], {
-      attempts: 3,
-      delayMs: 0,
-      stop: (value) => !!value.authorized,
-    });
-
-    expect(result).toEqual({ authorized: true });
-    expect(calls).toBe(3);
+  it("keeps contention pending and respects explicit terminal states", () => {
+    expect(isRecoverableAuthResult({ fail_reason: "RATE_LIMIT_HIT" })).toBe(true);
+    expect(isRecoverableAuthResult({ authorized: false, status: "verifying" })).toBe(true);
+    expect(isRecoverableAuthResult({ authorized: false, status: "expired_unconfirmed" })).toBe(false);
+    expect(isRecoverableAuthResult({ authorized: false, status: "awaiting_identity" })).toBe(false);
   });
 
-  it("stops recovery immediately on a terminal failure", async () => {
-    let calls = 0;
-    const result = await runWithAuthRecovery(async () => {
-      calls += 1;
-      return { fail_reason: "CLIENT_NOT_FOUND_ON_CONTROLLER" };
-    }, { attempts: 3, delayMs: 0 });
-
-    expect(result).toEqual({ fail_reason: "CLIENT_NOT_FOUND_ON_CONTROLLER" });
-    expect(calls).toBe(1);
+  it("requires exact success and rejects contradictory or malformed contracts", () => {
+    expect(isAuthResult({ authorized: true, status: "confirmed", processing: false })).toBe(true);
+    expect(isAuthResult({ authorized: "true", status: "confirmed" })).toBe(false);
+    expect(isAuthResult({ authorized: false, status: "confirmed" })).toBe(false);
+    expect(isAuthResult({ authorized: true, status: "verifying" })).toBe(false);
+    expect(isAuthResult({ authorized: false, status: "verifying", retry_after_ms: -1 })).toBe(false);
+    expect(isAuthResult(null)).toBe(false);
   });
 });

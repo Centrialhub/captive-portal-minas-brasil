@@ -1,0 +1,35 @@
+-- Synthetic schema only, mirrored from live catalog on 2026-09-25. No user data.
+CREATE ROLE anon;
+CREATE ROLE authenticated;
+CREATE ROLE service_role BYPASSRLS;
+CREATE SCHEMA auth;
+CREATE SCHEMA extensions;
+CREATE EXTENSION pgcrypto SCHEMA extensions;
+CREATE TABLE auth.users(id uuid PRIMARY KEY DEFAULT gen_random_uuid());
+CREATE TYPE public.app_role AS ENUM ('admin','user');
+CREATE TABLE public.user_roles(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),user_id uuid NOT NULL REFERENCES auth.users(id),role public.app_role NOT NULL,UNIQUE(user_id,role));
+CREATE TABLE public.user_blocks(user_id uuid PRIMARY KEY REFERENCES auth.users(id),reason text NOT NULL,blocked_at timestamptz NOT NULL DEFAULT now(),blocked_by uuid,expires_at timestamptz,updated_at timestamptz NOT NULL DEFAULT now());
+CREATE TYPE public.session_status AS ENUM ('started','submitted','authorized','failed');
+CREATE TABLE public.audit_logs (id uuid DEFAULT gen_random_uuid() NOT NULL PRIMARY KEY, store_id uuid, entity text NOT NULL, entity_id uuid, action text NOT NULL, meta jsonb, created_at timestamptz DEFAULT now() NOT NULL);
+CREATE TABLE public.captive_auth_attempts (id uuid DEFAULT gen_random_uuid() NOT NULL, resume_token_hash text NOT NULL, client_mac text NOT NULL, ap_mac text, ssid text, store_hint text, captive_timestamp text, original_url text, status text DEFAULT 'created'::text NOT NULL, created_at timestamptz DEFAULT now() NOT NULL, expires_at timestamptz NOT NULL, consumed_at timestamptz, user_id uuid, metadata jsonb DEFAULT '{}'::jsonb, captive_session_id uuid, authorization_started_at timestamptz, authorization_finished_at timestamptz, lease_owner text, lease_expires_at timestamptz, authorization_attempts integer DEFAULT 0 NOT NULL, authorized boolean DEFAULT false, fail_reason text, redirect_url text, last_result_code text, store_id uuid, store_detection_source text);
+CREATE TABLE public.captive_sessions (id uuid DEFAULT gen_random_uuid() NOT NULL, store_id uuid, client_mac text, client_ip text, ap_mac text, ssid text, user_agent text, redirect_url text, status session_status DEFAULT 'started'::session_status NOT NULL, started_at timestamptz DEFAULT now() NOT NULL, submitted_at timestamptz, authorized_at timestamptz, fail_reason text, updated_at timestamptz DEFAULT now() NOT NULL, original_client_mac text, auth_latency_ms integer, captive_timestamp text, original_unifi_url_params jsonb, unifi_cmd_accepted_at timestamptz, unifi_last_verify_result jsonb, unifi_fallback_redirect_url text, trace_id text, params_received_at timestamptz, form_submitted_at timestamptz, otp_sent_at timestamptz, otp_verified_at timestamptz, unifi_authorize_called_at timestamptz, unifi_confirmed_at timestamptz, redirect_served_at timestamptz, redirect_clicked_at timestamptz, last_step text, last_error_code text, last_error_message text, total_latency_ms integer, user_id uuid, auth_method text, attempt_id uuid);
+CREATE TABLE public.portal_events (id uuid DEFAULT gen_random_uuid() NOT NULL PRIMARY KEY, session_id uuid, trace_id text, store_id uuid, event_type text NOT NULL, step text NOT NULL, status text DEFAULT 'info'::text NOT NULL, error_code text, error_message text, latency_ms integer, payload jsonb, client_ip text, user_agent text, created_at timestamptz DEFAULT now() NOT NULL);
+CREATE TABLE public.rate_limits (key text NOT NULL PRIMARY KEY, window_start timestamptz NOT NULL, count integer DEFAULT 1 NOT NULL, blocked_until timestamptz, updated_at timestamptz DEFAULT now() NOT NULL);
+CREATE TABLE public.stores (id uuid DEFAULT gen_random_uuid() NOT NULL PRIMARY KEY, slug text NOT NULL, name text NOT NULL, city text, is_active boolean DEFAULT true NOT NULL, unifi_site_id text, unifi_controller_url text, created_at timestamptz DEFAULT now() NOT NULL, updated_at timestamptz DEFAULT now() NOT NULL, post_auth_redirect_url text);
+CREATE TABLE public.store_access_points(ap_mac text PRIMARY KEY,store_id uuid NOT NULL REFERENCES public.stores(id) ON DELETE CASCADE,source text NOT NULL DEFAULT 'manual' CHECK(source IN ('manual','auto_discovered','imported')),name text,last_seen_at timestamptz,created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now());
+CREATE FUNCTION public.normalize_mac(mac text) RETURNS text LANGUAGE sql IMMUTABLE SET search_path=public AS $$ SELECT upper(regexp_replace(COALESCE(mac,''),'[^a-fA-F0-9]','','g')) $$;
+GRANT USAGE ON SCHEMA public,extensions TO service_role,anon,authenticated;
+GRANT ALL ON ALL TABLES IN SCHEMA public TO service_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO service_role,anon,authenticated;
+-- Only transport/scheduler are simulated; state transitions use native PostgreSQL.
+CREATE SCHEMA vault;
+CREATE TABLE vault.secrets(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),secret text,name text UNIQUE,description text);
+CREATE VIEW vault.decrypted_secrets AS SELECT id,name,secret AS decrypted_secret FROM vault.secrets;
+CREATE FUNCTION vault.create_secret(new_secret text,new_name text DEFAULT NULL,new_description text DEFAULT NULL,new_key_id uuid DEFAULT NULL) RETURNS uuid LANGUAGE sql AS $$ INSERT INTO vault.secrets(secret,name,description) VALUES(new_secret,new_name,new_description) RETURNING id $$;
+CREATE FUNCTION vault.update_secret(secret_id uuid,new_secret text DEFAULT NULL,new_name text DEFAULT NULL,new_description text DEFAULT NULL,new_key_id uuid DEFAULT NULL) RETURNS void LANGUAGE sql AS $$ UPDATE vault.secrets SET secret=coalesce(new_secret,secret),name=coalesce(new_name,name),description=coalesce(new_description,description) WHERE id=secret_id $$;
+CREATE SCHEMA cron;
+CREATE TABLE cron.job(jobid bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,jobname text UNIQUE,schedule text,command text);
+CREATE FUNCTION cron.schedule(job_name text,schedule text,command text) RETURNS bigint LANGUAGE sql AS $$ INSERT INTO cron.job(jobname,schedule,command) VALUES(job_name,schedule,command) ON CONFLICT(jobname) DO UPDATE SET schedule=excluded.schedule,command=excluded.command RETURNING jobid $$;
+CREATE SCHEMA net;
+CREATE TABLE net.test_requests(id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,url text,headers jsonb,body jsonb,timeout_ms integer);
+CREATE FUNCTION net.http_post(url text,body jsonb DEFAULT '{}'::jsonb,params jsonb DEFAULT '{}'::jsonb,headers jsonb DEFAULT '{}'::jsonb,timeout_milliseconds integer DEFAULT 2000) RETURNS bigint LANGUAGE sql AS $$ INSERT INTO net.test_requests(url,headers,body,timeout_ms) VALUES(url,headers,body,timeout_milliseconds) RETURNING id $$;

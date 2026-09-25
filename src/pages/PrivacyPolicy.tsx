@@ -1,12 +1,15 @@
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
+import { captiveNavigationSearch } from "../lib/portal-navigation";
 import logoMinasBrasil from "../assets/logo-minas-brasil.png";
 
 export default function PrivacyPolicy() {
+  const { search } = useLocation();
+  const portalUrl = "/" + captiveNavigationSearch(search);
   return (
     <div className="policy-wrapper">
       <div className="policy-card">
         <div className="policy-header">
-          <Link to="/" className="policy-back">← Voltar</Link>
+          <Link to={portalUrl} className="policy-back">← Voltar</Link>
           <img
             src={logoMinasBrasil}
             alt="Drogaria Minas Brasil"
@@ -108,7 +111,7 @@ export default function PrivacyPolicy() {
         </div>
 
         <div className="policy-footer">
-          <Link to="/" className="portal-btn">Voltar ao portal</Link>
+          <Link to={portalUrl} className="portal-btn">Voltar ao portal</Link>
           <p className="portal-footer">Drogaria Minas Brasil © {new Date().getFullYear()}</p>
         </div>
       </div>
