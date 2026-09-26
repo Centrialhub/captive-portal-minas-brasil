@@ -1,6 +1,19 @@
 import { configDefaults, defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
+
+function portalStartup() {
+  return {
+    name: "portal-startup",
+    transformIndexHtml(html: string) {
+      const source = readFileSync(new URL("./src/portal-boot.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+      if (/<\/script/i.test(source)) throw new Error("Startup protection contains an HTML script terminator");
+      if (!html.includes("<!-- PORTAL_BOOT -->")) throw new Error("Missing portal startup placeholder");
+      return html.replace("<!-- PORTAL_BOOT -->", `<script id="portal-boot">\n${source}\n</script>`);
+    },
+  };
+}
 
 // https://vitejs.dev/config/
 export default defineConfig(() => ({
@@ -41,7 +54,7 @@ export default defineConfig(() => ({
   test: {
     exclude: [...configDefaults.exclude, "tmp/**"],
   },
-  plugins: [react()],
+  plugins: [react(), portalStartup()],
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),

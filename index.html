@@ -10,10 +10,16 @@
     <meta property="og:type" content="website">
     <meta name="twitter:card" content="summary">
     <link rel="icon" type="image/png" href="/favicon-mb.png">
+    <!-- Replaced with the inline, CSP-hashed startup protection during build. -->
+    <!-- PORTAL_BOOT -->
     <style>
       body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #E30613; color: white; display: flex; align-items: center; justify-content: center; min-height: 100vh; text-align: center; }
       .loading-shell { padding: 2rem; }
       .loading-logo { height: 60px; margin-bottom: 1rem; }
+      [hidden] { display: none !important; }
+      #portal-recovery { max-width: 28rem; margin: auto; padding: 2rem; color: white; }
+      #portal-retry { border: 0; border-radius: 0.5rem; padding: 0.9rem 1.2rem; background: white; color: #b3000d; font: inherit; font-weight: 700; cursor: pointer; }
+      #portal-retry:focus-visible { outline: 3px solid white; outline-offset: 4px; }
     </style>
   </head>
   <body>
@@ -23,6 +29,11 @@
         <p>Carregando portal...</p>
       </div>
     </div>
+    <section id="portal-recovery" hidden role="alert" aria-labelledby="portal-recovery-title">
+      <h1 id="portal-recovery-title">Não foi possível carregar o acesso ao Wi-Fi</h1>
+      <p id="portal-recovery-message">Confira se continua conectado à rede Wi-Fi e tente carregar a página novamente.</p>
+      <button id="portal-retry" type="button">Tentar carregar novamente</button>
+    </section>
     <noscript>
       <div style="padding: 20px; text-align: center;">
         <h2>JavaScript Necessário</h2>
