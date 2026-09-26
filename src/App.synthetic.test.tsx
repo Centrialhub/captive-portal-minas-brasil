@@ -320,6 +320,8 @@ describe("synthetic frontend boundaries", () => {
     first.unmount();
     renderPortal();
     await flush();
+    expect(api.attemptStatus).not.toHaveBeenCalled();
+    await advance(2000); // The interrupted request's backoff also survives remount.
     expect(screen.getByRole("heading", { name: "Wi-Fi liberado!" })).toBeTruthy();
     expect(api.identify).toHaveBeenCalledTimes(1);
     expect(api.initAttempt).toHaveBeenCalledTimes(1);
