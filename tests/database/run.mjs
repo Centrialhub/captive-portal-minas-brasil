@@ -598,6 +598,233 @@ try {
     const result=await runBrowserlessLoad(40,true);
     assert.equal(result.states.find(s=>s.status==='confirmed')?.n||0,40,'Final accepted cohort cannot fit the minimum lease budget with bounded batches per ten-second cron tick');
   });
+  // Audit round two: inject real transaction loss and waits after operation-lock
+  // validation. Product functions and bounds stay unchanged in every probe.
+  async function authoritySnapshot(id){return (await client.query(`select o.status,o.send_count,o.lease_version,
+    o.command_accepted_at,o.command_dispatched_at,a.status attempt,s.status session,
+    (select count(*)::int from audit_logs where meta->>'operation_id'=o.id::text) audits,
+    (select count(*)::int from captive_auth_operation_events where operation_id=o.id) events,
+    (select count(*)::int from captive_auth_work_due where operation_id=o.id) due
+    from captive_auth_operations o join captive_auth_attempts a on a.auth_operation_id=o.id
+    join captive_sessions s on s.id=a.captive_session_id where o.id=$1`,[id])).rows[0];}
+  async function completionOrOwnedLock(c,pending,blocker){
+    // A correct future implementation may return safely without waiting. The
+    // test must measure that result, not require the old blocking algorithm.
+    let completed=false;pending.then(()=>{completed=true;},()=>{completed=true;});
+    for(let i=0;i<200;i++){
+      if(completed)return 'completed';
+      const row=(await client.query('select wait_event_type,pg_blocking_pids(pid) blockers from pg_stat_activity where pid=$1',[c.processID])).rows[0];
+      if(completed)return 'completed';
+      if(row?.wait_event_type==='Lock'){
+        if(row.blockers.includes(blocker.processID))return 'blocked';
+        await client.query('select pg_cancel_backend($1)',[c.processID]);
+        throw guardError('PROBE_SETUP_ERROR','RPC waited on a different backend; intended contention was not measured');
+      }
+      await new Promise(r=>setTimeout(r,5));
+    }
+    // Cancellation targets only the connection verified by connect(). It also
+    // ensures finally cleanup cannot hang behind an unobserved test setup.
+    await client.query('select pg_cancel_backend($1)',[c.processID]);
+    throw guardError('PROBE_SETUP_ERROR','RPC neither completed nor reached the intended PostgreSQL lock wait');
+  }
+  const observerControl=await connect();
+  try{
+    const pending=observerControl.query('select 1 as completed');
+    assert.equal(await completionOrOwnedLock(observerControl,pending,client),'completed');
+    assert.equal((await pending).rows[0].completed,1);
+  }finally{await observerControl.end();}
+  async function terminateOwnedBackend(c){
+    // connect() already verified this cluster; never terminate a PID from a URL,
+    // a process listing or another PostgreSQL instance.
+    c.on('error',()=>{});
+    assert.equal((await client.query('select pg_terminate_backend($1) terminated',[c.processID])).rows[0].terminated,true);
+    for(let i=0;i<100;i++){
+      if(!(await client.query('select 1 from pg_stat_activity where pid=$1',[c.processID])).rowCount)return;
+      await new Promise(r=>setTimeout(r,10));
+    }
+    throw guardError('PROBE_SETUP_ERROR','owned backend did not terminate; rollback was not measured');
+  }
+  await adversarial('connection death before claim commit rolls back every send reservation',async()=>{
+    const j=await join(await fixture()),before=await authoritySnapshot(j.operation.id),victim=await connect();
+    try{
+      await victim.query('begin');const op=(await claim(j.operation.id,'uncommitted-send',victim))[0];assert.equal(op.action,'send');
+      assert.deepEqual(await authoritySnapshot(op.id),before);
+      await terminateOwnedBackend(victim);assert.deepEqual(await authoritySnapshot(op.id),before);
+      const retry=(await claim(op.id,'after-disconnect'))[0];assert.equal(retry.action,'send');assert.equal(retry.send_count,1);assert.equal(retry.lease_version,1);
+    }finally{await victim.end().catch(()=>{});}
+  });
+  await adversarial('connection death after uncommitted acceptance preserves verify-only ambiguity',async()=>{
+    const op=(await claim((await join(await fixture())).operation.id))[0],before=await authoritySnapshot(op.id),victim=await connect();
+    try{
+      await victim.query('begin');assert.equal((await record(op,'accepted',{command_sent:true},op.lease_owner,victim)).applied,true);
+      assert.deepEqual(await authoritySnapshot(op.id),before);await terminateOwnedBackend(victim);assert.deepEqual(await authoritySnapshot(op.id),before);
+      await client.query("update captive_auth_operations set lease_expires_at=clock_timestamp()-interval '1 second' where id=$1",[op.id]);
+      await client.query("update captive_auth_work_due set due_at=clock_timestamp()-interval '1 second' where operation_id=$1",[op.id]);
+      const retry=(await claim(op.id,'after-uncertain-commit'))[0];assert.equal(retry.action,'verify');assert.equal(retry.send_count,1);assert.equal(retry.command_accepted_at,null);
+      assert.equal((await record(retry,'confirmed',evidence(retry))).operation.status,'confirmed');
+    }finally{await victim.end().catch(()=>{});}
+  });
+  await adversarial('query cancellation at participant lock rolls back partial confirmation before retry',async()=>{
+    const j=await join(await fixture()),op=(await claim(j.operation.id))[0],before=await authoritySnapshot(op.id),blocker=await connect(),waiter=await connect();let waiting;
+    try{
+      await blocker.query('begin');await blocker.query('select 1 from captive_sessions where id=$1 for update',[j.session_id]);
+      waiting=record(op,'confirmed',evidence(op),op.lease_owner,waiter).then(result=>({result}),error=>({error}));
+      const path=await completionOrOwnedLock(waiter,waiting,blocker);
+      if(path==='blocked')assert.equal((await client.query('select pg_cancel_backend($1) cancelled',[waiter.processID])).rows[0].cancelled,true);
+      const cancelled=await waiting;
+      if(path==='blocked')assert.equal(cancelled.error?.code,'57014');
+      else assert.ok(cancelled.error?.code==='55P03'||cancelled.result?.applied===false,'An early return must safely decline the locked finalization');
+      assert.deepEqual(await authoritySnapshot(op.id),before);
+      observations.push({probe:'audit2_cancel_participant_lock',path});
+    }finally{await blocker.query('rollback');await waiting;await blocker.end();await waiter.end();}
+    assert.equal((await record(op,'confirmed',evidence(op))).operation.status,'confirmed');
+    const after=await authoritySnapshot(op.id);assert.equal(after.audits,1);assert.equal(after.due,0);
+  });
+  await adversarial('confirmation and watchdog races serialize one terminal result in either lock order',async()=>{
+    const cases=[];
+    for(const first of ['confirmation','watchdog']){
+      const j=await join(await fixture()),op=(await claim(j.operation.id))[0],blocker=await connect(),writer=await connect();let pending,path;
+      try{
+        // One second remains before the original 90+20s watchdog boundary.
+        await client.query("update captive_auth_operations set created_at=clock_timestamp()-interval '110 seconds',first_sent_at=clock_timestamp()-interval '109 seconds',verification_deadline=clock_timestamp()-interval '19 seconds',lease_expires_at=clock_timestamp()+interval '1 second' where id=$1",[op.id]);
+        await blocker.query('begin');await blocker.query('select 1 from captive_sessions where id=$1 for update',[j.session_id]);
+        if(first==='confirmation'){
+          pending=record(op,'confirmed',evidence(op),op.lease_owner,writer).then(result=>({result}),error=>({error}));
+          path=await completionOrOwnedLock(writer,pending,blocker);await new Promise(r=>setTimeout(r,1100));
+          if(path==='blocked')await client.query('select expire_captive_auth_operations(500)');
+        }else{
+          await new Promise(r=>setTimeout(r,1100));
+          pending=writer.query('select expire_captive_auth_operations(500)').then(result=>({result}),error=>({error}));
+          path=await completionOrOwnedLock(writer,pending,blocker);
+        }
+      }finally{await blocker.query('rollback');}
+      try{
+        const outcome=await pending;if(outcome.error&&outcome.error.code!=='55P03')throw outcome.error;
+        if(first==='watchdog')assert.ok(['already_terminal','stale_lease'].includes((await record(op,'confirmed',evidence(op))).disposition));
+        // A non-blocking expiration may have deferred this item with backoff.
+        // Advance only its retry fixture after releasing the blocker; the
+        // original operation deadline has already elapsed and is never moved.
+        await client.query("update captive_auth_recovery_failures set next_retry_at=clock_timestamp()-interval '1 second' where operation_id=$1",[op.id]);
+        await client.query('select expire_captive_auth_operations(500)');const state=await authoritySnapshot(op.id);cases.push({first,path,...state});
+        const confirmedFirst=first==='confirmation'&&outcome.result?.applied===true;
+        assert.equal(state.status,confirmedFirst?'confirmed':'expired_unconfirmed');assert.equal(state.attempt,state.status==='confirmed'?'authorized':'failed');assert.equal(state.session,state.attempt);assert.equal(state.audits,1);assert.equal(state.due,0);
+      }finally{await writer.end();await blocker.end();}
+    }
+    observations.push({probe:'audit2_terminal_lock_order',cases});
+  });
+  await adversarial('105 poison expirations cross the first batch without starving healthy work',async()=>{
+    const ids=[];for(let i=0;i<105;i++)ids.push((await join(await fixture())).operation.id);
+    const expired=await join(await fixture()),fresh=await join(await fixture());
+    await client.query("update captive_auth_operations set created_at=clock_timestamp()-interval '130 seconds' where id=any($1::uuid[])",[ids]);
+    await client.query("update captive_auth_operations set created_at=clock_timestamp()-interval '120 seconds' where id=$1",[expired.operation.id]);
+    await client.query(`create function test_audit2_poison() returns trigger language plpgsql as $$begin if (NEW.meta->>'operation_id')::uuid=any(array[${ids.map(id=>`'${id}'::uuid`).join(',')}]) then raise exception 'SYNTHETIC_POISON';end if;return NEW;end;$$;create trigger test_audit2_poison before insert on audit_logs for each row execute function test_audit2_poison();`);
+    try{
+      await client.query('select expire_captive_auth_operations(100)');const first=(await client.query('select count(*)::int n from captive_auth_recovery_failures where operation_id=any($1::uuid[])',[ids])).rows[0].n;assert.equal(first,100);
+      const claimed=await claim(fresh.operation.id);assert.equal(claimed.length,1);const second=(await client.query('select count(*)::int n,max(failure_count) max from captive_auth_recovery_failures where operation_id=any($1::uuid[])',[ids])).rows[0];
+      assert.deepEqual(second,{n:105,max:1});assert.equal((await authoritySnapshot(expired.operation.id)).status,'expired_unconfirmed');
+      observations.push({probe:'audit2_poison_second_batch',first_batch_diagnostics:first,total_diagnostics:second.n,healthy_claimed:claimed.length});
+    }finally{
+      await client.query('drop trigger test_audit2_poison on audit_logs;drop function test_audit2_poison();');
+      await client.query("update captive_auth_recovery_failures set next_retry_at=clock_timestamp()-interval '1 second' where operation_id=any($1::uuid[])",[ids]);await client.query('select expire_captive_auth_operations(500)');
+    }
+  });
+  await adversarial('a locked expired participant cannot abort a healthy claim through the global watchdog',async()=>{
+    const expired=await join(await fixture()),fresh=await join(await fixture()),blocker=await connect(),waiter=await connect();let waiting,result;
+    await client.query("update captive_auth_operations set created_at=clock_timestamp()-interval '120 seconds' where id=$1",[expired.operation.id]);
+    assert.equal((await authoritySnapshot(fresh.operation.id)).status,'queued');
+    try{
+      await blocker.query('begin');await blocker.query('select 1 from captive_sessions where id=$1 for update',[expired.session_id]);
+      await waiter.query("set statement_timeout='1500ms'");const started=Date.now();
+      waiting=claim(fresh.operation.id,'healthy-with-locked-expiry',waiter).then(rows=>({rows}),error=>({error: error.code,message:error.message}));
+      const path=await completionOrOwnedLock(waiter,waiting,blocker);result=await waiting;result.elapsed_ms=Date.now()-started;
+      const healthyState=(await authoritySnapshot(fresh.operation.id)).status;
+      observations.push({probe:'audit2_watchdog_participant_lock',path,...result,healthy_state:healthyState});
+      if(result.error){assert.equal(result.error,'57014');assert.equal(healthyState,'queued');}
+    }finally{await blocker.query('rollback');await waiting;await blocker.end();await waiter.end();}
+    assert.equal(result.error,undefined,'An unrelated expired participant consumed the entire statement budget before healthy work could be claimed');assert.equal(result.rows.length,1);assert.equal(result.rows[0].id,fresh.operation.id);
+  });
+  await adversarial('fresh-send budget is still valid after waiting to update the outbox',async()=>{
+    const initial=(await claim((await join(await fixture())).operation.id))[0];await record(initial,'not_sent',{command_sent:false});
+    const blocker=await connect(),waiter=await connect();let waiting,result,path;
+    await client.query("update captive_auth_work_due set due_at=clock_timestamp()-interval '1 second' where operation_id=$1",[initial.id]);
+    try{
+      await blocker.query('begin');await blocker.query('select 1 from captive_auth_work_due where operation_id=$1 for update',[initial.id]);
+      await client.query("update captive_auth_operations set created_at=clock_timestamp()-interval '73 seconds',first_sent_at=clock_timestamp()-interval '72 seconds',verification_deadline=clock_timestamp()+interval '18 seconds' where id=$1",[initial.id]);
+      waiting=claim(initial.id,'waited-outbox',waiter).then(rows=>({rows}),error=>({error}));path=await completionOrOwnedLock(waiter,waiting,blocker);if(path==='blocked')await new Promise(r=>setTimeout(r,3100));
+    }finally{await blocker.query('rollback');result=await waiting;await blocker.end();await waiter.end();}
+    if(result.error)throw result.error;
+    const remaining=result.rows[0]?new Date(result.rows[0].deadline_at)-Date.now():null;
+    observations.push({probe:'audit2_claim_outbox_budget',path,actions:result.rows.map(o=>o.action),remaining_ms:remaining});
+    assert.ok(result.rows.every(o=>o.id===initial.id));
+    assert.ok(result.rows.every(o=>o.action!=='send'||new Date(o.deadline_at)-Date.now()>=16000),'Claim returned a fresh-send lease whose preparation budget expired while waiting on its outbox row');
+  });
+  await adversarial('lease renewal cannot report success after outbox wait consumed the renewed lease',async()=>{
+    const op=(await claim((await join(await fixture())).operation.id))[0],blocker=await connect(),waiter=await connect();let waiting,result,path;
+    try{
+      await blocker.query('begin');await blocker.query('select 1 from captive_auth_work_due where operation_id=$1 for update',[op.id]);
+      await client.query("update captive_auth_operations set created_at=clock_timestamp()-interval '110 seconds',first_sent_at=clock_timestamp()-interval '109 seconds',verification_deadline=clock_timestamp()-interval '19 seconds',lease_expires_at=clock_timestamp()+interval '1 second' where id=$1",[op.id]);
+      waiting=waiter.query('select renew_captive_auth_operation_lease($1,$2,$3) renewed',[op.id,op.lease_owner,op.lease_version]).then(result=>({result}),error=>({error}));path=await completionOrOwnedLock(waiter,waiting,blocker);if(path==='blocked')await new Promise(r=>setTimeout(r,1100));
+    }finally{await blocker.query('rollback');result=await waiting;await blocker.end();await waiter.end();}
+    if(result.error)throw result.error;const state=(await client.query('select lease_expires_at,lease_expires_at>clock_timestamp() valid from captive_auth_operations where id=$1',[op.id])).rows[0];
+    observations.push({probe:'audit2_renew_outbox_budget',path,renewed:result.result.rows[0].renewed,valid:state.valid});
+    assert.equal(typeof result.result.rows[0].renewed,'boolean');
+    assert.ok(!result.result.rows[0].renewed||state.valid,'Renewal reported success after its returned lease had already expired');
+  });
+  await adversarial('confirmation response cannot advertise a grant that expired at the participant lock',async()=>{
+    const f=await fixture(),j=await join(f,client,{p_command:{minutes:1,ssid:f.ssid}}),send=(await claim(j.operation.id))[0];await record(send,'accepted',{command_sent:true});
+    await client.query("update captive_auth_work_due set due_at=clock_timestamp()-interval '1 second' where operation_id=$1",[send.id]);
+    const op=(await claim(send.id))[0],blocker=await connect(),waiter=await connect();let waiting,result,path,before;
+    try{
+      await blocker.query('begin');await blocker.query('select 1 from captive_sessions where id=$1 for update',[j.session_id]);
+      await client.query("update captive_auth_operations set created_at=clock_timestamp()-interval '60 seconds',first_sent_at=clock_timestamp()-interval '59 seconds',command_dispatched_at=clock_timestamp()-interval '59 seconds',command_accepted_at=clock_timestamp()-interval '59 seconds',verification_deadline=clock_timestamp()+interval '31 seconds' where id=$1",[op.id]);
+      before=await authoritySnapshot(op.id);
+      waiting=record(op,'confirmed',evidence(op),op.lease_owner,waiter).then(result=>({result}),error=>({error}));path=await completionOrOwnedLock(waiter,waiting,blocker);if(path==='blocked')await new Promise(r=>setTimeout(r,1100));
+    }finally{await blocker.query('rollback');result=await waiting;await blocker.end();await waiter.end();}
+    const status=(await client.query('select get_captive_auth_operation($1,$2) r',[f.attempt,f.token])).rows[0].r,after=await authoritySnapshot(op.id);
+    observations.push({probe:'audit2_confirmation_grant_after_participant_lock',path,error:result.error?.message,record_authorized:result.result?.operation?.authorized,authorized_until:result.result?.operation?.authorized_until,get_disposition:status.disposition,get_authorized:status.authorized});
+    if(result.error){
+      assert.ok(result.error.code==='55P03'||/^(AUTHORIZATION_VALIDITY_REQUIRED|AUTHORIZATION_RECEIPT_STALE|STALE_CONFIRMATION_EVIDENCE)$/.test(result.error.message),'Only an explicit contention/validity refusal is a safe alternative');
+      assert.deepEqual(after,before,'A refused finalization must roll back its partial projections');
+    }else{
+      assert.equal(typeof result.result?.applied,'boolean');
+      if(result.result.operation?.authorized===true){
+        assert.equal(status.authorized,true,'record returned authorized=true although the unchanged capability immediately returns receipt_stale');
+        assert.ok(Date.parse(result.result.operation.authorized_until)>Date.now(),'An advertised grant must still be valid at return');
+      }else assert.ok(result.result.operation?.authorized===false||result.result.applied===false,'A safe response must explicitly decline current authorization');
+      const terminal=['confirmed','rejected','expired_unconfirmed'].includes(after.status);
+      assert.equal(after.attempt,after.status==='confirmed'?'authorized':terminal?'failed':'authorizing');
+      assert.equal(after.session,after.status==='confirmed'?'authorized':terminal?'failed':'submitted');
+      assert.equal(after.audits,terminal?1:0);assert.equal(after.due,terminal?0:1);
+    }
+  });
+  await adversarial('mixed burst of 80 accepted and 40 queued clients survives transient reads within 120 seconds',async()=>{
+    const ids=[],queuedIds=new Set(),readCounts=new Map();let sent=0,verified=0,maxLive=0,lastFinishedTick=null;
+    for(let i=0;i<120;i++){
+      const j=await join(await fixture());ids.push(j.operation.id);
+      if(i<80){const op=(await claim(j.operation.id))[0];await record(op,'accepted',{command_sent:true});await client.query("update captive_auth_work_due set due_at=clock_timestamp()+interval '1 hour' where operation_id=$1",[op.id]);}
+      else queuedIds.add(j.operation.id);
+    }
+    await client.query("update captive_auth_work_due set due_at=clock_timestamp()-interval '1 second' where operation_id=any($1::uuid[])",[ids]);
+    const db={rpc:async(name,args)=>{const keys=Object.keys(args);try{
+      const result=await client.query(`select ${name}(${keys.map((k,i)=>`${k}=>$${i+1}`).join(',')}) r`,Object.values(args));
+      const data=name==='claim_captive_auth_operations'?result.rows.map(r=>r.r):result.rows[0].r;
+      if(Array.isArray(data)){assert.ok(data.every(o=>ids.includes(o.id)));const n=(await client.query("select count(*)::int n from captive_auth_operations where id=any($1::uuid[]) and lease_expires_at>clock_timestamp()",[ids])).rows[0].n;maxLive=Math.max(maxLive,n);}
+      return {data,error:null};
+    }catch(error){return {data:null,error:{message:error.message,code:error.code}};}}};
+    for(let tick=0;tick<12;tick++){
+      const work=await drainAuthorization(db,{
+        send:async op=>{sent++;assert.ok(queuedIds.has(op.id));return {status:'accepted',command_sent:true,effective_mac:op.client_mac,command_sent_at:new Date().toISOString()};},
+        verify:async op=>{verified++;const count=(readCounts.get(op.id)||0)+1;readCounts.set(op.id,count);const transient=ids.indexOf(op.id)<10&&count<3;return {state:transient?'not_authorized':'authorized',found:true,authorized:!transient,effective_mac:op.client_mac,evidence:{...evidence(op),authorized:!transient}};},
+      },{owner:'audit2-mixed-'+tick});assert.equal(work.errors.length,0,work.errors.join(','));
+      const terminal=(await client.query("select count(*)::int n from captive_auth_operations where id=any($1::uuid[]) and status='confirmed'",[ids])).rows[0].n;
+      if(terminal===120){lastFinishedTick=tick;break;}
+      await client.query("update captive_auth_operations set created_at=created_at-interval '10 seconds',first_sent_at=first_sent_at-interval '10 seconds',command_dispatched_at=command_dispatched_at-interval '10 seconds',command_accepted_at=command_accepted_at-interval '10 seconds',verification_deadline=verification_deadline-interval '10 seconds',next_check_at=next_check_at-interval '10 seconds',lease_expires_at=lease_expires_at-interval '10 seconds',confirmed_at=confirmed_at-interval '10 seconds',authorized_until=authorized_until-interval '10 seconds',completed_at=completed_at-interval '10 seconds' where id=any($1::uuid[])",[ids]);
+      await client.query("update captive_auth_work_due set due_at=due_at-interval '10 seconds' where operation_id=any($1::uuid[])",[ids]);
+    }
+    const states=(await client.query('select status,count(*)::int n from captive_auth_operations where id=any($1::uuid[]) group by status',[ids])).rows;
+    observations.push({probe:'audit2_mixed_120_fast',sent,verified,max_live_leases:maxLive,last_finished_simulated_seconds:lastFinishedTick===null?null:lastFinishedTick*10,states});
+    assert.equal(sent,40);assert.ok(maxLive<=16);assert.equal(states.find(s=>s.status==='confirmed')?.n,120);assert.notEqual(lastFinishedTick,null);
+  });
   await writeFile(path.join(dir,'results.json'),JSON.stringify({postgres:(await client.query('select version()')).rows[0].version,passed,adversarialFailures,observations,finished_at:new Date().toISOString()},null,2));
   console.log(`${passed.length} behavioral PostgreSQL integration tests passed; ${adversarialFailures.length} adversarial invariants failed`);
   if(adversarialFailures.length)process.exitCode=1;
