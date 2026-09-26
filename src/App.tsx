@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "./lib/api";
 import { supabase } from "./integrations/supabase/client";
-import { formatCPF, getQueryParams, resolvePostAuthRedirect, Validators } from "./lib/portal-utils";
+import { formatCPF, formatPhoneBR, normalizeBrazilianPhone, getQueryParams, resolvePostAuthRedirect, Validators } from "./lib/portal-utils";
 import { AttemptTracker, monotonicNow, type TrackedAttempt } from "./lib/attempt-tracker";
 import { getAuthFailureMessage, isRecoverableAuthResult, withDeadline, type AuthResult } from "./lib/auth-outcome";
 import logoMinasBrasil from "./assets/logo-minas-brasil.png";
@@ -27,14 +27,6 @@ const FALLBACK_BOOT: BootstrapData = {
 const SESSION_DEADLINE_MS = 3000;
 const STATUS_WATCH_MS = 120000;
 const RESUME_INTERVAL_MS = 1000;
-
-function formatPhoneBR(value: string): string {
-  const digits = (value || "").replace(/\D/g, "").slice(0, 11);
-  if (digits.length <= 2) return digits.length ? "(" + digits : "";
-  if (digits.length <= 6) return "(" + digits.slice(0, 2) + ") " + digits.slice(2);
-  if (digits.length <= 10) return "(" + digits.slice(0, 2) + ") " + digits.slice(2, 6) + "-" + digits.slice(6);
-  return "(" + digits.slice(0, 2) + ") " + digits.slice(2, 7) + "-" + digits.slice(7);
-}
 
 export default function App() {
   const mountedRef = useRef(false);
@@ -89,7 +81,12 @@ export default function App() {
 
   const waitBeforeNextCheck = useCallback((delayMs: number, automatic = true) => {
     clearPoll();
-    const delay = Math.max(1000, Math.min(delayMs, 2147480000));
+    const attempt = AttemptTracker.get();
+    let delay = Math.max(1000, Math.min(delayMs, 2147480000));
+    if (attempt) {
+      AttemptTracker.deferStatus(attempt.attempt_id, delay);
+      delay = AttemptTracker.statusCooldownRemaining();
+    }
     nextCheckRef.current = monotonicNow() + delay;
     setRetryAt(nextCheckRef.current);
     setClockNow(monotonicNow());
@@ -219,14 +216,19 @@ export default function App() {
   const checkStatus = useCallback(async (source: CheckSource = "automatic") => {
     if (!mountedRef.current || inFlightRef.current) return;
     if (source === "automatic" && (document.visibilityState === "hidden" || navigator.onLine === false)) return;
-    if (nextCheckRef.current > monotonicNow()) {
-      clearPoll();
-      pollTimerRef.current = setTimeout(() => { void checkStatusRef.current?.(source); }, nextCheckRef.current - monotonicNow());
-      return;
-    }
     const attempt = AttemptTracker.get();
     if (!attempt) {
       returnToIdentity("Confirme seus dados para acompanhar esta visita.", true);
+      return;
+    }
+    const remaining = AttemptTracker.statusCooldownRemaining();
+    if (remaining > 0) nextCheckRef.current = Math.max(nextCheckRef.current, monotonicNow() + remaining);
+    if (nextCheckRef.current > monotonicNow()) {
+      clearPoll();
+      setRetryAt(nextCheckRef.current);
+      setClockNow(monotonicNow());
+      if (stepRef.current !== "success") showStep("pending");
+      pollTimerRef.current = setTimeout(() => { void checkStatusRef.current?.(source); }, nextCheckRef.current - monotonicNow());
       return;
     }
     const request = Symbol("status");
@@ -340,7 +342,11 @@ export default function App() {
       if (document.visibilityState === "hidden") return;
       if (["pending", "success"].includes(stepRef.current)) void checkStatusRef.current?.("resume");
     };
-    const pagehide = () => telemetry("page_hidden", "info", { state: stepRef.current });
+    const pagehide = () => {
+      AttemptTracker.cooldownRemaining();
+      AttemptTracker.statusCooldownRemaining();
+      telemetry("page_hidden", "info", { state: stepRef.current });
+    };
     window.addEventListener("online", resume);
     window.addEventListener("pageshow", resume);
     document.addEventListener("visibilitychange", resume);
@@ -364,6 +370,7 @@ export default function App() {
     const timer = setInterval(() => {
       setClockNow(monotonicNow());
       AttemptTracker.cooldownRemaining();
+      AttemptTracker.statusCooldownRemaining();
       if (monotonicNow() >= retryAt) clearInterval(timer);
     }, 500);
     return () => clearInterval(timer);
@@ -376,9 +383,9 @@ export default function App() {
   const handleIdentity = (event: React.FormEvent) => {
     event.preventDefault();
     if (busy || nextCheckRef.current > monotonicNow()) return;
-    const phoneDigits = phone.replace(/\D/g, "");
+    const phoneDigits = normalizeBrazilianPhone(phone);
     const cpfDigits = cpf.replace(/\D/g, "");
-    if (!Validators.phone(phoneDigits)) { setError("Informe um telefone válido com DDD."); return; }
+    if (!Validators.phone(phone)) { setError("Informe um telefone válido com DDD."); return; }
     if (!Validators.cpf(cpfDigits)) { setError("CPF inválido. Verifique os números informados."); return; }
     void startAuthorization({ phone: phoneDigits, cpf: cpfDigits, consent_version: boot.consent?.version || "1.0" });
   };

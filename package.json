@@ -11,6 +11,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",
+    "test:admission": "node tests/database/admission.mjs",
+    "test:housekeeping": "node tests/database/housekeeping.mjs",
     "test:watch": "vitest",
     "typecheck": "tsc -b tsconfig.json",
     "typecheck:edge": "deno check supabase/functions/captive-portal/index.ts",
@@ -23,6 +25,7 @@
     "release:gate": "bash scripts/release-gate.sh",
     "verify:production": "node scripts/verify-production.mjs",
     "verify:startup": "node scripts/verify-portal-startup.mjs",
+    "verify:recovery": "node scripts/verify-portal-recovery.mjs",
     "verify:delivery": "node scripts/verify-nginx-delivery.mjs",
     "verify:unifi-proxy": "node scripts/verify-unifi-proxy.mjs"
   },

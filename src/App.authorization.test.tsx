@@ -140,6 +140,8 @@ describe("portal authorization lifecycle", () => {
     vi.mocked(supabase.auth.getSession).mockClear();
     renderPortal();
     await flush();
+    expect(api.attemptStatus).not.toHaveBeenCalled();
+    await advance(1000); // The server's pending retry interval survives remount.
     expect(screen.getByRole("heading", { name: "Wi-Fi liberado!" })).toBeTruthy();
     expect(api.identify).toHaveBeenCalledTimes(1);
     expect(api.initAttempt).toHaveBeenCalledTimes(1);

@@ -23,6 +23,26 @@ const VALID_BR_DDD = new Set([
   91, 92, 93, 94, 95, 96, 97, 98, 99,
 ]);
 
+/** Keep every subscriber digit; only a complete Brazilian country prefix is removed. */
+export function normalizeBrazilianPhone(value: string): string {
+  const raw = (value || "").trim();
+  const digits = raw.replace(/\D/g, "");
+  const international = digits.startsWith("55") && (digits.length === 12 || digits.length === 13) && !raw.startsWith("(");
+  if (international) return digits.slice(2);
+  // An explicit foreign/incomplete country code must not become a national number.
+  return raw.startsWith("+") ? "+" + digits : digits;
+}
+
+export function formatPhoneBR(value: string): string {
+  const digits = normalizeBrazilianPhone(value);
+  if (digits.startsWith("+")) return digits;
+  if (digits.length <= 2) return digits.length ? "(" + digits : "";
+  if (digits.length <= 6) return "(" + digits.slice(0, 2) + ") " + digits.slice(2);
+  if (digits.length <= 10) return "(" + digits.slice(0, 2) + ") " + digits.slice(2, 6) + "-" + digits.slice(6);
+  // Preserve excess input so validation can reject it instead of changing identity.
+  return "(" + digits.slice(0, 2) + ") " + digits.slice(2, 7) + "-" + digits.slice(7);
+}
+
 
 
 /**
@@ -198,7 +218,7 @@ export function buildSubmitPayload(fields: {
   consent_version: string;
 }): SubmitPayload {
   const q = getQueryParams();
-  const phoneDigits = (fields.phone || "").replace(/\D/g, "");
+  const phoneDigits = normalizeBrazilianPhone(fields.phone);
   const cpfDigits = (fields.cpf || "").replace(/\D/g, "");
   const clientMac = fields.client_mac || q.client_mac || "";
   const apMac = q.ap_mac || "";
@@ -241,10 +261,8 @@ export const Validators = {
   },
   
   phone(phone: string): boolean {
-    let digits = (phone || "").replace(/\D/g, "");
-    if (digits.startsWith("55") && (digits.length === 12 || digits.length === 13)) {
-      digits = digits.slice(2);
-    }
+    const digits = normalizeBrazilianPhone(phone);
+    if (!/^\d+$/.test(digits)) return false;
     if (digits.length !== 10 && digits.length !== 11) return false;
     if (!VALID_BR_DDD.has(Number(digits.slice(0, 2)))) return false;
     if (digits.length === 11) return digits[2] === "9";

@@ -1219,70 +1219,26 @@ async function handleBootstrap(req: Request): Promise<Response> {
 
 
 // ========== Internal Housekeeping ==========
-async function internalHousekeeping(db: ReturnType<typeof supabaseAdmin>): Promise<Record<string, number>> {
-  const now = new Date();
-
-  const { data: staleAttemptRows, error: staleAttemptError } = await db.rpc("expire_stale_auth_attempts");
-  if (staleAttemptError) throw new Error(staleAttemptError.message);
-  const staleAttemptResult = Array.isArray(staleAttemptRows) ? staleAttemptRows[0] : null;
-
-  // 1. Delete expired verifications older than 30 days
-  const verifCutoff = new Date(now.getTime() - 30 * 86400000).toISOString();
-  const { data: expiredVerifData } = await db
-    .from("captive_verifications")
-    .delete()
-    .lt("expires_at", verifCutoff)
-    .in("status", ["pending", "expired", "locked"])
-    .select("id");
-
-  // 2. Clean old rate limits (older than 1 day)
-  const { data: oldRateLimitData } = await db
-    .from("rate_limits")
-    .delete()
-    .lt("updated_at", new Date(now.getTime() - 86400000).toISOString())
-    .select("key");
-
-  // 3. Delete old non-authorized sessions older than 180 days
-  const sessionCutoff180 = new Date(now.getTime() - 180 * 86400000).toISOString();
-  const { data: oldSessionData } = await db
-    .from("captive_sessions")
-    .delete()
-    .lt("started_at", sessionCutoff180)
-    .in("status", ["started", "submitted", "failed"])
-    .select("id");
-
-  // 4. Delete authorized sessions older than 365 days
-  const sessionCutoff365 = new Date(now.getTime() - 365 * 86400000).toISOString();
-  const { data: oldAuthSessionData } = await db
-    .from("captive_sessions")
-    .delete()
-    .lt("started_at", sessionCutoff365)
-    .eq("status", "authorized")
-    .select("id");
-
-  // 5. Truncate audit_logs older than 180 days
-  const auditCutoff = new Date(now.getTime() - 180 * 86400000).toISOString();
-  const { data: oldAuditData } = await db
-    .from("audit_logs")
-    .delete()
-    .lt("created_at", auditCutoff)
-    .select("id");
-
-  const { data: expiredHandoffData } = await db
-    .from("oauth_browser_handoffs")
-    .delete()
-    .lt("expires_at", now.toISOString())
-    .select("id");
-
-  return {
-    expired_verifications: expiredVerifData?.length || 0,
-    old_rate_limits: oldRateLimitData?.length || 0,
-    old_sessions: (oldSessionData?.length || 0) + (oldAuthSessionData?.length || 0),
-    old_audit_logs: oldAuditData?.length || 0,
-    expired_oauth_handoffs: expiredHandoffData?.length || 0,
-    expired_auth_attempts: staleAttemptResult?.expired_attempts || 0,
-    failed_stale_sessions: staleAttemptResult?.failed_sessions || 0,
-  };
+async function internalHousekeeping(
+  db: ReturnType<typeof supabaseAdmin>,
+  options: { dryRun?: boolean; actorUserId?: string } = {},
+): Promise<Record<string, number>> {
+  // Preview and execution share the database's retention rules. The RPC commits
+  // the batch and its admin audit together, or rolls back every change on failure.
+  const { data, error } = await db.rpc("captive_housekeeping", {
+    p_dry_run: options.dryRun === true,
+    p_batch_size: 100,
+    p_actor_user_id: options.actorUserId || null,
+  });
+  if (error) throw new Error(`Housekeeping database failure: ${error.message}`);
+  const expected = ["expired_verifications", "old_rate_limits", "old_sessions", "old_auth_attempts",
+    "old_auth_operations", "old_operation_events", "old_audit_logs", "expired_oauth_handoffs",
+    "expired_auth_attempts", "failed_stale_sessions"];
+  if (!data || typeof data !== "object" || Array.isArray(data)
+    || expected.some((key) => !Number.isSafeInteger(data[key]) || data[key] < 0)) {
+    throw new Error("Invalid housekeeping result");
+  }
+  return Object.fromEntries(expected.map((key) => [key, data[key] as number]));
 }
 
 // ========== Admin Endpoints ==========
@@ -2488,34 +2444,7 @@ async function handleAdminLeadsXml(req: Request, url: URL): Promise<Response> {
 
 // ========== Housekeeping (Admin manual) ==========
 async function previewHousekeeping(db: ReturnType<typeof supabaseAdmin>): Promise<Record<string, number>> {
-  const now = new Date();
-  const verifCutoff = new Date(now.getTime() - 30 * 86400000).toISOString();
-  const rateLimitCutoff = new Date(now.getTime() - 86400000).toISOString();
-  const sessionCutoff180 = new Date(now.getTime() - 180 * 86400000).toISOString();
-  const sessionCutoff365 = new Date(now.getTime() - 365 * 86400000).toISOString();
-  const auditCutoff = new Date(now.getTime() - 180 * 86400000).toISOString();
-  const attemptExpiryCutoff = now.toISOString();
-
-  const [verifications, rateLimits, oldSessions, authorizedSessions, auditLogs, oauthHandoffs, staleAttempts] = await Promise.all([
-    db.from("captive_verifications").select("id", { count: "exact", head: true }).lt("expires_at", verifCutoff).in("status", ["pending", "expired", "locked"]),
-    db.from("rate_limits").select("key", { count: "exact", head: true }).lt("updated_at", rateLimitCutoff),
-    db.from("captive_sessions").select("id", { count: "exact", head: true }).lt("started_at", sessionCutoff180).in("status", ["started", "submitted", "failed"]),
-    db.from("captive_sessions").select("id", { count: "exact", head: true }).lt("started_at", sessionCutoff365).eq("status", "authorized"),
-    db.from("audit_logs").select("id", { count: "exact", head: true }).lt("created_at", auditCutoff),
-    db.from("oauth_browser_handoffs").select("id", { count: "exact", head: true }).lt("expires_at", now.toISOString()),
-    db.from("captive_auth_attempts").select("id", { count: "exact", head: true }).eq("status", "authorizing").lte("expires_at", attemptExpiryCutoff),
-  ]);
-
-  const firstError = [verifications, rateLimits, oldSessions, authorizedSessions, auditLogs, oauthHandoffs, staleAttempts].find((result) => result.error)?.error;
-  if (firstError) throw new Error(firstError.message);
-  return {
-    expired_verifications: verifications.count || 0,
-    old_rate_limits: rateLimits.count || 0,
-    old_sessions: (oldSessions.count || 0) + (authorizedSessions.count || 0),
-    old_audit_logs: auditLogs.count || 0,
-    expired_oauth_handoffs: oauthHandoffs.count || 0,
-    expired_auth_attempts: staleAttempts.count || 0,
-  };
+  return await internalHousekeeping(db, { dryRun: true });
 }
 
 async function handleHousekeeping(req: Request): Promise<Response> {
@@ -2526,19 +2455,26 @@ async function handleHousekeeping(req: Request): Promise<Response> {
   const body = await safeParseJson(req);
   if (!body) return errorResponse("JSON inválido");
   if (body.dry_run !== false) {
-    const wouldRemove = await previewHousekeeping(db);
-    return jsonResponse({ ok: true, dry_run: true, would_remove: wouldRemove });
+    try {
+      const wouldRemove = await previewHousekeeping(db);
+      return jsonResponse({ ok: true, dry_run: true, batch_size: 100, would_remove: wouldRemove });
+    } catch (error) {
+      Logger.error("Housekeeping preview failed", { error: error instanceof Error ? error.message : String(error) });
+      return jsonResponse({ ok: false, code: "HOUSEKEEPING_PREVIEW_FAILED", error: "Não foi possível simular a limpeza." }, 503);
+    }
   }
 
   if (body.confirmation !== "EXCLUIR DADOS EXPIRADOS") {
     return errorResponse("Confirmação inválida. Faça a simulação antes de executar.", 409);
   }
 
-  const cleaned = await internalHousekeeping(db);
-  await writeAdminAudit(db, req, userId, "system", "housekeeping", {
-    meta: { cleaned },
-  });
-  return jsonResponse({ ok: true, cleaned });
+  try {
+    const cleaned = await internalHousekeeping(db, { actorUserId: userId });
+    return jsonResponse({ ok: true, batch_size: 100, cleaned });
+  } catch (error) {
+    Logger.error("Admin housekeeping failed", { error: error instanceof Error ? error.message : String(error) });
+    return jsonResponse({ ok: false, code: "HOUSEKEEPING_FAILED", error: "Não foi possível concluir a limpeza. Consulte o resultado antes de repetir." }, 503);
+  }
 }
 
 // ========== Housekeeping (Cron) ==========
@@ -2552,10 +2488,14 @@ async function handleCronHousekeeping(req: Request): Promise<Response> {
   }
 
   const db = supabaseAdmin();
-  const cleaned = await internalHousekeeping(db);
-
-  Logger.info("Cron housekeeping completed");
-  return jsonResponse({ ok: true, cleaned });
+  try {
+    const cleaned = await internalHousekeeping(db);
+    Logger.info("Cron housekeeping batch completed", { cleaned });
+    return jsonResponse({ ok: true, batch_size: 100, cleaned });
+  } catch (error) {
+    Logger.error("Cron housekeeping failed", { error: error instanceof Error ? error.message : String(error) });
+    return jsonResponse({ ok: false, code: "HOUSEKEEPING_FAILED", error: "Housekeeping did not complete." }, 503);
+  }
 }
 
 // ========== Self-contained HTML Portal ==========
@@ -3623,10 +3563,23 @@ async function handleIdentity(req: Request): Promise<Response> {
 
   try {
     const identityHash = await sha256Hex(`${cpfDigits}:${phoneDigits}`);
-    const ipLimit = await checkRateLimitDb(db, `identity:ip:${clientIp || "unknown"}`, 300, 20, 900);
-    const identityLimit = await checkRateLimitDb(db, `identity:value:${identityHash}`, 300, 8, 900);
-    if (!ipLimit.allowed || !identityLimit.allowed) {
-      return rateLimitedResponse(ipLimit.blocked_until || identityLimit.blocked_until, 300);
+    // The database derives device/store from the validated capability. A
+    // shared NAT is only an emergency budget, never the individual quota.
+    // Retries of this exact capability + identity reuse one atomic debit.
+    const { data: admission, error: admissionError } = await db.rpc("admit_captive_identity", {
+      p_attempt_id: attemptId,
+      p_resume_token: resumeToken,
+      p_identity_hash: identityHash,
+      p_origin_hash: clientIp ? await sha256Hex(clientIp) : null,
+    });
+    if (admissionError || !admission || typeof admission.allowed !== "boolean") {
+      throw new Error("IDENTITY_ADMISSION_UNAVAILABLE");
+    }
+    if (admission.invalid_attempt) {
+      return jsonResponse({ error: "Tentativa expirada ou inválida. Inicie novamente.", code: "invalid_attempt" }, 403);
+    }
+    if (!admission.allowed) {
+      return rateLimitedResponse(admission.blocked_until, 60);
     }
   } catch (rateLimitError) {
     Logger.error("[identity] rate limiter unavailable", { error: (rateLimitError as Error).message });

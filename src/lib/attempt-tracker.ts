@@ -2,10 +2,21 @@ import { api, ApiError } from "./api";
 
 const RECORD_KEY = "mb_auth_attempt_v2";
 const COOLDOWN_KEY = "mb_auth_cooldowns_v1";
+const STATUS_COOLDOWN_KEY = "mb_status_cooldowns_v1";
 const MAX_ATTEMPT_TTL_MS = 600000;
 
 /** Durations in this document never depend on the user's wall clock. */
 export const monotonicNow = () => performance.now();
+// Missing timeOrigin must never make unrelated documents share a clock.
+// This fallback only identifies this module instance; it is not a credential.
+const fallbackClock = "document-" + Math.random().toString(36).slice(2);
+function clockId(): string {
+  return Number.isFinite(performance.timeOrigin) ? "origin-" + performance.timeOrigin : fallbackClock;
+}
+function sameClock(record: { clock_id?: string; clock_origin?: number }): boolean {
+  return record.clock_id !== undefined ? record.clock_id === clockId() :
+    Number.isFinite(record.clock_origin) && record.clock_origin === performance.timeOrigin;
+}
 // Legacy records lack a verifiable visit context. A new client must identify
 // again; the backend may then attach it to an already running operation.
 const ATTEMPT_ID_KEY = "mb_auth_attempt_id";
@@ -21,11 +32,19 @@ export interface TrackedAttempt {
   confirmed_at?: string;
   redirect_attempted?: boolean;
   clock_origin?: number;
+  clock_id?: string;
   expires_monotonic_ms?: number;
   requires_verification?: boolean;
 }
 
-interface Cooldown { context: string; clock_origin: number; until_ms: number; remaining_ms: number }
+interface Cooldown {
+  context: string;
+  attempt_id?: string;
+  clock_origin?: number;
+  clock_id?: string;
+  until_ms: number;
+  remaining_ms: number;
+}
 
 let memory: TrackedAttempt | null = null;
 let storageLoaded = false;
@@ -35,17 +54,54 @@ let cooldowns: Cooldown[] | null = null;
 
 function readCooldowns(): Cooldown[] {
   if (cooldowns) return cooldowns;
-  try {
-    const parsed: unknown = JSON.parse(sessionStorage.getItem(COOLDOWN_KEY) || "[]");
-    if (Array.isArray(parsed)) cooldowns = parsed.filter((item): item is Cooldown =>
-      typeof item?.context === "string" && Number.isFinite(item.clock_origin) &&
-      Number.isFinite(item.until_ms) && Number.isFinite(item.remaining_ms) && item.remaining_ms > 0 && item.remaining_ms <= 2147480000).slice(-16);
-  } catch { /* An in-memory cooldown is still available when storage is denied. */ }
-  return cooldowns ||= [];
+  cooldowns = [];
+  // Keep status separate so a retained older frontend cannot interpret it as
+  // initialization throttling. Corruption of one key does not discard the other.
+  for (const key of [COOLDOWN_KEY, STATUS_COOLDOWN_KEY]) {
+    try {
+      const parsed: unknown = JSON.parse(sessionStorage.getItem(key) || "[]");
+      if (Array.isArray(parsed)) cooldowns.push(...parsed.filter((item): item is Cooldown =>
+        typeof item?.context === "string" && (key === COOLDOWN_KEY ? item.attempt_id === undefined : typeof item.attempt_id === "string") &&
+        (item.clock_id === undefined || typeof item.clock_id === "string") &&
+        Number.isFinite(item.until_ms) && Number.isFinite(item.remaining_ms) && item.remaining_ms > 0 && item.remaining_ms <= 2147480000).slice(-16));
+    } catch { /* An in-memory cooldown is still available when storage is denied. */ }
+  }
+  return cooldowns;
 }
 
-function saveCooldowns() {
-  try { sessionStorage.setItem(COOLDOWN_KEY, JSON.stringify(readCooldowns())); } catch { /* Keep memory. */ }
+function saveCooldowns(attemptId?: string) {
+  const records = readCooldowns().filter(item => (item.attempt_id === undefined) === (attemptId === undefined));
+  try { sessionStorage.setItem(attemptId === undefined ? COOLDOWN_KEY : STATUS_COOLDOWN_KEY, JSON.stringify(records)); } catch { /* Keep memory. */ }
+}
+
+function cooldownRemaining(attemptId?: string): number {
+  const record = readCooldowns().find(item => item.context === currentContext() && item.attempt_id === attemptId);
+  if (!record) return 0;
+  // Across documents, no trusted elapsed clock is available. Preserve the last
+  // saved remainder instead of shortening Retry-After using the user's clock.
+  if (!sameClock(record)) {
+    record.clock_id = clockId();
+    record.clock_origin = performance.timeOrigin;
+    record.until_ms = monotonicNow() + record.remaining_ms;
+  }
+  const now = monotonicNow();
+  // A corrupt persisted deadline must not exceed its validated remainder or
+  // overflow a browser timer. Repair the deadline too, so it still counts down.
+  record.until_ms = Math.min(record.until_ms, now + record.remaining_ms);
+  record.remaining_ms = Math.max(0, record.until_ms - now);
+  saveCooldowns(attemptId);
+  return record.remaining_ms;
+}
+
+function deferCooldown(delayMs: number, attemptId?: string) {
+  const delay = Math.max(cooldownRemaining(attemptId), Number.isFinite(delayMs) ? Math.min(Math.max(0, delayMs), 2147480000) : 5000);
+  const context = currentContext();
+  const sameScope = readCooldowns().filter(item => (item.attempt_id === undefined) === (attemptId === undefined));
+  cooldowns = readCooldowns().filter(item => (item.attempt_id === undefined) !== (attemptId === undefined));
+  cooldowns.push(...sameScope.filter(item => item.context !== context || item.attempt_id !== attemptId).slice(-15));
+  cooldowns.push({ context, attempt_id: attemptId, clock_id: clockId(), clock_origin: performance.timeOrigin,
+    until_ms: monotonicNow() + delay, remaining_ms: delay });
+  saveCooldowns(attemptId);
 }
 
 function readCaptiveParams(): Record<string, string> {
@@ -89,11 +145,11 @@ export const AttemptTracker = {
         }
       } catch { /* Storage denial or corrupt data does not prevent a new flow. */ }
     }
-    if (memory && (memory.context !== currentContext() || (memory.clock_origin === performance.timeOrigin &&
+    if (memory && (memory.context !== currentContext() || (sameClock(memory) &&
         Number.isFinite(memory.expires_monotonic_ms) && memory.expires_monotonic_ms! <= monotonicNow()))) {
       this.clear();
     }
-    if (memory && memory.clock_origin !== performance.timeOrigin) memory.requires_verification = true;
+    if (memory && !sameClock(memory)) memory.requires_verification = true;
     return memory;
   },
 
@@ -107,30 +163,30 @@ export const AttemptTracker = {
     }
     if (includeCooldowns) {
       cooldowns = [];
-      try { sessionStorage.removeItem(COOLDOWN_KEY); } catch { /* Keep memory cleared. */ }
+      for (const key of [COOLDOWN_KEY, STATUS_COOLDOWN_KEY]) {
+        try { sessionStorage.removeItem(key); } catch { /* Keep memory cleared. */ }
+      }
+    } else {
+      cooldowns = readCooldowns().filter(item => item.attempt_id === undefined);
+      try { sessionStorage.removeItem(STATUS_COOLDOWN_KEY); } catch { /* Keep memory cleared. */ }
     }
   },
 
   cooldownRemaining(): number {
-    const record = readCooldowns().find(item => item.context === currentContext());
-    if (!record) return 0;
-    // A new document cannot infer elapsed time from Date.now. Conservatively
-    // wait the last saved remainder; this never grants or renews a capability.
-    if (record.clock_origin !== performance.timeOrigin) {
-      record.clock_origin = performance.timeOrigin;
-      record.until_ms = monotonicNow() + record.remaining_ms;
-    }
-    record.remaining_ms = Math.max(0, record.until_ms - monotonicNow());
-    saveCooldowns();
-    return record.remaining_ms;
+    return cooldownRemaining();
   },
 
   deferInitialization(delayMs: number) {
-    const delay = Math.max(this.cooldownRemaining(), Math.min(Math.max(0, delayMs), 2147480000));
-    const context = currentContext();
-    cooldowns = readCooldowns().filter(item => item.context !== context).slice(-15);
-    cooldowns.push({ context, clock_origin: performance.timeOrigin, until_ms: monotonicNow() + delay, remaining_ms: delay });
-    saveCooldowns();
+    deferCooldown(delayMs);
+  },
+
+  statusCooldownRemaining(): number {
+    const current = this.get();
+    return current ? cooldownRemaining(current.attempt_id) : 0;
+  },
+
+  deferStatus(attemptId: string, delayMs: number) {
+    if (this.get()?.attempt_id === attemptId) deferCooldown(delayMs, attemptId);
   },
 
   validateFromServer(attemptId: string, serverNow?: string, requestStarted = monotonicNow()) {
@@ -140,8 +196,8 @@ export const AttemptTracker = {
       Math.max(0, monotonicNow() - requestStarted);
     if (!Number.isFinite(remaining) || remaining <= 0) { this.clear(); return; }
     const deadline = monotonicNow() + remaining;
-    save({ ...record, clock_origin: performance.timeOrigin, requires_verification: false,
-      expires_monotonic_ms: record.clock_origin === performance.timeOrigin && Number.isFinite(record.expires_monotonic_ms)
+    save({ ...record, clock_id: clockId(), clock_origin: performance.timeOrigin, requires_verification: false,
+      expires_monotonic_ms: sameClock(record) && Number.isFinite(record.expires_monotonic_ms)
         ? Math.min(record.expires_monotonic_ms!, deadline) : deadline });
   },
 
@@ -176,7 +232,7 @@ export const AttemptTracker = {
       }
       const ttl = result.server_now ? Math.min(MAX_ATTEMPT_TTL_MS, Date.parse(result.expires_at) - Date.parse(result.server_now)) : MAX_ATTEMPT_TTL_MS;
       if (!Number.isFinite(ttl) || startedAt + ttl <= monotonicNow()) throw new ApiError("http", "A tentativa expirou. Confirme os dados novamente.", 410);
-      return save({ version: 2, ...result, context, submitted: false, clock_origin: performance.timeOrigin,
+      return save({ version: 2, ...result, context, submitted: false, clock_id: clockId(), clock_origin: performance.timeOrigin,
         expires_monotonic_ms: startedAt + ttl, requires_verification: false });
     }).catch(error => {
       if (generation === startedGeneration && context === currentContext() && error instanceof ApiError && error.status === 429) {
