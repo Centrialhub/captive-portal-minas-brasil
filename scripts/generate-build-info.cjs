@@ -1,5 +1,7 @@
 const fs = require('fs');
 const path = require('path');
+const crypto = require('node:crypto');
+const { restorePreviousAssets } = require('./restore-previous-assets.cjs');
 
 const distPath = path.resolve(__dirname, '../dist');
 if (!fs.existsSync(distPath)) {
@@ -17,6 +19,19 @@ const buildInfo = {
   timestamp: new Date().toISOString(),
   build: 'production'
 };
+
+const retained = restorePreviousAssets(distPath);
+console.log(`Previous frontend assets verified: ${retained.verified} (${retained.releaseSha})`);
+
+// Hash the exact final HTML bytes, including whitespace inside the script.
+// Nginx uses this hash to allow only this inline script, never unsafe-inline.
+const html = fs.readFileSync(path.join(distPath, 'index.html'), 'utf8');
+const boot = html.match(/<script id="portal-boot">([\s\S]*?)<\/script>/);
+if (!boot) throw new Error('Production HTML is missing inline startup protection');
+const moduleOffset = html.search(/<script\b[^>]*type="module"/);
+if (moduleOffset < 0 || html.indexOf(boot[0]) > moduleOffset) throw new Error('Startup protection must precede module dependencies');
+const bootHash = crypto.createHash('sha256').update(boot[1], 'utf8').digest('base64');
+fs.writeFileSync(path.join(distPath, 'portal-boot.sha256'), bootHash + '\n');
 
 fs.writeFileSync(
   path.join(distPath, 'build-info.json'),

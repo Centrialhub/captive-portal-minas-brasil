@@ -15,12 +15,15 @@
     "typecheck": "tsc -b tsconfig.json",
     "typecheck:edge": "deno check supabase/functions/captive-portal/index.ts",
     "check:assets": "node scripts/check-assets.ts",
+    "check:previous-assets": "node --test scripts/verify-previous-assets.cjs",
     "check:claims": "node scripts/check-claims.ts",
     "check:migrations": "node scripts/check-migrations.ts",
     "check:security": "node scripts/check-security.ts",
-    "check": "npm run check:assets && npm run check:claims && npm run check:migrations && npm run check:security && npm run lint && npm run typecheck && npm run typecheck:edge && npm run test && npm run build",
+    "check": "npm run check:assets && npm run check:previous-assets && npm run check:claims && npm run check:migrations && npm run check:security && npm run lint && npm run typecheck && npm run typecheck:edge && npm run test && npm run build",
     "release:gate": "bash scripts/release-gate.sh",
     "verify:production": "node scripts/verify-production.mjs",
+    "verify:startup": "node scripts/verify-portal-startup.mjs",
+    "verify:delivery": "node scripts/verify-nginx-delivery.mjs",
     "verify:unifi-proxy": "node scripts/verify-unifi-proxy.mjs"
   },
   "dependencies": {

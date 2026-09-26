@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 const portalOrigin = process.env.PRODUCTION_PORTAL_ORIGIN || "https://minasbrasilwifi.com.br";
 const unifiHealthUrl = process.env.PRODUCTION_UNIFI_HEALTH_URL ||
   "https://unifiproxy.minasbrasilwifi.com.br/healthz";
@@ -43,15 +45,43 @@ async function runCheck(name, fn) {
   }
 }
 
-async function request(url) {
+async function request(url, { expectedStatus, headers = {}, redirect = "follow" } = {}) {
   const response = await fetch(url, {
-    redirect: "follow",
+    redirect,
     signal: AbortSignal.timeout(timeoutMs),
-    headers: { "user-agent": "minas-brasil-production-verifier/1.0" },
+    headers: { "user-agent": "minas-brasil-production-verifier/1.0", ...headers },
   });
   const text = await response.text();
-  assert(response.ok, `${response.status} ${response.statusText}; body=${text.slice(0, 160)}`);
+  assert(expectedStatus === undefined ? response.ok : response.status === expectedStatus,
+    `${response.status} ${response.statusText}; body=${text.slice(0, 160)}`);
   return { response, text };
+}
+
+function assertBrowserSecurityHeaders(response) {
+  const hsts = response.headers.get("strict-transport-security") || "";
+  const csp = response.headers.get("content-security-policy") || "";
+  assert(/max-age=\d+/.test(hsts), "Strict-Transport-Security is missing or invalid");
+  assert(csp.includes("default-src 'self'"), "Content-Security-Policy default-src is missing");
+  assert(csp.includes("script-src 'self'"), "Content-Security-Policy script-src is missing");
+  assert(csp.includes("frame-ancestors 'none'"), "Content-Security-Policy frame-ancestors is missing");
+  assert(response.headers.get("x-content-type-options") === "nosniff", "X-Content-Type-Options is not nosniff");
+  assert(response.headers.get("x-frame-options") === "DENY", "X-Frame-Options is not DENY");
+  assert(Boolean(response.headers.get("referrer-policy")), "Referrer-Policy is missing");
+  assert(Boolean(response.headers.get("permissions-policy")), "Permissions-Policy is missing");
+}
+
+function assertRevalidation(response, resource) {
+  const cacheControl = response.headers.get("cache-control") || "";
+  assert(cacheControl.includes("no-cache") && cacheControl.includes("must-revalidate"),
+    `${resource} must revalidate its cache`);
+  assert(!cacheControl.includes("immutable"), `${resource} must not be immutable`);
+}
+
+function moduleBundleUrl(html, base) {
+  const scriptMatch = html.match(/<script[^>]+type=["']module["'][^>]+src=["']([^"']+)["']/i) ||
+    html.match(/<script[^>]+src=["']([^"']+)["'][^>]+type=["']module["']/i);
+  assert(scriptMatch, "portal HTML has no module bundle");
+  return new URL(scriptMatch[1], base);
 }
 
 let portalUrl;
@@ -95,23 +125,49 @@ await runCheck("browser security headers", async () => {
   assert(response.headers.get("content-type")?.includes("text/html"), "portal root is not HTML");
   assert(/<div id=["']root["']/.test(text), "portal root does not contain the React mount point");
 
-  const hsts = response.headers.get("strict-transport-security") || "";
-  const csp = response.headers.get("content-security-policy") || "";
-  assert(/max-age=\d+/.test(hsts), "Strict-Transport-Security is missing or invalid");
-  assert(csp.includes("default-src 'self'"), "Content-Security-Policy default-src is missing");
-  assert(csp.includes("frame-ancestors 'none'"), "Content-Security-Policy frame-ancestors is missing");
-  assert(response.headers.get("x-content-type-options") === "nosniff", "X-Content-Type-Options is not nosniff");
-  assert(response.headers.get("x-frame-options") === "DENY", "X-Frame-Options is not DENY");
-  assert(Boolean(response.headers.get("referrer-policy")), "Referrer-Policy is missing");
-  assert(Boolean(response.headers.get("permissions-policy")), "Permissions-Policy is missing");
+  assertBrowserSecurityHeaders(response);
+});
+
+await runCheck("HTML revalidation and embedded early boot CSP integrity", async () => {
+  for (const path of ["/", "/index.html", "/terms?delivery-check=1"]) {
+    const { response, text } = await request(new URL(path, portalUrl));
+    assert(response.headers.get("content-type")?.includes("text/html"), `${path} is not HTML`);
+    assertRevalidation(response, path);
+    assertBrowserSecurityHeaders(response);
+    const bootTag = /<script\b([^>]*\bid=["']portal-boot["'][^>]*)>([\s\S]*?)<\/script>/i.exec(text);
+    assert(bootTag, `${path} is missing its embedded early boot script`);
+    assert(!/\b(async|defer|src)\b|\btype=["']module["']/i.test(bootTag[1]), "early boot must execute before modules without a separate request");
+    assert(bootTag[2].includes("globalThis"), "early boot is missing the compatibility safeguard");
+    const digest = createHash("sha256").update(bootTag[2], "utf8").digest("base64");
+    const csp = response.headers.get("content-security-policy") || "";
+    const scriptDirective = csp.split(";").find((part) => part.trim().startsWith("script-src ")) || "";
+    assert(scriptDirective.includes(`'sha256-${digest}'`), "early boot hash does not match the delivered CSP");
+    assert(!scriptDirective.includes("'unsafe-inline'"), "CSP must not allow arbitrary inline scripts");
+    const moduleStart = text.search(/<script\b[^>]*\btype=["']module["']/i);
+    assert(moduleStart > bootTag.index, "early boot must precede the application module");
+  }
+});
+
+await runCheck("hashed assets and missing asset responses", async () => {
+  const { text: html } = await request(new URL("/", portalUrl));
+  const bundleUrl = moduleBundleUrl(html, portalUrl);
+  assert(/\/assets\/[^/]+-[A-Za-z0-9_-]{8,}\.[^/]+$/.test(bundleUrl.pathname), "module bundle is not versioned by hash");
+  const { response } = await request(bundleUrl, { expectedStatus: 200 });
+  assert(/(?:javascript|ecmascript)/.test(response.headers.get("content-type") || ""), "application bundle is not JavaScript");
+  const cacheControl = response.headers.get("cache-control") || "";
+  assert(cacheControl.includes("immutable") && cacheControl.includes("max-age=31536000"), "hashed bundle must have immutable long caching");
+  assertBrowserSecurityHeaders(response);
+  const missingUrl = new URL(`/assets/production-check-missing-${expectedSha}.js`, portalUrl);
+  const missing = await request(missingUrl, { expectedStatus: 404 });
+  const missingCache = missing.response.headers.get("cache-control") || "";
+  assert(missingCache.includes("no-store") && !missingCache.includes("immutable"), "missing bundle must not be cached");
+  assert(!/<div id=["']root["']/.test(missing.text), "missing bundle incorrectly contains the SPA document");
+  assertBrowserSecurityHeaders(missing.response);
 });
 
 await runCheck("deployed phone and CPF bundle contract", async () => {
   const { text: html } = await request(new URL("/", portalUrl));
-  const scriptMatch = html.match(/<script[^>]+type=["']module["'][^>]+src=["']([^"']+)["']/i) ||
-    html.match(/<script[^>]+src=["']([^"']+)["'][^>]+type=["']module["']/i);
-  assert(scriptMatch, "portal HTML has no module bundle");
-  const bundleUrl = new URL(scriptMatch[1], portalUrl);
+  const bundleUrl = moduleBundleUrl(html, portalUrl);
   const { text: bundle } = await request(bundleUrl);
   assert(bundle.includes("mb_auth_attempt_id"), "deployed bundle is missing the server-authoritative attempt marker");
   assert(bundle.includes("/identify"), "deployed bundle is missing the phone and CPF endpoint");

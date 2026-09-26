@@ -75,8 +75,17 @@ LABEL org.opencontainers.image.source="https://github.com/Centrialhub/captive-po
 
 COPY --from=build /app/dist /usr/share/nginx/html
 
-# Nginx config with Health/Readiness endpoints
-RUN printf 'server {\n\
+# Nginx config with Health/Readiness endpoints. Keep cache headers at server
+# scope so static locations inherit every browser security header as well.
+RUN printf 'map "$status:$uri:$http_range" $portal_cache_control {\n\
+    default "";\n\
+    "~^(200|304):/assets/[^/]+-[A-Za-z0-9_-]{8,}\\.[^/:]+:$" "public, max-age=31536000, immutable";\n\
+    "~^[0-9]+:/assets/" "no-store";\n\
+    "~^(200|304):/index\\.html:" "no-cache, max-age=0, must-revalidate";\n\
+    "~^[0-9]+:/index\\.html:" "no-store";\n\
+}\n\
+\n\
+server {\n\
     listen 80;\n\
     server_name minasbrasilwifi.com.br 187.77.48.59;\n\
     root /usr/share/nginx/html;\n\
@@ -88,11 +97,12 @@ RUN printf 'server {\n\
     # Browser hardening. HSTS is ignored on local HTTP smoke tests and takes\n\
     # effect only when this response is delivered through the HTTPS ingress.\n\
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;\n\
-    add_header Content-Security-Policy "default-src '\''self'\''; base-uri '\''self'\''; connect-src '\''self'\'' https://fqamejlyytrhovawgtwg.supabase.co; font-src '\''self'\'' data:; form-action '\''self'\''; frame-ancestors '\''none'\''; img-src '\''self'\'' data:; object-src '\''none'\''; script-src '\''self'\''; style-src '\''self'\'' '\''unsafe-inline'\''; upgrade-insecure-requests" always;\n\
+    add_header Content-Security-Policy "default-src '\''self'\''; base-uri '\''self'\''; connect-src '\''self'\'' https://fqamejlyytrhovawgtwg.supabase.co; font-src '\''self'\'' data:; form-action '\''self'\''; frame-ancestors '\''none'\''; img-src '\''self'\'' data:; object-src '\''none'\''; script-src '\''self'\'' __PORTAL_BOOT_CSP__; style-src '\''self'\'' '\''unsafe-inline'\''; upgrade-insecure-requests" always;\n\
     add_header X-Content-Type-Options "nosniff" always;\n\
     add_header X-Frame-Options "DENY" always;\n\
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;\n\
     add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()" always;\n\
+    add_header Cache-Control $portal_cache_control always;\n\
 \n\
     # Health: Is Nginx running?\n\
     location = /health {\n\
@@ -107,6 +117,7 @@ RUN printf 'server {\n\
         default_type text/plain;\n\
         if (!-f $document_root/index.html) { return 503 "missing-index"; }\n\
         if (!-f $document_root/build-info.json) { return 503 "missing-build-info"; }\n\
+        if (!-f $document_root/portal-boot.sha256) { return 503 "missing-portal-boot-hash"; }\n\
         return 200 "ready";\n\
     }\n\
 \n\
@@ -150,11 +161,29 @@ RUN printf 'server {\n\
     location = /gen_204 { return 302 https://minasbrasilwifi.com.br/; }\n\
     location = /hotspot-detect.html { return 302 https://minasbrasilwifi.com.br/; }\n\
 \n\
-    # SPA fallback\n\
+    # A stale HTML document must receive a real missing-asset response.\n\
+    # Never serve the SPA document as JavaScript or cache a missing bundle.\n\
+    location ^~ /assets/ {\n\
+        try_files $uri =404;\n\
+    }\n\
+\n\
+    # HTML, including the embedded early boot, revalidates on every navigation.\n\
+    location = /index.html {\n\
+        try_files $uri =404;\n\
+    }\n\
+    # SPA fallback (internal redirect applies the index.html cache policy).\n\
     location / {\n\
         try_files $uri /index.html?$args;\n\
     }\n\
 }\n' > /etc/nginx/conf.d/default.conf
+
+# Authorize only the exact early boot script embedded by the frontend build.
+# Validate the digest before interpolating it into the configuration.
+RUN boot_csp_hash="$(cat /usr/share/nginx/html/portal-boot.sha256)"; \
+    if [ "${#boot_csp_hash}" -ne 44 ] || ! printf '%s' "$boot_csp_hash" | grep -Eq '^[A-Za-z0-9+/]{43}=$'; then \
+      echo "ERROR: missing or invalid early boot CSP hash" && exit 1; \
+    fi; \
+    sed -i "s|__PORTAL_BOOT_CSP__|'sha256-${boot_csp_hash}'|g" /etc/nginx/conf.d/default.conf
 
 # Validate Nginx config
 RUN nginx -t
