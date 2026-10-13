@@ -6,7 +6,7 @@ import {
   serializeCookieJar,
   type UnifiCookieJar,
 } from "../_shared/unifi-cookie.ts";
-import { normalizeBrazilianPhone, normalizeCPF, isValidBrazilianPhone, isValidCPF as validCPF, needsPhoneConfirmation, storedPhoneMatches } from "../_shared/identity.ts";
+import { normalizeBrazilianPhone, normalizeCPF, isValidBrazilianPhone, isValidCPF as validCPF, storedPhoneMatches } from "../_shared/identity.ts";
 import { drainAuthorization, reconcileAuthorization, requiredRpc, withOperationDeadline, type AuthOperation } from "../_shared/durable-auth.ts";
 import {
   canonicalUnifiMac,
@@ -3558,10 +3558,6 @@ async function handleIdentity(req: Request): Promise<Response> {
   }
   if (!Validators.cpf(body.cpf)) {
     return jsonResponse({ error: "CPF inválido.", code: "invalid_cpf" }, 400);
-  }
-  if (needsPhoneConfirmation(body.phone) &&
-      (!Validators.phone(body.phone_confirmation) || normalizeBrazilianPhone(body.phone_confirmation) !== phoneDigits)) {
-    return jsonResponse({ error: "Confira o telefone e digite-o novamente no campo de confirmação. Se o campo não aparecer, atualize esta página.", code: "phone_confirmation_required" }, 400);
   }
 
   try {

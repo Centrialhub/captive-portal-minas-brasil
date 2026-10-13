@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "./lib/api";
 import { supabase } from "./integrations/supabase/client";
 import { formatCPF, formatPhoneBR, normalizeBrazilianPhone, getQueryParams, resolvePostAuthRedirect, Validators } from "./lib/portal-utils";
-import { needsPhoneConfirmation } from "../supabase/functions/_shared/identity.ts";
+import { isPlaceholderPhone } from "../supabase/functions/_shared/identity.ts";
 import { AttemptTracker, monotonicNow, type TrackedAttempt } from "./lib/attempt-tracker";
 import { getAuthFailureMessage, isRecoverableAuthResult, withDeadline, type AuthResult } from "./lib/auth-outcome";
 import logoMinasBrasil from "./assets/logo-minas-brasil.png";
@@ -44,7 +44,6 @@ export default function App() {
   const [step, setStep] = useState<Step>("loading");
   const [boot, setBoot] = useState<BootstrapData>(FALLBACK_BOOT);
   const [phone, setPhone] = useState("");
-  const [phoneConfirmation, setPhoneConfirmation] = useState("");
   const [cpf, setCpf] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -127,7 +126,6 @@ export default function App() {
       AttemptTracker.markConfirmed(attempt.attempt_id);
       setError("");
       setPhone("");
-      setPhoneConfirmation("");
       setCpf("");
       setConfirmed({ attemptId: attempt.attempt_id, result, autoRedirect: !AttemptTracker.get()?.redirect_attempted });
       const shouldExchange = !!result.session_token_hash && !exchangedRef.current.has(attempt.attempt_id);
@@ -256,7 +254,7 @@ export default function App() {
   }, [applyResult, clearPoll, handleFailure, returnToIdentity, showStep, telemetry]);
   checkStatusRef.current = checkStatus;
 
-  const startAuthorization = useCallback(async (identity: { phone: string; cpf: string; consent_version: string; phone_confirmation?: string } | { access_token: string }) => {
+  const startAuthorization = useCallback(async (identity: { phone: string; cpf: string; consent_version: string } | { access_token: string }) => {
     if (inFlightRef.current || nextCheckRef.current > monotonicNow()) return;
     const existing = AttemptTracker.get();
     if (existing?.submitted) {
@@ -396,13 +394,10 @@ export default function App() {
     if (busy || nextCheckRef.current > monotonicNow()) return;
     const phoneDigits = normalizeBrazilianPhone(phone);
     const cpfDigits = cpf.replace(/\D/g, "");
+    if (isPlaceholderPhone(phone)) { setError("Este padrão de telefone não é aceito. Informe seu telefone com DDD."); return; }
     if (!Validators.phone(phone)) { setError("Informe um telefone válido com DDD."); return; }
     if (!Validators.cpf(cpf)) { setError("CPF inválido. Verifique os números informados."); return; }
-    if (needsPhoneConfirmation(phone) && (!Validators.phone(phoneConfirmation) || normalizeBrazilianPhone(phoneConfirmation) !== phoneDigits)) {
-      setError("Confira o telefone e digite o mesmo número no campo de confirmação."); return;
-    }
-    void startAuthorization({ phone: phoneDigits, cpf: cpfDigits, consent_version: boot.consent?.version || "1.0",
-      ...(needsPhoneConfirmation(phone) ? { phone_confirmation: normalizeBrazilianPhone(phoneConfirmation) } : {}) });
+    void startAuthorization({ phone: phoneDigits, cpf: cpfDigits, consent_version: boot.consent?.version || "1.0" });
   };
 
   const retrySeconds = Math.max(0, Math.ceil((retryAt - clockNow) / 1000));
@@ -470,16 +465,9 @@ export default function App() {
         <form onSubmit={handleIdentity} className="space-y-4">
           <div>
             <label className="portal-label" htmlFor="phone">Telefone</label>
-            <input id="phone" type="tel" inputMode="tel" value={phone} onChange={event => { setPhone(formatPhoneBR(event.target.value)); setPhoneConfirmation(""); }}
+            <input id="phone" type="tel" inputMode="tel" value={phone} onChange={event => setPhone(formatPhoneBR(event.target.value))}
               required className="portal-input" placeholder="(00) 00000-0000" autoComplete="tel" disabled={busy} />
           </div>
-          {needsPhoneConfirmation(phone) && <div>
-            <label className="portal-label" htmlFor="phone-confirmation">Confirme seu telefone</label>
-            <p id="phone-confirmation-help" className="portal-hint">Seu número tem muitos dígitos repetidos. Se ele está correto, digite-o novamente para continuar.</p>
-            <input id="phone-confirmation" type="tel" inputMode="tel" value={phoneConfirmation}
-              onChange={event => setPhoneConfirmation(formatPhoneBR(event.target.value))}
-              required className="portal-input" autoComplete="off" aria-describedby="phone-confirmation-help" disabled={busy} />
-          </div>}
           <div>
             <label className="portal-label" htmlFor="cpf">CPF</label>
             <input id="cpf" type="text" inputMode="numeric" value={formatCPF(cpf)} onChange={event => setCpf(event.target.value)}

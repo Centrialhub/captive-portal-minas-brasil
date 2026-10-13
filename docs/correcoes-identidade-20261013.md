@@ -6,12 +6,14 @@ As regras de formato e checksum são compartilhadas pelo frontend e pela Edge
 Function em `supabase/functions/_shared/identity.ts`. CPF com dígitos verificadores
 corretos não equivale a documento existente ou pertencente ao visitante.
 
-Telefones estruturalmente válidos com repetição forte, como `(38) 99999-9999`,
-exigem segunda digitação no formulário e no `/identify`. Repetição é um sinal
-de possível preenchimento incorreto, não prova de linha inexistente. Esta
-confirmação não é OTP, não comprova posse e não impede um atacante de repetir
-deliberadamente o mesmo número. Foi escolhida para não negar linhas legítimas
-apenas por padrão numérico. Não há envio de SMS/WhatsApp nesta alteração.
+Após resposta explícita do usuário em 13/10, números de preenchimento óbvio,
+como `(38) 99999-9999`, são rejeitados. Isso substitui a opção provisória de
+segunda digitação publicada no PR #5. Bloqueia-se o assinante inteiro repetido
+(sem DDD) ou, no celular, os oito dígitos iguais após o prefixo 9, incluindo
+`90000-0000` e `91111-1111`. Não há bypass por `phone_confirmation`.
+É uma política de qualidade de cadastro, não prova de linha inexistente nem
+verificação de posse. Números não uniformes, inclusive com algumas repetições,
+continuam aceitos quando atendem ao formato. Não há SMS/WhatsApp nesta alteração.
 
 ## Correções
 
@@ -35,6 +37,11 @@ apenas por padrão numérico. Não há envio de SMS/WhatsApp nesta alteração.
   Nenhum registro legado é apagado nem corrigido automaticamente pela migração.
 - Helpers privados e reparo são restritos ao serviço, sem novos direitos para
   visitantes ou usuários autenticados comuns. A RPC repete os checks sob lock.
+- A migração incremental `20261013154212_reject_placeholder_phones.sql` aplica
+  a mesma política no banco. Não altera a migração anterior nem reescreve dados.
+  Perfis com telefone agora bloqueado voltam ao formulário antes de uma nova
+  autorização; o proprietário autenticado pode corrigir o telefone. Operações
+  já admitidas continuam sendo recuperadas.
 
 ## Testes e revisão
 
@@ -42,7 +49,7 @@ apenas por padrão numérico. Não há envio de SMS/WhatsApp nesta alteração.
   extraídos por AST com dependências externas simuladas.
 - Um milhão de candidatos de CPF comparados com cálculo independente.
 - Todos os DDDs nacionais, formatos +55/DDD 55, telefones fixos, excesso,
-  letras, estrangeiros/incompletos, confirmação de repetidos e reparo de perfil.
+  letras, estrangeiros/incompletos, rejeição de repetidos e reparo de perfil.
 - `npm run test:identity-db`: PostgreSQL 17 local isolado, migração real,
   paridade SQL/JavaScript, ACLs, registros legados e reparos concorrentes.
 - `npm run test:admission`: regressão com 300 clientes por NAT e limites atômicos.
@@ -53,7 +60,7 @@ apenas por padrão numérico. Não há envio de SMS/WhatsApp nesta alteração.
 Os testes não representam ensaio físico em Android nem demonstram a meta de
 99,9% em campo. Nenhum cliente real é autorizado pelos testes sintéticos.
 
-Resultado desta revisão: 369 testes de aplicação, 21 de identidade em PostgreSQL,
+Resultado da revisão do PR #5: 369 testes de aplicação, 21 de identidade em PostgreSQL,
 20 de admissão em PostgreSQL, 16 cenários de navegador e 14 de preservação de
 assets aprovados. Lint, TypeScript, Deno, verificações estáticas e build passaram.
 O ensaio de navegador identificou ausência das variáveis públicas no primeiro
@@ -66,6 +73,13 @@ A revisão automática do PR #5 encontrou um timeout não tratado na consulta Au
 opcional. O caminho foi corrigido e coberto por três regressões adicionais:
 rejeição de rede, timeout e continuação pela resolução normal de identidade.
 
+Após a decisão explícita de bloquear preenchimentos óbvios: 380 testes da
+aplicação, 27 testes de identidade em PostgreSQL e 18 cenários no navegador
+passaram. Incluem rejeição direta e via API com confirmação antiga, correção
+de cadastro legado autenticado, preservação de operações admitidas e números
+próximos válidos. Lint, TypeScript, Deno, migrações, segurança e build passaram.
+Evidências: `tmp/placeholder-*.log` e `tmp/placeholder-phones-20261013/browser/`.
+
 ## Implantação compatível
 
 Publicar em GitHub main não implanta automaticamente a Edge Function/migração.
@@ -73,16 +87,20 @@ Este pacote deve ser implantado na seguinte ordem:
 
 1. Frontend desta revisão, conservando os assets anteriores já previstos no
    Dockerfile. Conferir `build-info.json` e o hash do bundle efetivamente servido.
-   O novo frontend também funciona com o backend anterior: os campos opcionais
-   de confirmação/token são ignorados até a implantação da Edge Function.
-2. Aplicar `20261013113423_enforce_portal_identity_integrity.sql` com a CLI/MCP de
-   migrações. Os limites de lock são curtos; falha deve reverter a transação.
+   O novo frontend também funciona com o backend anterior: números bloqueados
+   são recusados antes do envio e o token opcional de reparo é ignorado até a
+   implantação da Edge Function que oferece esse recurso.
+2. Aplicar as migrações pendentes em ordem, incluindo
+   `20261013113423_enforce_portal_identity_integrity.sql` e
+   `20261013154212_reject_placeholder_phones.sql`, com a CLI/MCP de migrações.
+   Os limites de lock são curtos; falha deve reverter a transação.
 3. Implantar `captive-portal` da mesma revisão, preservando `verify_jwt=false`
    conforme a configuração atual e os controles próprios dos endpoints.
 4. Conferir saúde/versão e executar diagnóstico sem liberar clientes sintéticos.
 
-Abas antigas que precisarem do campo adicional ou de reparo autenticado devem
-recarregar o frontend novo. Não ativar exigências novas mantendo o frontend
+Abas antigas que precisarem do reparo autenticado devem
+recarregar o frontend novo. A API rejeita placeholders mesmo enviados pelo
+formulário antigo com confirmação. Não ativar exigências novas mantendo o frontend
 antigo publicado. O arquivo antigo ainda servido na auditoria era `153dd87`.
 
 Rollback: restaurar a função/frontend anteriores em conjunto se necessário.

@@ -23,7 +23,7 @@ function harness(reply: any, resumed = false) {
     Request, Response, Date, TextEncoder, crypto: webcrypto,
     Logger: { info() {}, error() {}, warn() {} },
     supabaseAdmin: () => ({ rpc }), safeParseJson: (r: Request) => r.json(), getTraceId: () => "synthetic",
-    normalizeBrazilianPhone: (p: string) => p, normalizeCPF: (p: string) => p, needsPhoneConfirmation: () => false, repairIncompleteIdentity: async () => null,
+    normalizeBrazilianPhone: (p: string) => p, normalizeCPF: (p: string) => p, repairIncompleteIdentity: async () => null,
     Validators: { phone: () => true, cpf: () => true, ip: (ip: string) => /^\d+\.\d+\.\d+\.\d+$/.test(ip) },
     getValidatedAuthContext: async () => ({ ctx: { clientMac: "001122334455" }, attemptId: ATTEMPT, resumeToken: TOKEN }),
     readOperation: async () => resumed ? { operation_id: "operation-test" } : {}, handleAttemptStatus,

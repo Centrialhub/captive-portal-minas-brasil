@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isValidCPF, isValidBrazilianPhone, needsPhoneConfirmation, normalizeBrazilianPhone, normalizeCPF, VALID_BR_DDD } from "./identity.ts";
+import { isValidCPF, isValidBrazilianPhone, isPlaceholderPhone, normalizeBrazilianPhone, normalizeCPF, VALID_BR_DDD } from "./identity.ts";
 import { formatCPF, formatPhoneBR, Validators } from "../../../src/lib/portal-utils.ts";
 
 describe("shared identity validation regression", () => {
@@ -34,11 +34,15 @@ describe("shared identity validation regression", () => {
     }
   });
   it.each(["+91 98765-4321", "+55 91999-9999", "(55) 98765-432100", "abc38987654321", "38987654321x7", "++5538987654321", "20987654321", "38876543210", null, 38987654321])("rejects malformed phone %s", value=>expect(isValidBrazilianPhone(value)).toBe(false));
-  it("asks for confirmation of suspicious numbers without declaring legitimate lines impossible",()=>{
-    for(const value of ["38999999999","38900000000","38911111111","3833333333"]){
-      expect(isValidBrazilianPhone(value)).toBe(true);expect(needsPhoneConfirmation(value)).toBe(true);
+  it("rejects uniform subscriber placeholders across every DDD and formatting",()=>{
+    for(const ddd of VALID_BR_DDD) for(let digit=0;digit<=9;digit++) for(const subscriber of [String(digit).repeat(8),"9"+String(digit).repeat(8)]) {
+      for(const value of [String(ddd)+subscriber,`+55 (${ddd}) ${subscriber}`,`(${ddd}) ${subscriber}`]){
+        expect(isPlaceholderPhone(value),value).toBe(true);
+        expect(isValidBrazilianPhone(value),value).toBe(false);
+      }
     }
-    expect(needsPhoneConfirmation("38987654321")).toBe(false);
+    expect(isPlaceholderPhone("38987654321")).toBe(false);
     expect(normalizeCPF("abc52998224725")).toBe("");
   });
+  it.each(["38999999998","38900000001","3833333334","3832222222","+55 (55) 99999-9998"])("preserves non-uniform phone %s",value=>expect(isValidBrazilianPhone(value)).toBe(true));
 });
