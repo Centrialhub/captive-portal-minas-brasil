@@ -3497,10 +3497,15 @@ async function repairIncompleteIdentity(db: ReturnType<typeof supabaseAdmin>, bo
   // incomplete profile. Knowledge of a CPF/phone alone never permits overwrites.
   if (typeof body.access_token !== "string" || body.access_token.length < 20) return null;
   const auth = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-  const { data, error } = await withOperationDeadline(() => auth.auth.getUser(body.access_token),
-    Date.now() + 5000, "IDENTITY_SESSION_LOOKUP_TIMEOUT");
-  if (error || !data.user) return null; // Expired browser session: normal identification remains available.
-  const userId = data.user.id;
+  const session = await withOperationDeadline(() => auth.auth.getUser(body.access_token),
+    Date.now() + 5000, "IDENTITY_SESSION_LOOKUP_TIMEOUT").catch(() => {
+      // This optional lookup must not turn an Auth outage into a failure of
+      // normal CPF/phone identification. No verified session means no repair.
+      Logger.warn("[identity] optional session lookup unavailable; skipping repair");
+      return null;
+    });
+  if (!session || session.error || !session.data.user) return null;
+  const userId = session.data.user.id;
   const { data: profile, error: lookupError } = await db.from("profiles")
     .select("cpf_digits, phone_digits").eq("id", userId).maybeSingle();
   if (lookupError) return jsonResponse({ error: "Não foi possível consultar seu cadastro. Tente novamente.", code: "profile_lookup_failed" }, 503);

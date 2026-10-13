@@ -26,6 +26,8 @@ apenas por padrão numérico. Não há envio de SMS/WhatsApp nesta alteração.
 - Um token Auth opcional, verificado no servidor, permite reparar campos
   ausentes/inválidos do próprio perfil. Identificadores já válidos não podem
   ser trocados por esse mecanismo; conflitos não transferem CPF entre contas.
+- Timeout ou falha de rede nessa consulta opcional pula o reparo e mantém a
+  resolução normal de CPF/telefone. Sem sessão verificada, nenhum perfil é reparado.
 - Erro na consulta de perfil retorna indisponibilidade; não é interpretado como
   ausência do cadastro para criar outro perfil.
 - Triggers validam e normalizam campos novos/alterados em profiles e leads.
@@ -51,7 +53,7 @@ apenas por padrão numérico. Não há envio de SMS/WhatsApp nesta alteração.
 Os testes não representam ensaio físico em Android nem demonstram a meta de
 99,9% em campo. Nenhum cliente real é autorizado pelos testes sintéticos.
 
-Resultado desta revisão: 366 testes de aplicação, 21 de identidade em PostgreSQL,
+Resultado desta revisão: 369 testes de aplicação, 21 de identidade em PostgreSQL,
 20 de admissão em PostgreSQL, 16 cenários de navegador e 14 de preservação de
 assets aprovados. Lint, TypeScript, Deno, verificações estáticas e build passaram.
 O ensaio de navegador identificou ausência das variáveis públicas no primeiro
@@ -59,6 +61,10 @@ build local; o build foi refeito com a configuração pública existente e os
 16 cenários passaram. A migração teve a sintaxe validada no PostgreSQL real.
 Evidências locais estão em `tmp/identity-fixes-20261013/` e nos logs
 `tmp/identity-*.log`; esses arquivos não são enviados ao GitHub.
+
+A revisão automática do PR #5 encontrou um timeout não tratado na consulta Auth
+opcional. O caminho foi corrigido e coberto por três regressões adicionais:
+rejeição de rede, timeout e continuação pela resolução normal de identidade.
 
 ## Implantação compatível
 

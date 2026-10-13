@@ -18,6 +18,7 @@ function harness({provider="email",cpf="52998224725",phone="38987654321",admitte
  const auth=vi.fn(async()=>({data:{user:authError?null:{id:"owner",email:"test@example.invalid",app_metadata:{provider}}},error:authError?{}:null}));
  const authorize=vi.fn(async()=>({authorized:false,processing:true,status:"queued",operation_id:"mock"}));
  const replay=vi.fn(async()=>Response.json({authorized:true,status:"confirmed"}));
+ const deadline=vi.fn(async(f:()=>Promise<any>)=>f());
  const context=vm.createContext({Request,Response,Date,normalizeCPF,normalizeBrazilianPhone,needsPhoneConfirmation,storedPhoneMatches,
   Validators:{cpf:isValidCPF,phone:isValidBrazilianPhone},supabaseAdmin:()=>db,getPublicIp:()=>null,getTraceId:()=>"synthetic",safeParseJson:(r:Request)=>r.json(),
   getValidatedAuthContext:async()=>({ctx:{clientMac:"020000000001"},attemptId:"attempt",resumeToken:"capability"}),
@@ -25,12 +26,12 @@ function harness({provider="email",cpf="52998224725",phone="38987654321",admitte
   readOperation:async()=>admitted?{operation_id:"operation"}:{},handleAttemptStatus:replay,
   createClient:()=>({auth:{getUser:auth}}),SUPABASE_URL:"https://example.invalid",SUPABASE_ANON_KEY:"not-a-key",
   getActiveUserBlock:async()=>blocked?{}:null,checkRateLimitDb:async()=>({allowed:true}),logEvent:()=>{},Logger:{error(){},warn(){},info(){}},
-  withOperationDeadline:async(f:()=>Promise<any>)=>f(),sha256Hex:async()=>"hash",rateLimitedResponse:()=>Response.json({code:"rate_limited"},{status:429}),
+  withOperationDeadline:deadline,sha256Hex:async()=>"hash",rateLimitedResponse:()=>Response.json({code:"rate_limited"},{status:429}),
   detectStoreFromRequest:async()=>({store_slug:"povao",store_id:"store"}),authorizeDurably:authorize,DEFAULT_REDIRECT_URL:"https://example.invalid",
   jsonResponse:(b:any,s=200)=>Response.json(b,{status:s}),errorResponse:(error:string,s=400)=>Response.json({error},{status:s}),
  });vm.runInContext(compiled,context);
  const request=(body:any)=>new Request("https://example.invalid/test",{method:"POST",body:JSON.stringify(body)});
- return {rpc,auth,authorize,replay,updates,
+ return {rpc,auth,authorize,replay,updates,deadline,
   identify:(body:any)=>context.handleIdentity(request(body)) as Promise<Response>,
   existing:()=>context.handleAuthorizeExisting(request({access_token:"synthetic-owner-session-no-authority"})) as Promise<Response>,
   repair:(body:any)=>context.repairIncompleteIdentity(db,body,"52998224725","38987654321") as Promise<Response|null>,
@@ -54,6 +55,22 @@ describe("published ingress identity barriers and legacy recovery",()=>{
  it("replayed identify does not revalidate identity or charge admission",async()=>{const h=harness({admitted:true});expect(await(await h.identify({cpf:"invalid",phone:"invalid"})).json()).toMatchObject({authorized:true});expect(h.rpc).not.toHaveBeenCalled();});
  it("repair never trusts a user id without an authenticated session",async()=>{const h=harness({cpf:null});expect(await h.repair({user_id:"owner"})).toBeNull();expect(h.rpc).not.toHaveBeenCalled();expect(h.auth).not.toHaveBeenCalled();});
  it("expired session cannot repair a profile but normal identification remains available",async()=>{const h=harness({authError:true,cpf:null});expect(await h.repair({access_token:"synthetic-expired-session-token"})).toBeNull();expect(h.rpc).not.toHaveBeenCalled();});
+ it.each(["network rejection","deadline timeout"])("optional Auth %s skips repair safely",async failure=>{
+  const h=harness({cpf:null});
+  if(failure==="network rejection")h.auth.mockRejectedValueOnce(new Error("Network unavailable"));
+  else h.deadline.mockRejectedValueOnce(new Error("IDENTITY_SESSION_LOOKUP_TIMEOUT"));
+  expect(await h.repair({access_token:"synthetic-owner-session-token"})).toBeNull();
+  expect(h.rpc).not.toHaveBeenCalled();expect(h.updates).not.toHaveBeenCalled();
+ });
+ it("identify still uses normal resolution after optional Auth timeout",async()=>{
+  const h=harness();h.deadline.mockRejectedValueOnce(new Error("IDENTITY_SESSION_LOOKUP_TIMEOUT"));
+  h.rpc.mockResolvedValueOnce({data:{allowed:true},error:null});
+  h.rpc.mockResolvedValueOnce({data:[{resolution_status:"ambiguous"}],error:null} as any);
+  const r=await h.identify({cpf:"52998224725",phone:"38987654321",access_token:"synthetic-owner-session-token"});
+  expect(r.status).toBe(409);expect((await r.json()).code).toBe("identity_ambiguous");
+  expect(h.rpc).toHaveBeenNthCalledWith(2,"resolve_portal_identity",{p_cpf_digits:"52998224725",p_phone_digits:"38987654321"});
+  expect(h.rpc).toHaveBeenCalledTimes(2);expect(h.updates).not.toHaveBeenCalled();
+ });
  it("verified owner can complete a missing field",async()=>{const h=harness({cpf:null});expect(await h.repair({access_token:"synthetic-owner-session-token"})).toBeNull();expect(h.rpc).toHaveBeenCalledWith("repair_captive_identity",{p_user_id:"owner",p_cpf:"52998224725",p_phone:"38987654321"});});
  it.each([{cpf:"12345678909",phone:null},{cpf:null,phone:"31987654321"}])("repair cannot overwrite a valid identifier on a shared browser",async fields=>{const h=harness(fields);expect(await h.repair({access_token:"synthetic-owner-session-token"})).toBeNull();expect(h.rpc).not.toHaveBeenCalled();});
  it.each([{admin:true},{blocked:true}])("privileged/blocked owner cannot use repair",async state=>{const h=harness({cpf:null,...state});expect((await h.repair({access_token:"synthetic-owner-session-token"}))?.status).toBe(403);expect(h.rpc).not.toHaveBeenCalled();});
