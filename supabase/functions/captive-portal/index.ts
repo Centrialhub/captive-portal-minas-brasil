@@ -6,7 +6,7 @@ import {
   serializeCookieJar,
   type UnifiCookieJar,
 } from "../_shared/unifi-cookie.ts";
-import { normalizeBrazilianPhone, storedPhoneMatches } from "../_shared/identity.ts";
+import { normalizeBrazilianPhone, normalizeCPF, isValidBrazilianPhone, isValidCPF as validCPF, needsPhoneConfirmation, storedPhoneMatches } from "../_shared/identity.ts";
 import { drainAuthorization, reconcileAuthorization, requiredRpc, withOperationDeadline, type AuthOperation } from "../_shared/durable-auth.ts";
 import {
   canonicalUnifiMac,
@@ -55,17 +55,7 @@ const MAX_EMAIL_LEN = 255;
 // MAX_PHONE_LEN removed as it was unused
 const MAX_SLUG_LEN = 50;
 const DEDUP_WINDOW_SEC = 10;
-const VALID_BR_DDD = new Set([
-  11, 12, 13, 14, 15, 16, 17, 18, 19,
-  21, 22, 24, 27, 28,
-  31, 32, 33, 34, 35, 37, 38,
-  41, 42, 43, 44, 45, 46, 47, 48, 49,
-  51, 53, 54, 55,
-  61, 62, 63, 64, 65, 66, 67, 68, 69,
-  71, 73, 74, 75, 77, 79,
-  81, 82, 83, 84, 85, 86, 87, 88, 89,
-  91, 92, 93, 94, 95, 96, 97, 98, 99
-]);
+
 
 // GeoIP config
 const GEOIP_ENDPOINT = Deno.env.get("GEOIP_ENDPOINT") || "https://ipapi.co/{ip}/json/";
@@ -175,41 +165,9 @@ const Validators = {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && email.length <= MAX_EMAIL_LEN;
   },
 
-  phone(phone: string): boolean {
-    let digits = phone.replace(/\D/g, "");
-    if (digits.startsWith("55") && (digits.length === 12 || digits.length === 13)) {
-      digits = digits.slice(2);
-    }
-    if (digits.length !== 10 && digits.length !== 11) return false;
-    const ddd = parseInt(digits.slice(0, 2), 10);
-    if (!VALID_BR_DDD.has(ddd)) return false;
-    if (digits.length === 11 && digits[2] !== "9") return false;
-    if (digits.length === 10 && !/^[2-5]/.test(digits.slice(2, 3))) return false;
-    return true;
-  },
+  phone: isValidBrazilianPhone,
 
-  cpf(cpf: string): boolean {
-    const digits = (cpf || "").replace(/\D/g, "");
-    if (digits.length !== 11) return false;
-    if (/^(\d)\1{10}$/.test(digits)) return false;
-
-    const calcDV = (base: string, weights: number[]): number => {
-      let sum = 0;
-      for (let i = 0; i < base.length; i++) {
-        sum += parseInt(base[i], 10) * weights[i];
-      }
-      const remainder = (sum * 10) % 11;
-      return remainder === 10 ? 0 : remainder;
-    };
-
-    const firstDV = calcDV(digits.slice(0, 9), [10, 9, 8, 7, 6, 5, 4, 3, 2]);
-    if (firstDV !== parseInt(digits[9], 10)) return false;
-
-    const secondDV = calcDV(digits.slice(0, 10), [11, 10, 9, 8, 7, 6, 5, 4, 3, 2]);
-    if (secondDV !== parseInt(digits[10], 10)) return false;
-    
-    return true;
-  },
+  cpf: validCPF,
 
   uuid(id: unknown): boolean {
     return typeof id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
@@ -2953,8 +2911,12 @@ async function handleAuthorizationReconcile(req: Request): Promise<Response> {
 
 async function authorizeAuthenticatedUser(args: PortalAuthorizationArgs): Promise<PortalAuthorizationResult> {
   const { db, userId, profile, ctx, req, authMethod, traceId, clientIp, userAgent, attemptId, resumeToken } = args;
-
-
+  // Callers resolve an already admitted operation before reaching this boundary.
+  // Every NEW authorization, regardless of provider, needs a complete identity.
+  if (!Validators.cpf(profile.cpf_digits) || !Validators.phone(profile.phone_digits)) {
+    return { session_id: null, authorized: false, status: "awaiting_identity",
+      redirect_url: DEFAULT_REDIRECT_URL, store_slug: "", store_id: null };
+  }
   let detected = await detectStoreFromRequest(db, req, ctx.apMac, ctx.storeHint);
   if (!detected.store_id && ctx.clientMac) {
     const discovered = await discoverStoreByClientMac(db, ctx.clientMac);
@@ -3529,6 +3491,38 @@ async function createPortalSessionChallenge(
   return { token_hash: tokenHash };
 }
 
+async function repairIncompleteIdentity(db: ReturnType<typeof supabaseAdmin>, body: Record<string, any>,
+  cpfDigits: string, phoneDigits: string): Promise<Response | null> {
+  // Repair is optional and requires a server-verified session belonging to the
+  // incomplete profile. Knowledge of a CPF/phone alone never permits overwrites.
+  if (typeof body.access_token !== "string" || body.access_token.length < 20) return null;
+  const auth = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  const { data, error } = await withOperationDeadline(() => auth.auth.getUser(body.access_token),
+    Date.now() + 5000, "IDENTITY_SESSION_LOOKUP_TIMEOUT");
+  if (error || !data.user) return null; // Expired browser session: normal identification remains available.
+  const userId = data.user.id;
+  const { data: profile, error: lookupError } = await db.from("profiles")
+    .select("cpf_digits, phone_digits").eq("id", userId).maybeSingle();
+  if (lookupError) return jsonResponse({ error: "Não foi possível consultar seu cadastro. Tente novamente.", code: "profile_lookup_failed" }, 503);
+  if (!profile || (Validators.cpf(profile.cpf_digits) && Validators.phone(profile.phone_digits))) return null;
+  // A different complete identity can be submitted on a shared device; never
+  // attach it to or overwrite the signed-in user's already valid identifiers.
+  if ((Validators.cpf(profile.cpf_digits) && normalizeCPF(profile.cpf_digits) !== cpfDigits) ||
+      (Validators.phone(profile.phone_digits) && !storedPhoneMatches(profile.phone_digits, phoneDigits))) return null;
+  if (await getActiveUserBlock(db, userId)) return jsonResponse({ error: "Acesso bloqueado. Procure o atendimento.", code: "user_blocked" }, 403);
+  const { data: role, error: roleError } = await db.from("user_roles").select("user_id")
+    .eq("user_id", userId).eq("role", "admin").maybeSingle();
+  if (roleError) return jsonResponse({ error: "Serviço temporariamente indisponível.", code: "role_check_failed" }, 503);
+  if (role) return jsonResponse({ error: "Use o acesso administrativo para esta conta.", code: "privileged_account" }, 403);
+  const { data: repaired, error: repairError } = await db.rpc("repair_captive_identity", {
+    p_user_id: userId, p_cpf: cpfDigits, p_phone: phoneDigits,
+  });
+  if (repairError || !repaired?.ok) {
+    return jsonResponse({ error: "Não foi possível atualizar estes dados. Confira o CPF e o telefone.", code: "identity_repair_conflict" }, 409);
+  }
+  return null;
+}
+
 async function handleIdentity(req: Request): Promise<Response> {
   const db = supabaseAdmin();
   const clientIp = getPublicIp(req);
@@ -3538,7 +3532,7 @@ async function handleIdentity(req: Request): Promise<Response> {
   const traceId = getTraceId(req, body);
 
   const phoneDigits = normalizeBrazilianPhone(body.phone);
-  const cpfDigits = typeof body.cpf === "string" ? body.cpf.replace(/\D/g, "") : "";
+  const cpfDigits = normalizeCPF(body.cpf);
   const { ctx, attemptId, resumeToken, error: authError } = await getValidatedAuthContext(db, body, "identity");
   if (authError) return authError;
 
@@ -3554,11 +3548,15 @@ async function handleIdentity(req: Request): Promise<Response> {
     }
   }
 
-  if (!Validators.phone(phoneDigits)) {
+  if (!Validators.phone(body.phone)) {
     return jsonResponse({ error: "Telefone inválido.", code: "invalid_phone" }, 400);
   }
-  if (!Validators.cpf(cpfDigits)) {
+  if (!Validators.cpf(body.cpf)) {
     return jsonResponse({ error: "CPF inválido.", code: "invalid_cpf" }, 400);
+  }
+  if (needsPhoneConfirmation(body.phone) &&
+      (!Validators.phone(body.phone_confirmation) || normalizeBrazilianPhone(body.phone_confirmation) !== phoneDigits)) {
+    return jsonResponse({ error: "Confira o telefone e digite-o novamente no campo de confirmação. Se o campo não aparecer, atualize esta página.", code: "phone_confirmation_required" }, 400);
   }
 
   try {
@@ -3585,6 +3583,9 @@ async function handleIdentity(req: Request): Promise<Response> {
     Logger.error("[identity] rate limiter unavailable", { error: (rateLimitError as Error).message });
     return jsonResponse({ error: "Serviço temporariamente indisponível.", code: "rate_limit_unavailable" }, 503);
   }
+
+  const repairFailure = await repairIncompleteIdentity(db, body, cpfDigits, phoneDigits);
+  if (repairFailure) return repairFailure;
 
   logEvent(db, {
     trace_id: traceId,
@@ -4178,12 +4179,13 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
     }
   }
 
-  const { data: existingProfile } = await db
+  const { data: existingProfile, error: profileError } = await db
     .from("profiles")
     .select("full_name, cpf_digits, phone_digits, email, cpf_required")
     .eq("id", userId)
     .maybeSingle();
 
+  if (profileError) return jsonResponse({ error: "Não foi possível consultar seu cadastro. Tente novamente.", code: "profile_lookup_failed" }, 503);
   let profile = existingProfile;
 
   // Auto-provision profile for OAuth users (Google/Apple) on first sign-in.
@@ -4230,29 +4232,19 @@ async function handleAuthorizeExisting(req: Request): Promise<Response> {
   const storedCpf = profile?.cpf_digits || "";
   const isCpfInvalid = !Validators.cpf(storedCpf);
   
-  if (authMethod === "google") {
-    if (profile?.cpf_required || isCpfInvalid) {
+  if (isCpfInvalid || !Validators.phone(profile?.phone_digits)) {
       logEvent(db, {
-        trace_id: traceId, event_type: "google_auth_cpf_pending", step: "form", status: "info",
+        trace_id: traceId, event_type: "identity_completion_required", step: "form", status: "info",
         payload: { attempt_id: attemptId, cpf_invalid: isCpfInvalid }, client_ip: clientIp,
       });
 
-      // Atomic link attempt to user before CPF step
-      if (attemptId) {
-        await db.from("captive_auth_attempts").update({ user_id: userId }).eq("id", attemptId);
-      }
-
       return jsonResponse({
-        needs_cpf: true,
+        needs_login: true,
+        status: "awaiting_identity",
         authorized: false,
-        auth_method: "google",
-        profile: {
-          full_name: profile?.full_name,
-          email: profile?.email
-        },
+        auth_method: authMethod,
         trace_id: traceId,
       });
-    }
   }
 
   const result = await authorizeAuthenticatedUser({
