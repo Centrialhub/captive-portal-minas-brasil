@@ -33,13 +33,14 @@ async function submit(phone = "38987654321") {
 }
 
 describe("post-release audit 20260926: identity formatting and restored cooldown", () => {
-  it("requires and submits a second entry for a repeated phone without denying a confirmed number", async () => {
+  it.each(["38999999999", "+55 (38) 90000-0000", "3833333333"])("rejects placeholder %s and allows correcting it", async phone => {
     renderPortal(); await flush();
-    await submit("38999999999");
+    await submit(phone);
     expect(api.identify).not.toHaveBeenCalled();
-    fireEvent.change(screen.getByLabelText("Confirme seu telefone"), { target: { value: "38999999999" } });
-    fireEvent.click(screen.getByRole("button", { name: "Liberar Wi-Fi" })); await flush();
-    expect(api.identify).toHaveBeenCalledWith(expect.objectContaining({ phone: "38999999999", phone_confirmation: "38999999999" }));
+    expect(screen.getByRole("alert").textContent).toContain("padrão de telefone não é aceito");
+    expect(screen.queryByLabelText("Confirme seu telefone")).toBeNull();
+    await submit("38987654321");
+    expect(api.identify).toHaveBeenCalledWith(expect.objectContaining({ phone: "38987654321" }));
   });
   it.each(["abc52998224725", "529982247250", "12345678900"])("never submits malformed CPF %s", async cpf => {
     renderPortal(); await flush();

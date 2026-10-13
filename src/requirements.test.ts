@@ -15,7 +15,8 @@ describe("Brazilian identity validation", () => {
   });
 
   it("validates DDD and mobile/fixed-line structure", () => {
-    expect(Validators.phone("(38) 99999-9999")).toBe(true);
+    expect(Validators.phone("(38) 99999-9999")).toBe(false);
+    expect(Validators.phone("(38) 98765-4321")).toBe(true);
     expect(Validators.phone("+55 31 3333-4444")).toBe(true);
     expect(Validators.phone("(20) 99999-9999")).toBe(false);
     expect(Validators.phone("(31) 19999-9999")).toBe(false);

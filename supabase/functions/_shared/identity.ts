@@ -24,6 +24,7 @@ export function normalizeBrazilianPhone(value: unknown): string {
 export function isValidBrazilianPhone(value: unknown): boolean {
   const digits = normalizeBrazilianPhone(value);
   if (!/^\d{10,11}$/.test(digits) || !VALID_BR_DDD.has(Number(digits.slice(0, 2)))) return false;
+  if (isPlaceholderPhone(digits)) return false;
   return digits.length === 11 ? digits[2] === "9" : /^[2-5]/.test(digits[2]);
 }
 
@@ -39,10 +40,11 @@ export function isValidCPF(value: unknown): boolean {
   return true;
 }
 
-/** A friction signal, not proof that a structurally valid line is fictitious. */
-export function needsPhoneConfirmation(value: unknown): boolean {
+/** Explicit portal policy: reject uniform subscriber digits, excluding the DDD.
+ * This is a data quality rule, not a lookup of line ownership or allocation. */
+export function isPlaceholderPhone(value: unknown): boolean {
   const phone = normalizeBrazilianPhone(value);
-  if (!isValidBrazilianPhone(phone)) return false;
+  if (!/^\d{10,11}$/.test(phone)) return false;
   const subscriber = phone.slice(2);
   return /^(\d)\1+$/.test(subscriber) || (phone.length === 11 && /^(\d)\1{7}$/.test(subscriber.slice(1)));
 }

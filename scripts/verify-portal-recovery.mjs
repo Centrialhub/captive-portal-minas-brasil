@@ -47,7 +47,6 @@ const server = createServer(async (req, res) => {
     if (route === '/attempt/init') return res.end(JSON.stringify({ attempt_id: 'synthetic-attempt-no-authority', token: 'synthetic-token-no-authority', server_now: new Date().toISOString(), expires_at: new Date(Date.now() + 600000).toISOString() }));
     if (route === '/identify') {
       current.sentPhone = body.phone;
-      current.sentConfirmation = body.phone_confirmation;
       return res.end(JSON.stringify({ authorized: false, status: 'verifying', processing: true, retry_after_ms: 30000, server_now: new Date().toISOString() }));
     }
     if (route === '/attempt/status') {
@@ -78,8 +77,10 @@ const report = { createdAt: new Date().toISOString(), modulePath, moduleSha256: 
 try {
   for (const scenario of [
     { name: 'national-control', phone: '(38) 98765-4321', expectedPhone: '38987654321' },
-    { name: 'repeated-confirmed', phone: '(38) 99999-9999', phoneConfirmation: '38999999999', expectedPhone: '38999999999' },
-    { name: 'repeated-unconfirmed', phone: '(38) 99999-9999', unconfirmed: true },
+    { name: 'placeholder-repeated', phone: '(38) 99999-9999', invalidPhone: true },
+    { name: 'placeholder-zeros', phone: '+55 (38) 90000-0000', invalidPhone: true },
+    { name: 'placeholder-landline', phone: '(38) 3333-3333', invalidPhone: true },
+    { name: 'near-repeated-valid', phone: '(38) 99999-9998', expectedPhone: '38999999998' },
     { name: 'invalid-cpf-checksum', phone: '38987654321', cpf: '12345678900', invalidPhone: true },
     { name: 'invalid-cpf-overflow', phone: '38987654321', cpf: '529982247250', invalidPhone: true },
     { name: 'invalid-cpf-letters', phone: '38987654321', cpf: 'abc52998224725', invalidPhone: true },
@@ -112,19 +113,15 @@ try {
         await page.getByLabel('Telefone', { exact: true }).fill(scenario.phone);
         current.displayedPhone = await page.getByLabel('Telefone', { exact: true }).inputValue();
         await page.getByLabel('CPF', { exact: true }).fill(scenario.cpf || '52998224725');
-        if (scenario.phoneConfirmation) await page.getByLabel('Confirme seu telefone', { exact: true }).fill(scenario.phoneConfirmation);
         await page.getByRole('button', { name: 'Liberar Wi-Fi', exact: true }).click();
         await page.waitForTimeout(300);
         current.alert = await page.getByRole('alert').count() ? await page.getByRole('alert').textContent() : null;
-        current.expectationMet = scenario.unconfirmed
-          ? await page.getByLabel('Confirme seu telefone', { exact: true }).count() === 1 && !current.requests.some(request => ['/attempt/init', '/identify'].includes(request.route))
-          : scenario.invalidPhone
+        current.expectationMet = scenario.invalidPhone
           ? !!current.alert && !current.requests.some(request => ['/attempt/init', '/identify'].includes(request.route))
           : current.sentPhone === scenario.expectedPhone
             && current.requests.filter(request => request.route === '/attempt/init').length === 1
             && current.requests.filter(request => request.route === '/identify').length === 1;
         current.expectedPhone = scenario.expectedPhone;
-        if (scenario.phoneConfirmation) current.expectationMet &&= current.sentConfirmation === scenario.expectedPhone;
       } else {
         await page.getByRole('button', { name: 'Aguarde 30 s', exact: true }).waitFor();
         if (scenario.reload) await page.reload({ waitUntil: 'domcontentloaded' });
