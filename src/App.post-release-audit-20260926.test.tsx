@@ -25,7 +25,7 @@ const capability = () => ({
 function renderPortal() { return render(<MemoryRouter><App /></MemoryRouter>); }
 async function flush() { await act(async () => {}); }
 async function advance(ms: number) { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); }
-async function submit(phone = "38999999999") {
+async function submit(phone = "38987654321") {
   fireEvent.change(screen.getByLabelText("Telefone"), { target: { value: phone } });
   fireEvent.change(screen.getByLabelText("CPF"), { target: { value: "52998224725" } });
   fireEvent.click(screen.getByRole("button", { name: "Liberar Wi-Fi" }));
@@ -33,6 +33,31 @@ async function submit(phone = "38999999999") {
 }
 
 describe("post-release audit 20260926: identity formatting and restored cooldown", () => {
+  it("requires and submits a second entry for a repeated phone without denying a confirmed number", async () => {
+    renderPortal(); await flush();
+    await submit("38999999999");
+    expect(api.identify).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("Confirme seu telefone"), { target: { value: "38999999999" } });
+    fireEvent.click(screen.getByRole("button", { name: "Liberar Wi-Fi" })); await flush();
+    expect(api.identify).toHaveBeenCalledWith(expect.objectContaining({ phone: "38999999999", phone_confirmation: "38999999999" }));
+  });
+  it.each(["abc52998224725", "529982247250", "12345678900"])("never submits malformed CPF %s", async cpf => {
+    renderPortal(); await flush();
+    fireEvent.change(screen.getByLabelText("Telefone"), { target: { value: "38987654321" } });
+    fireEvent.change(screen.getByLabelText("CPF"), { target: { value: cpf } });
+    fireEvent.click(screen.getByRole("button", { name: "Liberar Wi-Fi" })); await flush();
+    expect(api.identify).not.toHaveBeenCalled();
+  });
+  it("returns an incomplete signed-in customer to identification and sends proof of session for repair", async () => {
+    const access_token="synthetic-owner-session-no-authority";
+    vi.mocked(supabase.auth.getSession).mockResolvedValue({data:{session:{access_token} as any},error:null});
+    vi.mocked(api.authorizeExisting).mockResolvedValue({authorized:false,status:"awaiting_identity",needs_login:true});
+    renderPortal(); await flush();
+    expect(screen.getByLabelText("CPF")).toBeTruthy();
+    await submit();
+    expect(api.identify).toHaveBeenCalledWith(expect.objectContaining({access_token,cpf:"52998224725",phone:"38987654321"}));
+    expect(api.initAttempt).toHaveBeenCalledTimes(1);
+  });
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime("2026-09-26T17:30:00Z");
@@ -57,12 +82,12 @@ describe("post-release audit 20260926: identity formatting and restored cooldown
   });
 
   it.each([
-    ["mobile +55", "+55 (38) 99999-9999", "38999999999"],
-    ["mobile E164", "5538999999999", "38999999999"],
+    ["mobile +55", "+55 (38) 98765-4321", "38987654321"],
+    ["mobile E164", "5538987654321", "38987654321"],
     ["landline +55", "+55 (38) 3222-2222", "3832222222"],
-    ["northern mobile +55", "+55 (91) 99999-9999", "91999999999"],
+    ["northern mobile +55", "+55 (91) 98765-4321", "91987654321"],
     ["northern landline +55", "+55 (91) 3222-2222", "9132222222"],
-    ["DDD 55 mobile +55", "+55 (55) 99999-9999", "55999999999"],
+    ["DDD 55 mobile +55", "+55 (55) 98765-4321", "55987654321"],
     ["DDD 55 landline +55", "+55 (55) 3222-2222", "5532222222"],
   ])("AUD3-F01: preserves valid %s phone rather than truncating its subscriber digits", async (_label, input, normalized) => {
     expect(Validators.phone(input)).toBe(true);
@@ -74,7 +99,7 @@ describe("post-release audit 20260926: identity formatting and restored cooldown
     expect(api.identify).toHaveBeenCalledWith(expect.objectContaining({ phone: normalized }));
   });
 
-  it.each(["38999999999", "(38) 99999-9999", "(38) 3222-2222", "55999999999", "(55) 99999-9999", "(55) 3222-2222"])("control: valid national phone %s is sent unchanged", async input => {
+  it.each(["38987654321", "(38) 98765-4321", "(38) 3222-2222", "55987654321", "(55) 98765-4321", "(55) 3222-2222"])("control: valid national phone %s is sent unchanged", async input => {
     renderPortal();
     await flush();
     await submit(input);
@@ -106,7 +131,7 @@ describe("post-release audit 20260926: identity formatting and restored cooldown
     expect(api.initAttempt).toHaveBeenCalledTimes(1);
   });
 
-  it.each(["389999999999", "55389999999999", "(55) 99999-999999", "+91 99999-9999", "+55 91999-9999"])("does not submit excess or incomplete/foreign international input %s as another number", async input => {
+  it.each(["389876543219", "55389876543219", "(55) 98765-432199", "+91 98765-4321", "+55 91999-9999"])("does not submit excess or incomplete/foreign international input %s as another number", async input => {
     renderPortal();
     await flush();
     await submit(input);
@@ -120,13 +145,13 @@ describe("post-release audit 20260926: identity formatting and restored cooldown
     renderPortal();
     await flush();
     const field = screen.getByLabelText("Telefone") as HTMLInputElement;
-    fireEvent.change(field, { target: { value: "(55) 99999-9999" } });
+    fireEvent.change(field, { target: { value: "(55) 98765-4321" } });
     fireEvent.change(field, { target: { value: field.value + "9" } });
     fireEvent.change(field, { target: { value: field.value + "9" } });
     fireEvent.change(screen.getByLabelText("CPF"), { target: { value: "52998224725" } });
     fireEvent.click(screen.getByRole("button", { name: "Liberar Wi-Fi" }));
     await flush();
-    expect(field.value.replace(/\D/g, "")).toBe("5599999999999");
+    expect(field.value.replace(/\D/g, "")).toBe("5598765432199");
     expect(api.initAttempt).not.toHaveBeenCalled();
     expect(api.identify).not.toHaveBeenCalled();
   });
@@ -135,13 +160,13 @@ describe("post-release audit 20260926: identity formatting and restored cooldown
     renderPortal();
     await flush();
     const field = screen.getByLabelText("Telefone") as HTMLInputElement;
-    for (const digit of "+5538999999999") {
+    for (const digit of "+5538987654321") {
       fireEvent.change(field, { target: { value: field.value + digit } });
     }
     fireEvent.change(screen.getByLabelText("CPF"), { target: { value: "52998224725" } });
     fireEvent.click(screen.getByRole("button", { name: "Liberar Wi-Fi" }));
     await flush();
-    expect(api.identify).toHaveBeenCalledWith(expect.objectContaining({ phone: "38999999999" }));
+    expect(api.identify).toHaveBeenCalledWith(expect.objectContaining({ phone: "38987654321" }));
     expect(api.initAttempt).toHaveBeenCalledTimes(1);
   });
 

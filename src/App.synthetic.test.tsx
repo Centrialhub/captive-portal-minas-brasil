@@ -44,7 +44,7 @@ function renderPortal(strict = false) {
 async function flush() { await act(async () => {}); }
 async function advance(ms: number) { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); }
 async function identify() {
-  fireEvent.change(screen.getByLabelText("Telefone"), { target: { value: "38999999999" } });
+  fireEvent.change(screen.getByLabelText("Telefone"), { target: { value: "38987654321" } });
   fireEvent.change(screen.getByLabelText("CPF"), { target: { value: "52998224725" } });
   fireEvent.click(screen.getByRole("button", { name: "Liberar Wi-Fi" }));
   await flush();

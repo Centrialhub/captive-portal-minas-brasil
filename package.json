@@ -13,6 +13,7 @@
     "test": "vitest run",
     "test:admission": "node tests/database/admission.mjs",
     "test:housekeeping": "node tests/database/housekeeping.mjs",
+    "test:identity-db": "node tests/database/identity.mjs",
     "test:watch": "vitest",
     "typecheck": "tsc -b tsconfig.json",
     "typecheck:edge": "deno check supabase/functions/captive-portal/index.ts",

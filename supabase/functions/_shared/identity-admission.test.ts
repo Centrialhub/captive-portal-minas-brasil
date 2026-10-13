@@ -23,7 +23,7 @@ function harness(reply: any, resumed = false) {
     Request, Response, Date, TextEncoder, crypto: webcrypto,
     Logger: { info() {}, error() {}, warn() {} },
     supabaseAdmin: () => ({ rpc }), safeParseJson: (r: Request) => r.json(), getTraceId: () => "synthetic",
-    normalizeBrazilianPhone: (p: string) => p,
+    normalizeBrazilianPhone: (p: string) => p, normalizeCPF: (p: string) => p, needsPhoneConfirmation: () => false, repairIncompleteIdentity: async () => null,
     Validators: { phone: () => true, cpf: () => true, ip: (ip: string) => /^\d+\.\d+\.\d+\.\d+$/.test(ip) },
     getValidatedAuthContext: async () => ({ ctx: { clientMac: "001122334455" }, attemptId: ATTEMPT, resumeToken: TOKEN }),
     readOperation: async () => resumed ? { operation_id: "operation-test" } : {}, handleAttemptStatus,
@@ -32,7 +32,7 @@ function harness(reply: any, resumed = false) {
   });
   vm.runInContext(compiled, context);
   const submit = (headers: Record<string, string> = {}) => context.handleIdentity(new Request("https://portal.invalid/identify", {
-    method: "POST", headers, body: JSON.stringify({ cpf: "12345678909", phone: "38999999999", client_ip: "203.0.113.200", client_mac: "AABBCCDDEEFF" }),
+    method: "POST", headers, body: JSON.stringify({ cpf: "12345678909", phone: "38987654321", client_ip: "203.0.113.200", client_mac: "AABBCCDDEEFF" }),
   })) as Promise<Response>;
   return { submit, rpc, authorize, handleAttemptStatus };
 }
@@ -54,7 +54,7 @@ describe("Identity admission handler contract", () => {
     expect(r.status).toBe(429); expect(Number(r.headers.get("retry-after"))).toBeGreaterThanOrEqual(899);
     expect(h.rpc).toHaveBeenCalledWith("admit_captive_identity", {
       p_attempt_id: ATTEMPT, p_resume_token: TOKEN,
-      p_identity_hash: createHash("sha256").update("12345678909:38999999999").digest("hex"),
+      p_identity_hash: createHash("sha256").update("12345678909:38987654321").digest("hex"),
       p_origin_hash: createHash("sha256").update("198.51.100.10").digest("hex"),
     });
   });

@@ -1,3 +1,5 @@
+import { normalizeBrazilianPhone, isValidBrazilianPhone, isValidCPF as validCPF } from "../../supabase/functions/_shared/identity.ts";
+export { normalizeBrazilianPhone } from "../../supabase/functions/_shared/identity.ts";
 /**
  * Shared utilities for the captive portal.
  */
@@ -11,29 +13,13 @@
  */
 export const PUBLIC_CAPTIVE_BASE_URL = "https://minasbrasilwifi.com.br";
 
-const VALID_BR_DDD = new Set([
-  11, 12, 13, 14, 15, 16, 17, 18, 19,
-  21, 22, 24, 27, 28,
-  31, 32, 33, 34, 35, 37, 38,
-  41, 42, 43, 44, 45, 46, 47, 48, 49,
-  51, 53, 54, 55,
-  61, 62, 63, 64, 65, 66, 67, 68, 69,
-  71, 73, 74, 75, 77, 79,
-  81, 82, 83, 84, 85, 86, 87, 88, 89,
-  91, 92, 93, 94, 95, 96, 97, 98, 99,
-]);
+
 
 /** Keep every subscriber digit; only a complete Brazilian country prefix is removed. */
-export function normalizeBrazilianPhone(value: string): string {
-  const raw = (value || "").trim();
-  const digits = raw.replace(/\D/g, "");
-  const international = digits.startsWith("55") && (digits.length === 12 || digits.length === 13) && !raw.startsWith("(");
-  if (international) return digits.slice(2);
-  // An explicit foreign/incomplete country code must not become a national number.
-  return raw.startsWith("+") ? "+" + digits : digits;
-}
+
 
 export function formatPhoneBR(value: string): string {
+  if (!/^\s*\+?[0-9()\s.-]*$/.test(value)) return value;
   const digits = normalizeBrazilianPhone(value);
   if (digits.startsWith("+")) return digits;
   if (digits.length <= 2) return digits.length ? "(" + digits : "";
@@ -260,41 +246,13 @@ export const Validators = {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
   },
   
-  phone(phone: string): boolean {
-    const digits = normalizeBrazilianPhone(phone);
-    if (!/^\d+$/.test(digits)) return false;
-    if (digits.length !== 10 && digits.length !== 11) return false;
-    if (!VALID_BR_DDD.has(Number(digits.slice(0, 2)))) return false;
-    if (digits.length === 11) return digits[2] === "9";
-    return /^[2-5]/.test(digits[2]);
-  },
+  phone: isValidBrazilianPhone,
 
   /**
    * Validates a Brazilian CPF number using the official algorithm.
    * Rejects known invalid patterns (all same digits).
    */
-  cpf(cpf: string): boolean {
-    const digits = (cpf || "").replace(/\D/g, "");
-    if (digits.length !== 11) return false;
-    if (/^(\d)\1{10}$/.test(digits)) return false;
-
-    const calcDV = (base: string, weights: number[]): number => {
-      let sum = 0;
-      for (let i = 0; i < base.length; i++) {
-        sum += parseInt(base[i], 10) * weights[i];
-      }
-      const remainder = (sum * 10) % 11;
-      return remainder === 10 ? 0 : remainder;
-    };
-
-    const firstDV = calcDV(digits.slice(0, 9), [10, 9, 8, 7, 6, 5, 4, 3, 2]);
-    if (firstDV !== parseInt(digits[9], 10)) return false;
-
-    const secondDV = calcDV(digits.slice(0, 10), [11, 10, 9, 8, 7, 6, 5, 4, 3, 2]);
-    if (secondDV !== parseInt(digits[10], 10)) return false;
-
-    return true;
-  }
+  cpf: validCPF
 };
 
 /** Compatibility exports */
@@ -304,9 +262,10 @@ export function isValidCPF(cpf: string): boolean { return Validators.cpf(cpf); }
  * Formats a raw CPF string into 000.000.000-00.
  */
 export function formatCPF(value: string): string {
-  const digits = (value || "").replace(/\D/g, "").slice(0, 11);
+  if (!/^[0-9.\s-]*$/.test(value)) return value;
+  const digits = (value || "").replace(/\D/g, "");
   if (digits.length <= 3) return digits;
   if (digits.length <= 6) return `${digits.slice(0, 3)}.${digits.slice(3)}`;
   if (digits.length <= 9) return `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6)}`;
-  return `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6, 9)}-${digits.slice(9, 11)}`;
+  return `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6, 9)}-${digits.slice(9)}`;
 }

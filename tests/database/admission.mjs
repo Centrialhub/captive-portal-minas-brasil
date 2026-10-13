@@ -21,15 +21,15 @@ if (process.platform !== 'win32') throw new Error('This native harness requires 
 const source = await readFile(path.join(root, 'supabase/functions/captive-portal/index.ts'), 'utf8');
 const tree = ts.createSourceFile('edge.ts', source, ts.ScriptTarget.Latest, true);
 const wanted = new Set(['handleIdentity', 'handleAttemptInit', 'getValidatedAuthContext', 'validateAuthAttempt',
-  'extractAuthContext', 'checkRateLimitDb', 'rateLimitedResponse', 'getPublicIp', 'sha256Hex', 'normalizeMac', 'isValidUUID']);
+  'extractAuthContext', 'checkRateLimitDb', 'rateLimitedResponse', 'getPublicIp', 'sha256Hex', 'normalizeMac', 'isValidUUID', 'repairIncompleteIdentity']);
 const selected = tree.statements.filter(n => ts.isFunctionDeclaration(n) && wanted.has(n.name?.text));
 assert.equal(selected.length, wanted.size);
 const validators = tree.statements.find(n => ts.isVariableStatement(n) && n.declarationList.declarations.some(d => d.name.getText(tree) === 'Validators'));
 assert.ok(validators);
-const constants = tree.statements.filter(n => ts.isVariableStatement(n) && n.declarationList.declarations.some(d => ['MAC_REGEX', 'VALID_BR_DDD'].includes(d.name.getText(tree))));
-assert.equal(constants.length, 2);
+const constants = tree.statements.filter(n => ts.isVariableStatement(n) && n.declarationList.declarations.some(d => ['MAC_REGEX'].includes(d.name.getText(tree))));
+assert.equal(constants.length, 1);
 const identity = await readFile(path.join(root, 'supabase/functions/_shared/identity.ts'), 'utf8');
-const compiled = ts.transpileModule(constants.map(n => n.getText(tree)).join('\n') + '\n' + validators.getText(tree) + '\n' + selected.map(n => n.getText(tree)).join('\n') + '\n' + identity.replaceAll('export ', ''), {
+const compiled = ts.transpileModule(constants.map(n => n.getText(tree)).join('\n') + '\n' + validators.getText(tree) + '\n' + selected.map(n => n.getText(tree)).join('\n') + '\n' + identity.replaceAll('export ', '') + '\nfunction validCPF(value) { return isValidCPF(value); }', {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
 }).outputText;
 const oldMigration = await readFile(path.join(root, 'supabase/migrations/20260925164858_durable_captive_auth_operations.sql'), 'utf8');

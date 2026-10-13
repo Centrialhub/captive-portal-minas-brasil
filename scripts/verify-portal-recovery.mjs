@@ -47,6 +47,7 @@ const server = createServer(async (req, res) => {
     if (route === '/attempt/init') return res.end(JSON.stringify({ attempt_id: 'synthetic-attempt-no-authority', token: 'synthetic-token-no-authority', server_now: new Date().toISOString(), expires_at: new Date(Date.now() + 600000).toISOString() }));
     if (route === '/identify') {
       current.sentPhone = body.phone;
+      current.sentConfirmation = body.phone_confirmation;
       return res.end(JSON.stringify({ authorized: false, status: 'verifying', processing: true, retry_after_ms: 30000, server_now: new Date().toISOString() }));
     }
     if (route === '/attempt/status') {
@@ -76,17 +77,24 @@ const browser = await chromium.launch({ headless: true, args: ['--disable-backgr
 const report = { createdAt: new Date().toISOString(), modulePath, moduleSha256: createHash('sha256').update(files.get(modulePath)).digest('hex'), scope: 'Actual frozen build in current Chromium with Android UA/mobile viewport. All API responses are local synthetic fixtures, no upstream exists. Not a physical Android or live Wi-Fi test.', scenarios: [] };
 try {
   for (const scenario of [
-    { name: 'national-control', phone: '(38) 99999-9999', expectedPhone: '38999999999' },
-    { name: 'e164', phone: '5538999999999', expectedPhone: '38999999999' },
-    { name: 'national-ddd55', phone: '(55) 99999-9999', expectedPhone: '55999999999' },
-    { name: 'oversized-phone', phone: '+55 (38) 99999-99999', invalidPhone: true },
-    { name: 'mobile-plus55', phone: '+55 (38) 99999-9999', expectedPhone: '38999999999' },
+    { name: 'national-control', phone: '(38) 98765-4321', expectedPhone: '38987654321' },
+    { name: 'repeated-confirmed', phone: '(38) 99999-9999', phoneConfirmation: '38999999999', expectedPhone: '38999999999' },
+    { name: 'repeated-unconfirmed', phone: '(38) 99999-9999', unconfirmed: true },
+    { name: 'invalid-cpf-checksum', phone: '38987654321', cpf: '12345678900', invalidPhone: true },
+    { name: 'invalid-cpf-overflow', phone: '38987654321', cpf: '529982247250', invalidPhone: true },
+    { name: 'invalid-cpf-letters', phone: '38987654321', cpf: 'abc52998224725', invalidPhone: true },
+    { name: 'invalid-phone-letters', phone: 'abc38987654321', invalidPhone: true },
+    { name: 'e164', phone: '5538987654321', expectedPhone: '38987654321' },
+    { name: 'national-ddd55', phone: '(55) 98765-4321', expectedPhone: '55987654321' },
+    { name: 'oversized-phone', phone: '+55 (38) 98765-43219', invalidPhone: true },
+    { name: 'mobile-plus55', phone: '+55 (38) 98765-4321', expectedPhone: '38987654321' },
     { name: 'landline-plus55', phone: '+55 (38) 3222-2222', expectedPhone: '3832222222' },
-    { name: 'northern-plus55', phone: '+55 (91) 99999-9999', expectedPhone: '91999999999' },
+    { name: 'northern-plus55', phone: '+55 (91) 98765-4321', expectedPhone: '91987654321' },
     { name: 'status429-mounted-control', seed: true },
     { name: 'status429-page-reload', seed: true, reload: true },
     { name: 'status429-privacy-return', seed: true, privacy: true },
   ]) {
+    console.log(`START ${scenario.name}`);
     current = { name: scenario.name, started: Date.now(), requests: [], statusCalls: 0, statusAfter429Ms: [], unexpectedRoutes: [], blockedExternal: [], pageErrors: [] };
     const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, serviceWorkers: 'block', userAgent: 'Mozilla/5.0 (Linux; Android 11; synthetic) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.91 Mobile Safari/537.36' });
     await context.route('**/*', async route => {
@@ -103,16 +111,20 @@ try {
       if (scenario.phone) {
         await page.getByLabel('Telefone', { exact: true }).fill(scenario.phone);
         current.displayedPhone = await page.getByLabel('Telefone', { exact: true }).inputValue();
-        await page.getByLabel('CPF', { exact: true }).fill('52998224725');
+        await page.getByLabel('CPF', { exact: true }).fill(scenario.cpf || '52998224725');
+        if (scenario.phoneConfirmation) await page.getByLabel('Confirme seu telefone', { exact: true }).fill(scenario.phoneConfirmation);
         await page.getByRole('button', { name: 'Liberar Wi-Fi', exact: true }).click();
         await page.waitForTimeout(300);
         current.alert = await page.getByRole('alert').count() ? await page.getByRole('alert').textContent() : null;
-        current.expectationMet = scenario.invalidPhone
+        current.expectationMet = scenario.unconfirmed
+          ? await page.getByLabel('Confirme seu telefone', { exact: true }).count() === 1 && !current.requests.some(request => ['/attempt/init', '/identify'].includes(request.route))
+          : scenario.invalidPhone
           ? !!current.alert && !current.requests.some(request => ['/attempt/init', '/identify'].includes(request.route))
           : current.sentPhone === scenario.expectedPhone
             && current.requests.filter(request => request.route === '/attempt/init').length === 1
             && current.requests.filter(request => request.route === '/identify').length === 1;
         current.expectedPhone = scenario.expectedPhone;
+        if (scenario.phoneConfirmation) current.expectationMet &&= current.sentConfirmation === scenario.expectedPhone;
       } else {
         await page.getByRole('button', { name: 'Aguarde 30 s', exact: true }).waitFor();
         if (scenario.reload) await page.reload({ waitUntil: 'domcontentloaded' });
@@ -137,9 +149,14 @@ try {
       }
       current.screenshot = path.join(output, `${scenario.name}.png`);
       await page.screenshot({ path: current.screenshot });
-    } catch (error) { current.fixtureError = String(error); }
+    } catch (error) {
+      current.fixtureError = String(error);
+      current.visibleText = await page.locator('body').innerText().catch(() => 'unavailable');
+      console.error(`FAIL ${scenario.name}: ${error}; page errors: ${JSON.stringify(current.pageErrors)}; body: ${current.visibleText}`);
+    }
     report.scenarios.push(current);
     await context.close();
+    if (current.fixtureError || !current.expectationMet) break;
   }
 } finally {
   await browser.close();

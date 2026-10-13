@@ -166,6 +166,8 @@ export const api = {
   identify(data: {
     phone: string;
     cpf: string;
+    access_token?: string;
+    phone_confirmation?: string;
     client_mac?: string;
     ap_mac?: string;
     ssid?: string;
