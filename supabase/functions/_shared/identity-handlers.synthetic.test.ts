@@ -40,7 +40,7 @@ function harness({provider="email",cpf="52998224725",phone="38987654321",admitte
 describe("published ingress identity barriers and legacy recovery",()=>{
  it.each(["email","apple","google"])("%s valid profile reaches authorization once",async provider=>{const h=harness({provider});expect((await h.existing()).status).toBe(200);expect(h.authorize).toHaveBeenCalledTimes(1);});
  for(const provider of ["email","apple","google"])it.each([
-  {cpf:null},{cpf:"12345678900"},{phone:null},{phone:"abc38987654321"},{phone:"38999999999"},
+  {cpf:null},{cpf:"12345678900"},{phone:null},{phone:"abc38987654321"},{phone:"38999999999"},{phone:"38912345678"},
  ])(`${provider}: incomplete/invalid profile returns to identification`,async fields=>{const h=harness({provider,...fields});const r=await h.existing();expect(await r.json()).toMatchObject({authorized:false,status:"awaiting_identity",needs_login:true});expect(h.authorize).not.toHaveBeenCalled();expect(h.updates).not.toHaveBeenCalled();});
  it.each(["email","apple","google"])("%s admitted operation is recovered despite historical placeholder phone",async provider=>{const h=harness({provider,admitted:true,cpf:null,phone:"38999999999"});expect(await(await h.existing()).json()).toMatchObject({authorized:true});expect(h.replay).toHaveBeenCalledOnce();expect(h.authorize).not.toHaveBeenCalled();});
  it("profile outage never creates a new account or authorizes",async()=>{const h=harness({lookupError:true});expect((await h.existing()).status).toBe(503);expect(h.authorize).not.toHaveBeenCalled();});
@@ -49,6 +49,7 @@ describe("published ingress identity barriers and legacy recovery",()=>{
   [{cpf:"abc52998224725",phone:"38987654321"},"invalid_cpf"],
   [{cpf:"52998224725",phone:"abc38987654321"},"invalid_phone"],
   [{cpf:"52998224725",phone:"38999999999"},"invalid_phone"],
+  [{cpf:"52998224725",phone:"+55 (38) 91234-5678",phone_confirmation:"38912345678"},"invalid_phone"],
   [{cpf:"52998224725",phone:"38999999999",phone_confirmation:"31999999999"},"invalid_phone"],
  ])("malformed/unconfirmed identity is rejected before admission",async(body,code)=>{const h=harness();const r=await h.identify(body);expect(r.status).toBe(400);expect((await r.json()).code).toBe(code);expect(h.rpc).not.toHaveBeenCalled();});
  it("legacy confirmation field cannot bypass placeholder rejection",async()=>{const h=harness();const r=await h.identify({cpf:"52998224725",phone:"38999999999",phone_confirmation:"+55 (38) 99999-9999"});expect(r.status).toBe(400);expect((await r.json()).code).toBe("invalid_phone");expect(h.rpc).not.toHaveBeenCalled();});

@@ -11,6 +11,9 @@ como `(38) 99999-9999`, são rejeitados. Isso substitui a opção provisória de
 segunda digitação publicada no PR #5. Bloqueia-se o assinante inteiro repetido
 (sem DDD) ou, no celular, os oito dígitos iguais após o prefixo 9, incluindo
 `90000-0000` e `91111-1111`. Não há bypass por `phone_confirmation`.
+Em 14/10, o usuário também solicitou rejeitar o assinante exato `912345678`:
+o bloqueio vale para qualquer DDD, com ou sem formatação e DDI `+55`.
+Essa regra não bloqueia outras sequências automaticamente.
 É uma política de qualidade de cadastro, não prova de linha inexistente nem
 verificação de posse. Números não uniformes, inclusive com algumas repetições,
 continuam aceitos quando atendem ao formato. Não há SMS/WhatsApp nesta alteração.
@@ -42,6 +45,8 @@ continuam aceitos quando atendem ao formato. Não há SMS/WhatsApp nesta altera�
   Perfis com telefone agora bloqueado voltam ao formulário antes de uma nova
   autorização; o proprietário autenticado pode corrigir o telefone. Operações
   já admitidas continuam sendo recuperadas.
+- `20261014141322_reject_sequential_phone.sql` acrescenta `912345678` ao
+  validador SQL, mantendo a preservação e o reparo autenticado dos dados antigos.
 
 ## Testes e revisão
 
@@ -80,6 +85,13 @@ de cadastro legado autenticado, preservação de operações admitidas e número
 próximos válidos. Lint, TypeScript, Deno, migrações, segurança e build passaram.
 Evidências: `tmp/placeholder-*.log` e `tmp/placeholder-phones-20261013/browser/`.
 
+A inclusão de `912345678` em 14/10 passou em 389 testes da aplicação,
+28 testes PostgreSQL e 21 cenários no navegador. Abrange todos os DDDs,
+normalização +55, API sem bypass, preservação e reparo de histórico e aceitação
+dos vizinhos `912345677`/`912345679`. Lint, tipos, segurança, migrações e build
+aprovados. Evidências em `tmp/sequence-*.log` e
+`tmp/sequence-phones-20261014/browser/`. Sem implantação ou teste de campo.
+
 ## Implantação compatível
 
 Publicar em GitHub main não implanta automaticamente a Edge Function/migração.
@@ -92,7 +104,8 @@ Este pacote deve ser implantado na seguinte ordem:
    implantação da Edge Function que oferece esse recurso.
 2. Aplicar as migrações pendentes em ordem, incluindo
    `20261013113423_enforce_portal_identity_integrity.sql` e
-   `20261013154212_reject_placeholder_phones.sql`, com a CLI/MCP de migrações.
+   `20261013154212_reject_placeholder_phones.sql` e
+   `20261014141322_reject_sequential_phone.sql`, com a CLI/MCP de migrações.
    Os limites de lock são curtos; falha deve reverter a transação.
 3. Implantar `captive-portal` da mesma revisão, preservando `verify_jwt=false`
    conforme a configuração atual e os controles próprios dos endpoints.

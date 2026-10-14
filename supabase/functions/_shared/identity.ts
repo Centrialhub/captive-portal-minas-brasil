@@ -40,13 +40,13 @@ export function isValidCPF(value: unknown): boolean {
   return true;
 }
 
-/** Explicit portal policy: reject uniform subscriber digits, excluding the DDD.
+/** Explicit portal policy: reject uniform digits and the specified 912345678 placeholder, excluding the DDD.
  * This is a data quality rule, not a lookup of line ownership or allocation. */
 export function isPlaceholderPhone(value: unknown): boolean {
   const phone = normalizeBrazilianPhone(value);
   if (!/^\d{10,11}$/.test(phone)) return false;
   const subscriber = phone.slice(2);
-  return /^(\d)\1+$/.test(subscriber) || (phone.length === 11 && /^(\d)\1{7}$/.test(subscriber.slice(1)));
+  return subscriber === "912345678" || /^(\d)\1+$/.test(subscriber) || (phone.length === 11 && /^(\d)\1{7}$/.test(subscriber.slice(1)));
 }
 
 export function storedPhoneMatches(storedPhone: unknown, suppliedPhone: unknown): boolean {

@@ -44,5 +44,11 @@ describe("shared identity validation regression", () => {
     expect(isPlaceholderPhone("38987654321")).toBe(false);
     expect(normalizeCPF("abc52998224725")).toBe("");
   });
-  it.each(["38999999998","38900000001","3833333334","3832222222","+55 (55) 99999-9998"])("preserves non-uniform phone %s",value=>expect(isValidBrazilianPhone(value)).toBe(true));
+  it("rejects the requested 912345678 subscriber across all DDDs and formats",()=>{
+    for(const ddd of VALID_BR_DDD) for(const value of [`${ddd}912345678`,`(${ddd}) 91234-5678`,`+55 (${ddd}) 91234-5678`,`55${ddd}912345678`]) {
+      expect(isPlaceholderPhone(value),value).toBe(true);
+      expect(isValidBrazilianPhone(value),value).toBe(false);
+    }
+  });
+  it.each(["38999999998","38900000001","3833333334","3832222222","+55 (55) 99999-9998","38912345679","38912345677"])("preserves non-placeholder phone %s",value=>expect(isValidBrazilianPhone(value)).toBe(true));
 });

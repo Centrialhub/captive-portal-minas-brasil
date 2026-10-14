@@ -33,7 +33,7 @@ async function submit(phone = "38987654321") {
 }
 
 describe("post-release audit 20260926: identity formatting and restored cooldown", () => {
-  it.each(["38999999999", "+55 (38) 90000-0000", "3833333333"])("rejects placeholder %s and allows correcting it", async phone => {
+  it.each(["38999999999", "+55 (38) 90000-0000", "3833333333", "38 91234-5678", "+55 (55) 91234-5678"])("rejects placeholder %s and allows correcting it", async phone => {
     renderPortal(); await flush();
     await submit(phone);
     expect(api.identify).not.toHaveBeenCalled();
