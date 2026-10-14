@@ -43,6 +43,16 @@ try{
  const oldPlaceholder=await profile(null,'38999999999');
  await client.query('insert into leads(id,phone,name) values($1,$2,$3)',[oldPlaceholder,'38999999999','Historical']);
  await client.query(await readFile(path.join(root,'supabase/migrations/20261013154212_reject_placeholder_phones.sql'),'utf8'));
+ const oldSequence=await profile(null,'38912345678');
+ await client.query(await readFile(path.join(root,'supabase/migrations/20261014141322_reject_sequential_phone.sql'),'utf8'));
+ await test('sequence policy preserves history and permits authenticated repair',async()=>{
+  await client.query("update profiles set full_name='Sequence history' where id=$1",[oldSequence]);
+  assert.equal((await client.query('select phone_digits from profiles where id=$1',[oldSequence])).rows[0].phone_digits,'38912345678');
+  await client.query('begin');
+  assert.equal((await repair(oldSequence,'01234567890')).ok,true);
+  assert.equal((await client.query('select phone_digits from profiles where id=$1',[oldSequence])).rows[0].phone_digits,phone);
+  await client.query('rollback');
+ });
  await test('new policy preserves historical placeholders and unrelated updates',async()=>{
   await client.query("update profiles set full_name='Historical updated' where id=$1",[oldPlaceholder]);
   await client.query("update leads set name='Historical updated' where id=$1",[oldPlaceholder]);
@@ -59,7 +69,7 @@ try{
  for(const table of ['profiles','leads']){
   const cpfCol=table==='profiles'?'cpf_digits':'cpf',telCol=table==='profiles'?'phone_digits':'phone';
   for(const operation of ['insert','update']) await test(`${table}: ${operation} of placeholder telephone rejected`,async()=>{
-   for(const x of ['38999999999','+55 (38) 90000-0000','38911111111','3833333333']){
+   for(const x of ['38999999999','+55 (38) 90000-0000','38911111111','3833333333','38912345678','+55 (55) 91234-5678']){
     const sql=operation==='insert'?`insert into ${table}(id,${telCol}) values($1,$2)`:`update ${table} set ${telCol}=$2 where id=$1`;
     await assert.rejects(client.query(sql,[operation==='insert'?randomUUID():legacy,x]),{code:'23514'});
    }
@@ -76,7 +86,7 @@ try{
  });
  await test('SQL/JavaScript phone parity preserves every DDD including 55',async()=>{
   const values=[null,'abc38987654321','+91 98765-4321','(55) 98765-432100','38999999999'];
-  for(let d=0;d<=99;d++)for(const sub of ['987654321','23456789','56789012','876543210','999999998',...Array.from({length:10},(_,n)=>String(n).repeat(8)),...Array.from({length:10},(_,n)=>'9'+String(n).repeat(8))])for(const format of [`${d}${sub}`,`+55 (${d}) ${sub}`,`(${d}) ${sub}`])values.push(format);
+  for(let d=0;d<=99;d++)for(const sub of ['987654321','23456789','56789012','876543210','999999998','912345678','912345679','912345677',...Array.from({length:10},(_,n)=>String(n).repeat(8)),...Array.from({length:10},(_,n)=>'9'+String(n).repeat(8))])for(const format of [`${d}${sub}`,`+55 (${d}) ${sub}`,`(${d}) ${sub}`])values.push(format);
   for(const r of (await client.query('select value,coalesce(private.portal_phone_valid(value),false) valid,private.portal_phone_normalize(value) normalized from unnest($1::text[]) value',[values])).rows){assert.equal(r.valid,isValidBrazilianPhone(r.value),String(r.value));if(r.value!==null)assert.equal(r.normalized,normalizeBrazilianPhone(r.value),r.value);}
  });
  await test('legacy invalid profile can be repaired by service without replacing the account',async()=>{assert.equal((await repair(legacy)).ok,true);assert.equal((await client.query('select cpf_required from profiles where id=$1',[legacy])).rows[0].cpf_required,false);});
