@@ -1,5 +1,7 @@
 # Correção dos testes sintéticos — Povoão, 25/09/2026
 
+> **Nova auditoria:** o objetivo de 99,9% em até 120 s ainda não foi demonstrado. A segunda rodada ampliou a bateria para 363 testes e reproduziu 17 reprovações em nove grupos adicionais; os 303 testes anteriores continuam aprovados. Consulte o [resultado vigente e plano de correção](auditoria-confiabilidade-povao-2026-09-25-rodada2.md). Este documento preserva os resultados da etapa anterior.
+
 ## Resultado
 
 Os **18 grupos de problemas reproduzidos foram corrigidos**. A validação final passou com **303 testes automatizados: 253 da aplicação e 50 do PostgreSQL**, além de **dois fluxos em Chromium**. As 30 asserções anteriormente reprovadas continuam ativas e passaram; foram acrescentadas verificações para os casos encontrados durante a revisão. O resultado anterior permanece preservado em `synthetic-results-2026-09-25.json`.
